@@ -28,7 +28,7 @@ struct AudioSpectrum {
 
 // Taps the system default sink's monitor source, runs a 4096-point
 // Hann-windowed FFT per stereo channel on the audio thread, merges
-// magnitudes into 64 Mel-spaced bands, EMA-smooths, and publishes a
+// magnitudes into 64 calibrated WE-style bands, EMA-smooths, and publishes a
 // lock-free snapshot for renderers.
 class AudioCapture {
 public:

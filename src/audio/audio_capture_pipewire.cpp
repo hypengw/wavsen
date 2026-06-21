@@ -278,7 +278,7 @@ private:
     std::size_t                      ring_head_         = 0;
     std::size_t                      samples_filled_    = 0;
     std::size_t                      samples_since_fft_ = 0;
-    dsp::BandLayout                  band_layout_ { dsp::make_mel_layout(kDefaultRate) };
+    dsp::BandLayout                  band_layout_ { dsp::make_we_layout(kDefaultRate) };
     dsp::SpectrumBands               smoothed_ {};
 
     mutable std::atomic<std::uint32_t> seq_ { 0 };

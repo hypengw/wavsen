@@ -47,31 +47,47 @@ std::size_t peak_band(const std::array<float, wavsen::audio::dsp::kNumBins>& val
     return band;
 }
 
-bool near_band(std::size_t actual, std::size_t expected, std::size_t tolerance) {
-    return actual <= expected + tolerance && expected <= actual + tolerance;
+float band_center_x(std::size_t band) {
+    return (static_cast<float>(band) + 0.5f) /
+           static_cast<float>(wavsen::audio::dsp::kNumBins);
 }
 
-bool test_frequency_mapping() {
-    const auto layout = wavsen::audio::dsp::make_mel_layout(kSampleRate);
-    const std::array<float, 5> tones{60.0f, 250.0f, 1000.0f, 6000.0f, 12000.0f};
+bool test_frequency_mapping_matches_we_response_samples() {
+    const auto layout = wavsen::audio::dsp::make_we_layout(kSampleRate);
+    struct Case {
+        float hz;
+        float expected_x;
+        float tolerance;
+    };
+    const std::array<Case, 9> tones{
+        Case{60.0f, 0.04f, 0.03f},
+        Case{125.0f, 0.08f, 0.03f},
+        Case{250.0f, 0.16f, 0.03f},
+        Case{500.0f, 0.33f, 0.03f},
+        Case{1000.0f, 0.51f, 0.03f},
+        Case{2000.0f, 0.60f, 0.03f},
+        Case{3000.0f, 0.72f, 0.03f},
+        Case{8000.0f, 0.85f, 0.03f},
+        Case{12000.0f, 0.94f, 0.03f},
+    };
 
     std::size_t previous = 0;
     bool first = true;
-    for (float hz : tones) {
+    for (const auto& tone : tones) {
         Buffer left{};
         Buffer right{};
-        fill_sine(left, right, hz, 0.5f, 0.5f);
+        fill_sine(left, right, tone.hz, 0.25f, 0.25f);
         const auto raw = wavsen::audio::dsp::analyze_stereo_spectrum(
             left.data(), right.data(), layout, 2.0f / static_cast<float>(left.size()));
         const auto actual = peak_band(raw.average);
-        const auto expected = expected_band(layout, hz);
-        if (!near_band(actual, expected, 2)) {
-            std::cerr << "tone " << hz << " Hz peaked at band " << actual << ", expected near "
-                      << expected << "\n";
+        const float actual_x = band_center_x(actual);
+        if (std::abs(actual_x - tone.expected_x) > tone.tolerance) {
+            std::cerr << "tone " << tone.hz << " Hz peaked at x " << actual_x
+                      << ", expected near " << tone.expected_x << "\n";
             return false;
         }
         if (!first && actual <= previous) {
-            std::cerr << "tone bands are not increasing at " << hz << " Hz\n";
+            std::cerr << "tone bands are not increasing at " << tone.hz << " Hz\n";
             return false;
         }
         first = false;
@@ -81,7 +97,7 @@ bool test_frequency_mapping() {
 }
 
 bool test_channel_split_and_average() {
-    const auto layout = wavsen::audio::dsp::make_mel_layout(kSampleRate);
+    const auto layout = wavsen::audio::dsp::make_we_layout(kSampleRate);
     Buffer left{};
     Buffer right{};
     fill_sine(left, right, 1000.0f, 1.0f, 0.0f);
@@ -107,7 +123,7 @@ bool test_channel_split_and_average() {
 }
 
 bool test_response_cap() {
-    const auto layout = wavsen::audio::dsp::make_mel_layout(kSampleRate);
+    const auto layout = wavsen::audio::dsp::make_we_layout(kSampleRate);
     Buffer left{};
     Buffer right{};
     fill_sine(left, right, 1000.0f, 4.0f, 4.0f);
@@ -131,7 +147,7 @@ float response_for_unit(const wavsen::audio::dsp::BandLayout& layout, std::size_
 }
 
 bool test_response_contrast() {
-    const auto layout = wavsen::audio::dsp::make_mel_layout(kSampleRate);
+    const auto layout = wavsen::audio::dsp::make_we_layout(kSampleRate);
     const auto band = expected_band(layout, 1000.0f);
     const float low = response_for_unit(layout, band, 0.4f);
     const float mid = response_for_unit(layout, band, 0.5f);
@@ -152,16 +168,60 @@ bool test_response_contrast() {
     return true;
 }
 
+bool test_short_neighbor_bars_survive_response() {
+    const auto layout = wavsen::audio::dsp::make_we_layout(kSampleRate);
+    Buffer left{};
+    Buffer right{};
+    fill_sine(left, right, 500.0f, 0.25f, 0.25f);
+    const auto raw = wavsen::audio::dsp::analyze_stereo_spectrum(
+        left.data(), right.data(), layout, 2.0f / static_cast<float>(left.size()));
+    const auto band = peak_band(raw.average);
+    if (band == 0) {
+        std::cerr << "500 Hz peak has no left neighbor\n";
+        return false;
+    }
+    const float neighbor_ratio = raw.average[band - 1] / raw.average[band];
+    if (neighbor_ratio < 0.35f) {
+        std::cerr << "short 500 Hz neighbor bar was suppressed: " << neighbor_ratio << "\n";
+        return false;
+    }
+    return true;
+}
+
+bool test_wide_band_single_bin_spike_is_damped() {
+    const auto layout = wavsen::audio::dsp::make_we_layout(kSampleRate);
+    Buffer spectrum{};
+    const std::size_t band = wavsen::audio::dsp::kNumBins - 1;
+    const std::size_t lo = layout.edges[band];
+    const std::size_t hi = layout.edges[band + 1];
+    if (hi - lo < 16) {
+        std::cerr << "test requires a wide high-frequency band\n";
+        return false;
+    }
+
+    spectrum[lo] = std::complex<float>(1.0f, 0.0f);
+    const float mag = wavsen::audio::dsp::band_magnitude(spectrum.data(), layout, band, 1.0f);
+    if (mag >= 0.2f) {
+        std::cerr << "single-bin spike was not damped in wide band: " << mag << "\n";
+        return false;
+    }
+    return true;
+}
+
 } // namespace
 
 int main() {
-    if (!test_frequency_mapping())
+    if (!test_frequency_mapping_matches_we_response_samples())
         return EXIT_FAILURE;
     if (!test_channel_split_and_average())
         return EXIT_FAILURE;
     if (!test_response_cap())
         return EXIT_FAILURE;
     if (!test_response_contrast())
+        return EXIT_FAILURE;
+    if (!test_short_neighbor_bars_survive_response())
+        return EXIT_FAILURE;
+    if (!test_wide_band_single_bin_spike_is_damped())
         return EXIT_FAILURE;
     return EXIT_SUCCESS;
 }

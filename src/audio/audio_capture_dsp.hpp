@@ -17,11 +17,11 @@ inline constexpr std::size_t kFftSize = 4096;
 inline constexpr std::size_t kNumBins = 64;
 inline constexpr std::size_t kHalfFft = kFftSize / 2;
 inline constexpr std::size_t kHopSize = 1024;
-inline constexpr float kMinFrequencyHz = 20.0f;
-inline constexpr float kMaxFrequencyHz = 20000.0f;
-inline constexpr float kTiltPivotHz = 200.0f;
-inline constexpr float kTiltExp = 0.30f;
-inline constexpr float kDbFloor = -80.0f;
+inline constexpr float kMinFrequencyHz = 10.0f;
+inline constexpr float kMaxFrequencyHz = 16000.0f;
+inline constexpr float kTiltPivotHz = 1000.0f;
+inline constexpr float kTiltExp = 1.15f;
+inline constexpr float kDbFloor = -100.0f;
 inline constexpr float kDbCeil = -8.0f;
 inline constexpr float kResponseContrast = 1.6f;
 inline constexpr float kResponseScale = 1.0f;
@@ -40,9 +40,24 @@ struct SpectrumBands {
     std::array<float, kNumBins> average{};
 };
 
-inline float hz_to_mel(float hz) { return 2595.0f * std::log10(1.0f + hz / 700.0f); }
+struct BandAnchor {
+    float hz;
+    float band;
+};
 
-inline float mel_to_hz(float mel) { return 700.0f * (std::pow(10.0f, mel / 2595.0f) - 1.0f); }
+inline constexpr std::array<BandAnchor, 11> kBandAnchors{{
+    {kMinFrequencyHz, 0.0f},
+    {60.0f, 2.0f},
+    {125.0f, 5.0f},
+    {250.0f, 10.0f},
+    {500.0f, 21.0f},
+    {1000.0f, 32.0f},
+    {2000.0f, 38.0f},
+    {3000.0f, 46.0f},
+    {8000.0f, 54.0f},
+    {12000.0f, 60.0f},
+    {16000.0f, 64.0f},
+}};
 
 inline std::size_t hz_to_upper_bin(float hz, float sample_rate) {
     const auto bin =
@@ -51,21 +66,35 @@ inline std::size_t hz_to_upper_bin(float hz, float sample_rate) {
     return std::clamp<std::size_t>(bin, 1, kHalfFft);
 }
 
-inline BandLayout make_mel_layout(float sample_rate) {
+inline float anchor_frequency_for_band(float band) {
+    if (band <= kBandAnchors.front().band)
+        return kBandAnchors.front().hz;
+    if (band >= kBandAnchors.back().band)
+        return kBandAnchors.back().hz;
+
+    for (std::size_t i = 1; i < kBandAnchors.size(); ++i) {
+        const auto& hi = kBandAnchors[i];
+        if (band > hi.band)
+            continue;
+        const auto& lo = kBandAnchors[i - 1];
+        const float t = (band - lo.band) / (hi.band - lo.band);
+        const float log_lo = std::log(lo.hz);
+        const float log_hi = std::log(hi.hz);
+        return std::exp(log_lo + (log_hi - log_lo) * t);
+    }
+    return kBandAnchors.back().hz;
+}
+
+inline BandLayout make_we_layout(float sample_rate) {
     BandLayout layout{};
     const float nyquist = sample_rate * 0.5f;
     const float max_hz = std::min(kMaxFrequencyHz, nyquist);
-    const float min_hz = std::min(kMinFrequencyHz, max_hz);
-    const float min_mel = hz_to_mel(min_hz);
-    const float max_mel = hz_to_mel(max_hz);
     const auto max_bin = hz_to_upper_bin(max_hz, sample_rate);
 
-    layout.edges[0] = hz_to_upper_bin(min_hz, sample_rate);
-    for (std::size_t k = 1; k < kNumBins; ++k) {
-        const float t = static_cast<float>(k) / static_cast<float>(kNumBins);
-        const float hz = mel_to_hz(min_mel + (max_mel - min_mel) * t);
+    for (std::size_t k = 0; k < kNumBins; ++k) {
+        const float hz = std::min(anchor_frequency_for_band(static_cast<float>(k) - 0.5f), max_hz);
         std::size_t next = hz_to_upper_bin(hz, sample_rate);
-        if (next <= layout.edges[k - 1])
+        if (k > 0 && next <= layout.edges[k - 1])
             next = layout.edges[k - 1] + 1;
         const std::size_t remaining = kNumBins - k;
         if (next + remaining > max_bin)
@@ -74,10 +103,9 @@ inline BandLayout make_mel_layout(float sample_rate) {
     }
     layout.edges[kNumBins] = max_bin;
     for (std::size_t k = 0; k < kNumBins; ++k) {
-        const float center_bin =
-            0.5f * (static_cast<float>(layout.edges[k]) + static_cast<float>(layout.edges[k + 1]));
-        const float center_hz = center_bin * sample_rate / static_cast<float>(kFftSize);
-        layout.gain[k] = std::pow(center_hz / kTiltPivotHz, kTiltExp);
+        const float upper_hz =
+            static_cast<float>(layout.edges[k + 1]) * sample_rate / static_cast<float>(kFftSize);
+        layout.gain[k] = std::pow(upper_hz / kTiltPivotHz, kTiltExp);
     }
     return layout;
 }
@@ -86,13 +114,13 @@ inline float band_magnitude(const std::complex<float>* left, const BandLayout& l
                             std::size_t band, float norm) {
     const std::size_t lo = layout.edges[band];
     const std::size_t hi = layout.edges[band + 1];
-    float peak = 0.f;
+    float sum = 0.f;
     for (std::size_t i = lo; i < hi; ++i) {
         const float v = std::abs(left[i]);
-        if (v > peak)
-            peak = v;
+        sum += v;
     }
-    return peak * norm;
+    const float width = static_cast<float>(std::max<std::size_t>(hi - lo, 1));
+    return (sum / width) * norm;
 }
 
 inline float shape_response(float unit) {
