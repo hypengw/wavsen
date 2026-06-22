@@ -60,6 +60,11 @@ void SoundManager::pause() { impl_->device.stop(); }
 float SoundManager::volume() const     { return impl_->device.volume(); }
 bool  SoundManager::muted() const      { return impl_->device.muted(); }
 void  SoundManager::set_volume(float v) { impl_->device.set_volume(v); }
+float SoundManager::volume_scale() const { return impl_->device.volume_scale(); }
+void  SoundManager::set_volume_scale(float v) { impl_->device.set_volume_scale(v); }
+void  SoundManager::set_volume_scale(float v, std::uint32_t fade_ms) {
+    impl_->device.set_volume_scale(v, fade_ms);
+}
 
 void SoundManager::set_muted(bool m) {
     impl_->device.set_muted(m);

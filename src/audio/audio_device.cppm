@@ -41,6 +41,9 @@ public:
     auto muted() const -> bool;
     void set_volume(float v);
     void set_muted(bool m);
+    auto volume_scale() const -> float;
+    void set_volume_scale(float v);
+    void set_volume_scale(float v, std::uint32_t fade_ms);
 
     auto desc() const -> DeviceDesc;
 

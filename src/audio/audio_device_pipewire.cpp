@@ -1,5 +1,6 @@
 module;
 
+#include <cmath>
 #include <pipewire/pipewire.h>
 #include <spa/param/audio/format-utils.h>
 #include <spa/utils/result.h>
@@ -24,6 +25,12 @@ void ensure_pw_init() {
 constexpr std::uint32_t kDefaultRate     = 48000;
 constexpr std::uint32_t kDefaultChannels = 2;
 constexpr std::uint32_t kQuantum         = 1024;
+
+float clamp_volume_scale(float v) {
+    if (! std::isfinite(v) || v < 0.0f) return 0.0f;
+    if (v > 1.0f) return 1.0f;
+    return v;
+}
 
 } // namespace
 
@@ -188,6 +195,43 @@ public:
     bool  muted()  const { return muted_.load(std::memory_order_relaxed); }
     void  set_volume(float v) { volume_.store(v, std::memory_order_relaxed); }
     void  set_muted(bool m)   { muted_.store(m,  std::memory_order_relaxed); }
+    float volume_scale() const { return volume_scale_.load(std::memory_order_relaxed); }
+    void  set_volume_scale(float v) {
+        v = clamp_volume_scale(v);
+        volume_scale_epoch_.fetch_add(1, std::memory_order_acq_rel);
+        volume_scale_target_.store(v, std::memory_order_relaxed);
+        volume_scale_step_.store(0.0f, std::memory_order_relaxed);
+        volume_scale_frames_left_.store(0, std::memory_order_relaxed);
+        volume_scale_.store(v, std::memory_order_relaxed);
+        volume_scale_epoch_.fetch_add(1, std::memory_order_release);
+    }
+    void set_volume_scale(float v, std::uint32_t fade_ms) {
+        v = clamp_volume_scale(v);
+        if (fade_ms == 0) {
+            set_volume_scale(v);
+            return;
+        }
+        const auto rate = desc_.sample_rate != 0 ? desc_.sample_rate : kDefaultRate;
+        auto fade_frames64 = static_cast<std::uint64_t>(rate) * fade_ms / 1000ULL;
+        if (fade_frames64 == 0) {
+            set_volume_scale(v);
+            return;
+        }
+        if (fade_frames64 > 0xffffffffULL) fade_frames64 = 0xffffffffULL;
+        const auto fade_frames = static_cast<std::uint32_t>(fade_frames64);
+        const auto current     = volume_scale_.load(std::memory_order_relaxed);
+        if (current == v) {
+            set_volume_scale(v);
+            return;
+        }
+
+        volume_scale_epoch_.fetch_add(1, std::memory_order_acq_rel);
+        volume_scale_target_.store(v, std::memory_order_relaxed);
+        volume_scale_step_.store((v - current) / static_cast<float>(fade_frames),
+                                 std::memory_order_relaxed);
+        volume_scale_frames_left_.store(fade_frames, std::memory_order_relaxed);
+        volume_scale_epoch_.fetch_add(1, std::memory_order_release);
+    }
 
     std::uint64_t stream_position_frames() const {
         if (! stream_) return 0;
@@ -198,6 +242,41 @@ public:
     }
 
 private:
+    void apply_output_gain(float* out_f, std::uint32_t n_frames, std::uint32_t channels) {
+        const float volume = volume_.load(std::memory_order_relaxed);
+        auto        left   = volume_scale_frames_left_.load(std::memory_order_relaxed);
+        if (left == 0) {
+            const float gain =
+                volume * volume_scale_.load(std::memory_order_relaxed);
+            const auto total_samples = static_cast<std::size_t>(n_frames) * channels;
+            for (std::size_t i = 0; i < total_samples; ++i) {
+                out_f[i] *= gain;
+            }
+            return;
+        }
+
+        const auto  epoch  = volume_scale_epoch_.load(std::memory_order_acquire);
+        const float step   = volume_scale_step_.load(std::memory_order_relaxed);
+        const float target = volume_scale_target_.load(std::memory_order_relaxed);
+        float       scale  = volume_scale_.load(std::memory_order_relaxed);
+        for (std::uint32_t frame = 0; frame < n_frames; ++frame) {
+            const float gain = volume * scale;
+            const auto  base = static_cast<std::size_t>(frame) * channels;
+            for (std::uint32_t ch = 0; ch < channels; ++ch) {
+                out_f[base + ch] *= gain;
+            }
+            if (left > 0) {
+                --left;
+                scale = left == 0 ? target : scale + step;
+            }
+        }
+        if ((epoch & 1u) == 0 &&
+            volume_scale_epoch_.load(std::memory_order_acquire) == epoch) {
+            volume_scale_.store(scale, std::memory_order_relaxed);
+            volume_scale_frames_left_.store(left, std::memory_order_relaxed);
+        }
+    }
+
     static void on_process(void* user) {
         auto* self = static_cast<Impl*>(user);
         if (! self->stream_) return;
@@ -225,19 +304,20 @@ private:
         std::memset(out_f, 0, total_samples * sizeof(float));
 
         if (! self->muted_.load(std::memory_order_relaxed)) {
-            const float gain = self->volume_.load(std::memory_order_relaxed);
-
             std::vector<float> scratch(total_samples);
 
-            std::lock_guard<std::mutex> lk(self->channels_mu_);
-            for (auto& ch : self->channels_) {
-                std::memset(scratch.data(), 0, total_samples * sizeof(float));
-                const auto produced = ch->next_pcm(scratch.data(), n_frames);
-                const auto produced_samples = static_cast<std::size_t>(produced) * channels;
-                for (std::size_t i = 0; i < produced_samples; ++i) {
-                    out_f[i] += gain * scratch[i];
+            {
+                std::lock_guard<std::mutex> lk(self->channels_mu_);
+                for (auto& ch : self->channels_) {
+                    std::memset(scratch.data(), 0, total_samples * sizeof(float));
+                    const auto produced = ch->next_pcm(scratch.data(), n_frames);
+                    const auto produced_samples = static_cast<std::size_t>(produced) * channels;
+                    for (std::size_t i = 0; i < produced_samples; ++i) {
+                        out_f[i] += scratch[i];
+                    }
                 }
             }
+            self->apply_output_gain(out_f, n_frames, channels);
         }
 
         sb->datas[0].chunk->offset = 0;
@@ -277,6 +357,11 @@ private:
     std::vector<std::unique_ptr<IPullChannel>> channels_;
 
     std::atomic<float> volume_ { 1.0f };
+    std::atomic<float> volume_scale_ { 1.0f };
+    std::atomic<float> volume_scale_target_ { 1.0f };
+    std::atomic<float> volume_scale_step_ { 0.0f };
+    std::atomic<std::uint32_t> volume_scale_frames_left_ { 0 };
+    std::atomic<std::uint32_t> volume_scale_epoch_ { 0 };
     std::atomic<bool>  muted_ { false };
 };
 
@@ -294,6 +379,11 @@ float AudioDevice::volume() const         { return impl_->volume(); }
 bool  AudioDevice::muted()  const         { return impl_->muted(); }
 void  AudioDevice::set_volume(float v)    { impl_->set_volume(v); }
 void  AudioDevice::set_muted(bool m)      { impl_->set_muted(m); }
+float AudioDevice::volume_scale() const   { return impl_->volume_scale(); }
+void  AudioDevice::set_volume_scale(float v) { impl_->set_volume_scale(v); }
+void  AudioDevice::set_volume_scale(float v, std::uint32_t fade_ms) {
+    impl_->set_volume_scale(v, fade_ms);
+}
 DeviceDesc AudioDevice::desc() const      { return impl_->desc(); }
 std::uint64_t AudioDevice::stream_position_frames() const {
     return impl_->stream_position_frames();
