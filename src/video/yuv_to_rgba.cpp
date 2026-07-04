@@ -15,7 +15,8 @@ import vulkan;
 import :vk_device;
 import :yuv_to_rgba;
 
-namespace wavsen::video {
+namespace wavsen::video
+{
 
 /* Push-constant struct mirroring `PC` in shaders/nv12_to_rgba.comp.
  * std140-friendly: padded to 16-byte boundaries. */
@@ -44,18 +45,36 @@ ColorMatrix make_color_matrix(ColorSpace cs, ColorRange cr) {
     if (cr == ColorRange::Full) {
         /* Full range: y_scale = 1.0, c_scale = 1.0; offsets = (0, -.5, -.5). */
         if (cs == ColorSpace::Bt601) {
-            m.m_r[0] = 1.0f; m.m_r[1] = 0.0f;     m.m_r[2] = 1.402f;
-            m.m_g[0] = 1.0f; m.m_g[1] = -0.34414f; m.m_g[2] = -0.71414f;
-            m.m_b[0] = 1.0f; m.m_b[1] = 1.772f;   m.m_b[2] = 0.0f;
+            m.m_r[0] = 1.0f;
+            m.m_r[1] = 0.0f;
+            m.m_r[2] = 1.402f;
+            m.m_g[0] = 1.0f;
+            m.m_g[1] = -0.34414f;
+            m.m_g[2] = -0.71414f;
+            m.m_b[0] = 1.0f;
+            m.m_b[1] = 1.772f;
+            m.m_b[2] = 0.0f;
         } else if (cs == ColorSpace::Bt2020) {
-            m.m_r[0] = 1.0f; m.m_r[1] = 0.0f;     m.m_r[2] = 1.4746f;
-            m.m_g[0] = 1.0f; m.m_g[1] = -0.16455f; m.m_g[2] = -0.57135f;
-            m.m_b[0] = 1.0f; m.m_b[1] = 1.8814f;  m.m_b[2] = 0.0f;
+            m.m_r[0] = 1.0f;
+            m.m_r[1] = 0.0f;
+            m.m_r[2] = 1.4746f;
+            m.m_g[0] = 1.0f;
+            m.m_g[1] = -0.16455f;
+            m.m_g[2] = -0.57135f;
+            m.m_b[0] = 1.0f;
+            m.m_b[1] = 1.8814f;
+            m.m_b[2] = 0.0f;
         } else {
             /* BT.709 default. */
-            m.m_r[0] = 1.0f; m.m_r[1] = 0.0f;     m.m_r[2] = 1.5748f;
-            m.m_g[0] = 1.0f; m.m_g[1] = -0.18732f; m.m_g[2] = -0.46812f;
-            m.m_b[0] = 1.0f; m.m_b[1] = 1.85563f; m.m_b[2] = 0.0f;
+            m.m_r[0] = 1.0f;
+            m.m_r[1] = 0.0f;
+            m.m_r[2] = 1.5748f;
+            m.m_g[0] = 1.0f;
+            m.m_g[1] = -0.18732f;
+            m.m_g[2] = -0.46812f;
+            m.m_b[0] = 1.0f;
+            m.m_b[1] = 1.85563f;
+            m.m_b[2] = 0.0f;
         }
         m.offset[0] = 0.0f;
         m.offset[1] = -128.0f / 255.0f;
@@ -63,29 +82,48 @@ ColorMatrix make_color_matrix(ColorSpace cs, ColorRange cr) {
     } else {
         /* Limited range. y_scale = 255/219; c_scale = 255/224.
          * Pre-bake into matrix coefficients. */
-        constexpr float ys = 255.0f / 219.0f;
+        constexpr float ys  = 255.0f / 219.0f;
         constexpr float cs_ = 255.0f / 224.0f;
         if (cs == ColorSpace::Bt601) {
-            m.m_r[0] = ys; m.m_r[1] = 0.0f;        m.m_r[2] = 1.402f   * cs_;
-            m.m_g[0] = ys; m.m_g[1] = -0.34414f*cs_; m.m_g[2] = -0.71414f*cs_;
-            m.m_b[0] = ys; m.m_b[1] = 1.772f * cs_;  m.m_b[2] = 0.0f;
+            m.m_r[0] = ys;
+            m.m_r[1] = 0.0f;
+            m.m_r[2] = 1.402f * cs_;
+            m.m_g[0] = ys;
+            m.m_g[1] = -0.34414f * cs_;
+            m.m_g[2] = -0.71414f * cs_;
+            m.m_b[0] = ys;
+            m.m_b[1] = 1.772f * cs_;
+            m.m_b[2] = 0.0f;
         } else if (cs == ColorSpace::Bt2020) {
-            m.m_r[0] = ys; m.m_r[1] = 0.0f;          m.m_r[2] = 1.4746f * cs_;
-            m.m_g[0] = ys; m.m_g[1] = -0.16455f*cs_; m.m_g[2] = -0.57135f*cs_;
-            m.m_b[0] = ys; m.m_b[1] = 1.8814f * cs_; m.m_b[2] = 0.0f;
+            m.m_r[0] = ys;
+            m.m_r[1] = 0.0f;
+            m.m_r[2] = 1.4746f * cs_;
+            m.m_g[0] = ys;
+            m.m_g[1] = -0.16455f * cs_;
+            m.m_g[2] = -0.57135f * cs_;
+            m.m_b[0] = ys;
+            m.m_b[1] = 1.8814f * cs_;
+            m.m_b[2] = 0.0f;
         } else {
-            m.m_r[0] = ys; m.m_r[1] = 0.0f;          m.m_r[2] = 1.5748f * cs_;
-            m.m_g[0] = ys; m.m_g[1] = -0.18732f*cs_; m.m_g[2] = -0.46812f*cs_;
-            m.m_b[0] = ys; m.m_b[1] = 1.85563f*cs_;  m.m_b[2] = 0.0f;
+            m.m_r[0] = ys;
+            m.m_r[1] = 0.0f;
+            m.m_r[2] = 1.5748f * cs_;
+            m.m_g[0] = ys;
+            m.m_g[1] = -0.18732f * cs_;
+            m.m_g[2] = -0.46812f * cs_;
+            m.m_b[0] = ys;
+            m.m_b[1] = 1.85563f * cs_;
+            m.m_b[2] = 0.0f;
         }
-        m.offset[0] = -16.0f  / 255.0f;
+        m.offset[0] = -16.0f / 255.0f;
         m.offset[1] = -128.0f / 255.0f;
         m.offset[2] = -128.0f / 255.0f;
     }
     return m;
 }
 
-namespace {
+namespace
+{
 
 bool fail(Error* err, std::string m) {
     if (err) err->message = std::move(m);
@@ -94,33 +132,29 @@ bool fail(Error* err, std::string m) {
 
 const char* vk_result_str(VkResult r) {
     switch (r) {
-    case VK_SUCCESS:                        return "VK_SUCCESS";
-    case VK_ERROR_OUT_OF_HOST_MEMORY:       return "VK_ERROR_OUT_OF_HOST_MEMORY";
-    case VK_ERROR_OUT_OF_DEVICE_MEMORY:     return "VK_ERROR_OUT_OF_DEVICE_MEMORY";
-    case VK_ERROR_INITIALIZATION_FAILED:    return "VK_ERROR_INITIALIZATION_FAILED";
-    case VK_ERROR_FORMAT_NOT_SUPPORTED:     return "VK_ERROR_FORMAT_NOT_SUPPORTED";
-    case VK_ERROR_FEATURE_NOT_PRESENT:      return "VK_ERROR_FEATURE_NOT_PRESENT";
-    default:                                return "VK_ERROR_?";
+    case VK_SUCCESS: return "VK_SUCCESS";
+    case VK_ERROR_OUT_OF_HOST_MEMORY: return "VK_ERROR_OUT_OF_HOST_MEMORY";
+    case VK_ERROR_OUT_OF_DEVICE_MEMORY: return "VK_ERROR_OUT_OF_DEVICE_MEMORY";
+    case VK_ERROR_INITIALIZATION_FAILED: return "VK_ERROR_INITIALIZATION_FAILED";
+    case VK_ERROR_FORMAT_NOT_SUPPORTED: return "VK_ERROR_FORMAT_NOT_SUPPORTED";
+    case VK_ERROR_FEATURE_NOT_PRESENT: return "VK_ERROR_FEATURE_NOT_PRESENT";
+    default: return "VK_ERROR_?";
     }
 }
 
-uint32_t pick_memory_type(VkPhysicalDevice phys, uint32_t mask,
-                          VkMemoryPropertyFlags want) {
+uint32_t pick_memory_type(VkPhysicalDevice phys, uint32_t mask, VkMemoryPropertyFlags want) {
     VkPhysicalDeviceMemoryProperties mp {};
     vkGetPhysicalDeviceMemoryProperties(phys, &mp);
     for (uint32_t i = 0; i < mp.memoryTypeCount; ++i) {
-        if ((mask & (1u << i))
-            && (mp.memoryTypes[i].propertyFlags & want) == want) {
+        if ((mask & (1u << i)) && (mp.memoryTypes[i].propertyFlags & want) == want) {
             return i;
         }
     }
     return UINT32_MAX;
 }
 
-bool create_image_2d(VkDevice device, VkPhysicalDevice phys,
-                     VkFormat fmt, uint32_t w, uint32_t h,
-                     VkImageUsageFlags usage,
-                     VkImage* out_img, VkDeviceMemory* out_mem,
+bool create_image_2d(VkDevice device, VkPhysicalDevice phys, VkFormat fmt, uint32_t w, uint32_t h,
+                     VkImageUsageFlags usage, VkImage* out_img, VkDeviceMemory* out_mem,
                      Error* err) {
     VkImageCreateInfo ici {};
     ici.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -140,8 +174,7 @@ bool create_image_2d(VkDevice device, VkPhysicalDevice phys,
     }
     VkMemoryRequirements mr {};
     vkGetImageMemoryRequirements(device, *out_img, &mr);
-    uint32_t type = pick_memory_type(phys, mr.memoryTypeBits,
-                                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    uint32_t type = pick_memory_type(phys, mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     if (type == UINT32_MAX) {
         fail(err, "no DEVICE_LOCAL memory type for plane image");
         return false;
@@ -161,15 +194,16 @@ bool create_image_2d(VkDevice device, VkPhysicalDevice phys,
     return true;
 }
 
-bool create_image_view(VkDevice device, VkImage img, VkFormat fmt,
-                       VkImageView* out, Error* err) {
+bool create_image_view(VkDevice device, VkImage img, VkFormat fmt, VkImageView* out, Error* err) {
     VkImageViewCreateInfo vci {};
     vci.sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     vci.image            = img;
     vci.viewType         = VK_IMAGE_VIEW_TYPE_2D;
     vci.format           = fmt;
-    vci.components       = { VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
-                             VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY };
+    vci.components       = { VK_COMPONENT_SWIZZLE_IDENTITY,
+                             VK_COMPONENT_SWIZZLE_IDENTITY,
+                             VK_COMPONENT_SWIZZLE_IDENTITY,
+                             VK_COMPONENT_SWIZZLE_IDENTITY };
     vci.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
     if (VkResult r = vkCreateImageView(device, &vci, nullptr, out); r != VK_SUCCESS) {
         fail(err, std::string("vkCreateImageView: ") + vk_result_str(r));
@@ -178,11 +212,9 @@ bool create_image_view(VkDevice device, VkImage img, VkFormat fmt,
     return true;
 }
 
-void barrier_image(VkCommandBuffer cmd, VkImage img,
-                   VkAccessFlags src_a, VkAccessFlags dst_a,
-                   VkImageLayout old_l, VkImageLayout new_l,
-                   VkPipelineStageFlags src_s, VkPipelineStageFlags dst_s,
-                   uint32_t src_qf = VK_QUEUE_FAMILY_IGNORED,
+void barrier_image(VkCommandBuffer cmd, VkImage img, VkAccessFlags src_a, VkAccessFlags dst_a,
+                   VkImageLayout old_l, VkImageLayout new_l, VkPipelineStageFlags src_s,
+                   VkPipelineStageFlags dst_s, uint32_t src_qf = VK_QUEUE_FAMILY_IGNORED,
                    uint32_t dst_qf = VK_QUEUE_FAMILY_IGNORED) {
     VkImageMemoryBarrier b {};
     b.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -199,9 +231,8 @@ void barrier_image(VkCommandBuffer cmd, VkImage img,
 
 // sync2 variant: only this can name VK_PIPELINE_STAGE_2_VIDEO_DECODE_BIT_KHR
 // for the cross-queue hazard tracker after vkCmdDecodeVideoKHR.
-void barrier_image2(VkCommandBuffer cmd, VkImage img,
-                    VkPipelineStageFlags2 src_s, VkAccessFlags2 src_a,
-                    VkPipelineStageFlags2 dst_s, VkAccessFlags2 dst_a,
+void barrier_image2(VkCommandBuffer cmd, VkImage img, VkPipelineStageFlags2 src_s,
+                    VkAccessFlags2 src_a, VkPipelineStageFlags2 dst_s, VkAccessFlags2 dst_a,
                     VkImageLayout old_l, VkImageLayout new_l,
                     uint32_t src_qf = VK_QUEUE_FAMILY_IGNORED,
                     uint32_t dst_qf = VK_QUEUE_FAMILY_IGNORED) {
@@ -224,48 +255,90 @@ void barrier_image2(VkCommandBuffer cmd, VkImage img,
     vkCmdPipelineBarrier2(cmd, &di);
 }
 
-} // namespace
+bool target_exports_sync_fd(ConvertTarget target) { return target == ConvertTarget::BridgeForeign; }
 
+void barrier_dst_to_storage(VkCommandBuffer cmd, VkImage dst, ConvertTarget target) {
+    if (target == ConvertTarget::SampledLocal) {
+        barrier_image(cmd,
+                      dst,
+                      VK_ACCESS_SHADER_READ_BIT,
+                      VK_ACCESS_SHADER_WRITE_BIT,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                      VK_IMAGE_LAYOUT_GENERAL,
+                      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+        return;
+    }
+    barrier_image(cmd,
+                  dst,
+                  0,
+                  VK_ACCESS_SHADER_WRITE_BIT,
+                  VK_IMAGE_LAYOUT_UNDEFINED,
+                  VK_IMAGE_LAYOUT_GENERAL,
+                  VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                  VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+}
+
+void barrier_dst_from_storage(VkCommandBuffer cmd, VkImage dst, ConvertTarget target,
+                              uint32_t queue_family) {
+    if (target == ConvertTarget::SampledLocal) {
+        barrier_image(cmd,
+                      dst,
+                      VK_ACCESS_SHADER_WRITE_BIT,
+                      VK_ACCESS_SHADER_READ_BIT,
+                      VK_IMAGE_LAYOUT_GENERAL,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+        return;
+    }
+    barrier_image(cmd,
+                  dst,
+                  VK_ACCESS_SHADER_WRITE_BIT,
+                  0,
+                  VK_IMAGE_LAYOUT_GENERAL,
+                  VK_IMAGE_LAYOUT_GENERAL,
+                  VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                  VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                  queue_family,
+                  VK_QUEUE_FAMILY_FOREIGN_EXT);
+}
+
+} // namespace
 
 YuvToRgba::~YuvToRgba() {
     if (device_ != VK_NULL_HANDLE) {
         vkDeviceWaitIdle(device_);
-        if (last_dst_view_)    vkDestroyImageView(device_, last_dst_view_, nullptr);
-        if (last_y_view_)      vkDestroyImageView(device_, last_y_view_, nullptr);
-        if (last_uv_view_)     vkDestroyImageView(device_, last_uv_view_, nullptr);
-        if (last_drm_image_)   vkDestroyImage(device_, last_drm_image_, nullptr);
+        if (last_dst_view_) vkDestroyImageView(device_, last_dst_view_, nullptr);
+        if (last_y_view_) vkDestroyImageView(device_, last_y_view_, nullptr);
+        if (last_uv_view_) vkDestroyImageView(device_, last_uv_view_, nullptr);
+        if (last_drm_image_) vkDestroyImage(device_, last_drm_image_, nullptr);
         for (uint32_t i = 0; i < last_drm_memory_count_; ++i) {
-            if (last_drm_memories_[i])
-                vkFreeMemory(device_, last_drm_memories_[i], nullptr);
+            if (last_drm_memories_[i]) vkFreeMemory(device_, last_drm_memories_[i], nullptr);
         }
-        if (dpool_)            vkDestroyDescriptorPool(device_, dpool_, nullptr);
-        if (signal_sem_)       vkDestroySemaphore(device_, signal_sem_, nullptr);
-        if (done_fence_)       vkDestroyFence(device_, done_fence_, nullptr);
-        if (cmd_pool_)         vkDestroyCommandPool(device_, cmd_pool_, nullptr);
-        if (staging_map_)      vkUnmapMemory(device_, staging_mem_);
-        if (staging_buf_)      vkDestroyBuffer(device_, staging_buf_, nullptr);
-        if (staging_mem_)      vkFreeMemory(device_, staging_mem_, nullptr);
-        if (y_view_)           vkDestroyImageView(device_, y_view_, nullptr);
-        if (y_image_)          vkDestroyImage(device_, y_image_, nullptr);
-        if (y_memory_)         vkFreeMemory(device_, y_memory_, nullptr);
-        if (uv_view_)          vkDestroyImageView(device_, uv_view_, nullptr);
-        if (uv_image_)         vkDestroyImage(device_, uv_image_, nullptr);
-        if (uv_memory_)        vkFreeMemory(device_, uv_memory_, nullptr);
-        if (sampler_)          vkDestroySampler(device_, sampler_, nullptr);
-        if (pipeline_)         vkDestroyPipeline(device_, pipeline_, nullptr);
-        if (pipeline_layout_)  vkDestroyPipelineLayout(device_, pipeline_layout_, nullptr);
-        if (dsl_)              vkDestroyDescriptorSetLayout(device_, dsl_, nullptr);
-        if (shader_)           vkDestroyShaderModule(device_, shader_, nullptr);
+        if (dpool_) vkDestroyDescriptorPool(device_, dpool_, nullptr);
+        if (signal_sem_) vkDestroySemaphore(device_, signal_sem_, nullptr);
+        if (done_fence_) vkDestroyFence(device_, done_fence_, nullptr);
+        if (cmd_pool_) vkDestroyCommandPool(device_, cmd_pool_, nullptr);
+        if (staging_map_) vkUnmapMemory(device_, staging_mem_);
+        if (staging_buf_) vkDestroyBuffer(device_, staging_buf_, nullptr);
+        if (staging_mem_) vkFreeMemory(device_, staging_mem_, nullptr);
+        if (y_view_) vkDestroyImageView(device_, y_view_, nullptr);
+        if (y_image_) vkDestroyImage(device_, y_image_, nullptr);
+        if (y_memory_) vkFreeMemory(device_, y_memory_, nullptr);
+        if (uv_view_) vkDestroyImageView(device_, uv_view_, nullptr);
+        if (uv_image_) vkDestroyImage(device_, uv_image_, nullptr);
+        if (uv_memory_) vkFreeMemory(device_, uv_memory_, nullptr);
+        if (sampler_) vkDestroySampler(device_, sampler_, nullptr);
+        if (pipeline_) vkDestroyPipeline(device_, pipeline_, nullptr);
+        if (pipeline_layout_) vkDestroyPipelineLayout(device_, pipeline_layout_, nullptr);
+        if (dsl_) vkDestroyDescriptorSetLayout(device_, dsl_, nullptr);
+        if (shader_) vkDestroyShaderModule(device_, shader_, nullptr);
     }
 }
 
-auto YuvToRgba::create(VkInstance       instance,
-                       VkPhysicalDevice phys,
-                       VkDevice         device,
-                       uint32_t         queue_family,
-                       VkQueue          queue,
-                       uint32_t         max_w,
-                       uint32_t         max_h)
+auto YuvToRgba::create(VkInstance instance, VkPhysicalDevice phys, VkDevice device,
+                       uint32_t queue_family, VkQueue queue, uint32_t max_w, uint32_t max_h)
     -> rstd::Result<std::unique_ptr<YuvToRgba>, Error> {
     if (max_w == 0 || max_h == 0) {
         return rstd::Err(Error { "YuvToRgba: max_w/max_h must be non-zero" });
@@ -275,15 +348,15 @@ auto YuvToRgba::create(VkInstance       instance,
     if (max_h & 1u) ++max_h;
     auto  self = std::unique_ptr<YuvToRgba>(new YuvToRgba());
     Error err;
-    if (!self->init(instance, phys, device, queue_family, queue, max_w, max_h, &err)) {
+    if (! self->init(instance, phys, device, queue_family, queue, max_w, max_h, &err)) {
         return rstd::Err(std::move(err));
     }
     return rstd::Ok(std::move(self));
 }
 
 bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device,
-                     uint32_t queue_family, VkQueue queue,
-                     uint32_t max_w, uint32_t max_h, Error* err) {
+                     uint32_t queue_family, VkQueue queue, uint32_t max_w, uint32_t max_h,
+                     Error* err) {
     instance_     = instance;
     phys_         = phys;
     device_       = device;
@@ -292,17 +365,15 @@ bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device
     max_w_        = max_w;
     max_h_        = max_h;
 
-    vkGetSemaphoreFdKHR_ =
-        reinterpret_cast<PFN_vkGetSemaphoreFdKHR>(
-            vkGetDeviceProcAddr(device_, "vkGetSemaphoreFdKHR"));
-    if (!vkGetSemaphoreFdKHR_) {
+    vkGetSemaphoreFdKHR_ = reinterpret_cast<PFN_vkGetSemaphoreFdKHR>(
+        vkGetDeviceProcAddr(device_, "vkGetSemaphoreFdKHR"));
+    if (! vkGetSemaphoreFdKHR_) {
         return fail(err, "vkGetSemaphoreFdKHR missing");
     }
     /* Optional: only the convert_drm_prime path needs it; null-check at
      * call site so devices without the extension still run sw / vulkan. */
-    vkGetMemoryFdPropertiesKHR_ =
-        reinterpret_cast<PFN_vkGetMemoryFdPropertiesKHR>(
-            vkGetDeviceProcAddr(device_, "vkGetMemoryFdPropertiesKHR"));
+    vkGetMemoryFdPropertiesKHR_ = reinterpret_cast<PFN_vkGetMemoryFdPropertiesKHR>(
+        vkGetDeviceProcAddr(device_, "vkGetMemoryFdPropertiesKHR"));
 
     // ----- Sampler (linear, clamp-to-edge) -----
     {
@@ -320,23 +391,35 @@ bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device
     }
 
     // ----- Y image (R8_UNORM, max_w × max_h) -----
-    if (!create_image_2d(device_, phys_, VK_FORMAT_R8_UNORM, max_w_, max_h_,
-                         VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                         &y_image_, &y_memory_, err)) return false;
-    if (!create_image_view(device_, y_image_, VK_FORMAT_R8_UNORM, &y_view_, err))
+    if (! create_image_2d(device_,
+                          phys_,
+                          VK_FORMAT_R8_UNORM,
+                          max_w_,
+                          max_h_,
+                          VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                          &y_image_,
+                          &y_memory_,
+                          err))
         return false;
+    if (! create_image_view(device_, y_image_, VK_FORMAT_R8_UNORM, &y_view_, err)) return false;
 
     // ----- UV image (R8G8_UNORM, half resolution) -----
-    if (!create_image_2d(device_, phys_, VK_FORMAT_R8G8_UNORM, max_w_ / 2, max_h_ / 2,
-                         VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                         &uv_image_, &uv_memory_, err)) return false;
-    if (!create_image_view(device_, uv_image_, VK_FORMAT_R8G8_UNORM, &uv_view_, err))
+    if (! create_image_2d(device_,
+                          phys_,
+                          VK_FORMAT_R8G8_UNORM,
+                          max_w_ / 2,
+                          max_h_ / 2,
+                          VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                          &uv_image_,
+                          &uv_memory_,
+                          err))
         return false;
+    if (! create_image_view(device_, uv_image_, VK_FORMAT_R8G8_UNORM, &uv_view_, err)) return false;
 
     // ----- Staging buffer (HOST_VISIBLE|COHERENT, NV12-sized) -----
     {
         const VkDeviceSize nv12_size = VkDeviceSize(max_w_) * max_h_ * 3 / 2;
-        staging_size_ = nv12_size;
+        staging_size_                = nv12_size;
         VkBufferCreateInfo bci {};
         bci.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
         bci.size        = nv12_size;
@@ -346,9 +429,10 @@ bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device
             return fail(err, std::string("vkCreateBuffer(stage): ") + vk_result_str(r));
         VkMemoryRequirements mr {};
         vkGetBufferMemoryRequirements(device_, staging_buf_, &mr);
-        uint32_t type = pick_memory_type(phys_, mr.memoryTypeBits,
+        uint32_t type = pick_memory_type(phys_,
+                                         mr.memoryTypeBits,
                                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                         VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+                                             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         if (type == UINT32_MAX)
             return fail(err, "no HOST_VISIBLE|COHERENT memory type for staging");
         VkMemoryAllocateInfo mai {};
@@ -357,7 +441,8 @@ bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device
         mai.memoryTypeIndex = type;
         if (VkResult r = vkAllocateMemory(device_, &mai, nullptr, &staging_mem_); r != VK_SUCCESS)
             return fail(err, std::string("vkAllocateMemory(stage): ") + vk_result_str(r));
-        if (VkResult r = vkBindBufferMemory(device_, staging_buf_, staging_mem_, 0); r != VK_SUCCESS)
+        if (VkResult r = vkBindBufferMemory(device_, staging_buf_, staging_mem_, 0);
+            r != VK_SUCCESS)
             return fail(err, std::string("vkBindBufferMemory(stage): ") + vk_result_str(r));
         if (VkResult r = vkMapMemory(device_, staging_mem_, 0, VK_WHOLE_SIZE, 0, &staging_map_);
             r != VK_SUCCESS)
@@ -374,7 +459,8 @@ bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device
             return fail(err, std::string("vkCreateShaderModule: ") + vk_result_str(r));
     }
 
-    // ----- Descriptor set layout (binding 0/1 = sampled, binding 2 = storage) -----
+    // ----- Descriptor set layout (binding 0/1 = sampled, binding 2 = storage)
+    // -----
     {
         VkDescriptorSetLayoutBinding bs[3] {};
         bs[0].binding         = 0;
@@ -426,8 +512,8 @@ bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device
         cpi.sType  = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
         cpi.stage  = ssi;
         cpi.layout = pipeline_layout_;
-        if (VkResult r = vkCreateComputePipelines(device_, VK_NULL_HANDLE, 1, &cpi,
-                                                   nullptr, &pipeline_);
+        if (VkResult r =
+                vkCreateComputePipelines(device_, VK_NULL_HANDLE, 1, &cpi, nullptr, &pipeline_);
             r != VK_SUCCESS)
             return fail(err, std::string("vkCreateComputePipelines: ") + vk_result_str(r));
     }
@@ -444,8 +530,7 @@ bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device
         dpi.maxSets       = 1;
         dpi.poolSizeCount = 2;
         dpi.pPoolSizes    = ps;
-        if (VkResult r = vkCreateDescriptorPool(device_, &dpi, nullptr, &dpool_);
-            r != VK_SUCCESS)
+        if (VkResult r = vkCreateDescriptorPool(device_, &dpi, nullptr, &dpool_); r != VK_SUCCESS)
             return fail(err, std::string("vkCreateDescriptorPool: ") + vk_result_str(r));
         VkDescriptorSetAllocateInfo dsai {};
         dsai.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -483,8 +568,7 @@ bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device
         VkSemaphoreCreateInfo sci {};
         sci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
         sci.pNext = &es;
-        if (VkResult r = vkCreateSemaphore(device_, &sci, nullptr, &signal_sem_);
-            r != VK_SUCCESS)
+        if (VkResult r = vkCreateSemaphore(device_, &sci, nullptr, &signal_sem_); r != VK_SUCCESS)
             return fail(err, std::string("vkCreateSemaphore(signal): ") + vk_result_str(r));
     }
 
@@ -517,15 +601,17 @@ bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device
     return true;
 }
 
-int YuvToRgba::convert_nv12_(VkImage             dst,
-                            uint32_t            dst_w,
-                            uint32_t            dst_h,
-                            const uint8_t*      nv12,
-                            size_t              nv12_size,
-                            const ColorMatrix&  cm,
-                            Error* err) {
-    if (dst == VK_NULL_HANDLE) { fail(err, "convert_nv12: dst VkImage null"); return -1; }
-    if (dst_w == 0 || dst_h == 0) { fail(err, "convert_nv12: dst_w/h zero"); return -1; }
+int YuvToRgba::convert_nv12_(VkImage dst, uint32_t dst_w, uint32_t dst_h, const uint8_t* nv12,
+                             size_t nv12_size, const ColorMatrix& cm, ConvertTarget target,
+                             Error* err) {
+    if (dst == VK_NULL_HANDLE) {
+        fail(err, "convert_nv12: dst VkImage null");
+        return -1;
+    }
+    if (dst_w == 0 || dst_h == 0) {
+        fail(err, "convert_nv12: dst_w/h zero");
+        return -1;
+    }
     if ((dst_w & 1u) || (dst_h & 1u)) {
         fail(err, "convert_nv12: dst dims must be even (NV12 chroma)");
         return -1;
@@ -542,7 +628,10 @@ int YuvToRgba::convert_nv12_(VkImage             dst,
 
     /* Wait for prior submit — protects cmd_/staging_/dset_ from races. */
     if (fence_pending_) {
-        if (VkResult r = vkWaitForFences(device_, 1, &done_fence_, VK_TRUE,
+        if (VkResult r = vkWaitForFences(device_,
+                                         1,
+                                         &done_fence_,
+                                         VK_TRUE,
                                          /* 1s */ 1'000'000'000ull);
             r != VK_SUCCESS) {
             fail(err, std::string("vkWaitForFences: ") + vk_result_str(r));
@@ -568,11 +657,12 @@ int YuvToRgba::convert_nv12_(VkImage             dst,
         vci.image            = dst;
         vci.viewType         = VK_IMAGE_VIEW_TYPE_2D;
         vci.format           = VK_FORMAT_R8G8B8A8_UNORM;
-        vci.components       = { VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
-                                 VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY };
+        vci.components       = { VK_COMPONENT_SWIZZLE_IDENTITY,
+                                 VK_COMPONENT_SWIZZLE_IDENTITY,
+                                 VK_COMPONENT_SWIZZLE_IDENTITY,
+                                 VK_COMPONENT_SWIZZLE_IDENTITY };
         vci.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-        if (VkResult r = vkCreateImageView(device_, &vci, nullptr, &dst_view);
-            r != VK_SUCCESS) {
+        if (VkResult r = vkCreateImageView(device_, &vci, nullptr, &dst_view); r != VK_SUCCESS) {
             fail(err, std::string("vkCreateImageView(dst): ") + vk_result_str(r));
             return -1;
         }
@@ -609,78 +699,90 @@ int YuvToRgba::convert_nv12_(VkImage             dst,
     }
 
     /* Y plane: UNDEFINED → TRANSFER_DST. */
-    barrier_image(cmd_, y_image_, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
-                  VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                  VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    barrier_image(cmd_,
+                  y_image_,
+                  0,
+                  VK_ACCESS_TRANSFER_WRITE_BIT,
+                  VK_IMAGE_LAYOUT_UNDEFINED,
+                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                  VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                  VK_PIPELINE_STAGE_TRANSFER_BIT);
     /* UV plane: UNDEFINED → TRANSFER_DST. */
-    barrier_image(cmd_, uv_image_, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
-                  VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                  VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    barrier_image(cmd_,
+                  uv_image_,
+                  0,
+                  VK_ACCESS_TRANSFER_WRITE_BIT,
+                  VK_IMAGE_LAYOUT_UNDEFINED,
+                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                  VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                  VK_PIPELINE_STAGE_TRANSFER_BIT);
 
     /* Copy Y from staging[0..W*H]. */
     {
         VkBufferImageCopy bic {};
-        bic.bufferOffset                    = 0;
-        bic.bufferRowLength                 = 0;
-        bic.bufferImageHeight               = 0;
-        bic.imageSubresource.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
-        bic.imageSubresource.layerCount     = 1;
-        bic.imageOffset                     = { 0, 0, 0 };
-        bic.imageExtent                     = { dst_w, dst_h, 1 };
-        vkCmdCopyBufferToImage(cmd_, staging_buf_, y_image_,
-                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bic);
+        bic.bufferOffset                = 0;
+        bic.bufferRowLength             = 0;
+        bic.bufferImageHeight           = 0;
+        bic.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        bic.imageSubresource.layerCount = 1;
+        bic.imageOffset                 = { 0, 0, 0 };
+        bic.imageExtent                 = { dst_w, dst_h, 1 };
+        vkCmdCopyBufferToImage(
+            cmd_, staging_buf_, y_image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bic);
     }
     /* Copy UV from staging[W*H..W*H + W*H/2]. */
     {
         VkBufferImageCopy bic {};
-        bic.bufferOffset                    = VkDeviceSize(dst_w) * dst_h;
-        bic.bufferRowLength                 = 0;
-        bic.bufferImageHeight               = 0;
-        bic.imageSubresource.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
-        bic.imageSubresource.layerCount     = 1;
-        bic.imageOffset                     = { 0, 0, 0 };
-        bic.imageExtent                     = { dst_w / 2, dst_h / 2, 1 };
-        vkCmdCopyBufferToImage(cmd_, staging_buf_, uv_image_,
-                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bic);
+        bic.bufferOffset                = VkDeviceSize(dst_w) * dst_h;
+        bic.bufferRowLength             = 0;
+        bic.bufferImageHeight           = 0;
+        bic.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        bic.imageSubresource.layerCount = 1;
+        bic.imageOffset                 = { 0, 0, 0 };
+        bic.imageExtent                 = { dst_w / 2, dst_h / 2, 1 };
+        vkCmdCopyBufferToImage(
+            cmd_, staging_buf_, uv_image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bic);
     }
 
     /* Y/UV: TRANSFER_DST → SHADER_READ_ONLY. */
-    barrier_image(cmd_, y_image_, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
-                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                  VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
-    barrier_image(cmd_, uv_image_, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
-                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                  VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+    barrier_image(cmd_,
+                  y_image_,
+                  VK_ACCESS_TRANSFER_WRITE_BIT,
+                  VK_ACCESS_SHADER_READ_BIT,
+                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                  VK_PIPELINE_STAGE_TRANSFER_BIT,
+                  VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+    barrier_image(cmd_,
+                  uv_image_,
+                  VK_ACCESS_TRANSFER_WRITE_BIT,
+                  VK_ACCESS_SHADER_READ_BIT,
+                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                  VK_PIPELINE_STAGE_TRANSFER_BIT,
+                  VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 
-    /* dst: UNDEFINED → GENERAL (storage write). */
-    barrier_image(cmd_, dst, 0, VK_ACCESS_SHADER_WRITE_BIT,
-                  VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
-                  VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+    barrier_dst_to_storage(cmd_, dst, target);
 
     /* Bind + dispatch. */
     vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_);
-    vkCmdBindDescriptorSets(cmd_, VK_PIPELINE_BIND_POINT_COMPUTE,
-                            pipeline_layout_, 0, 1, &dset_, 0, nullptr);
+    vkCmdBindDescriptorSets(
+        cmd_, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_layout_, 0, 1, &dset_, 0, nullptr);
     ShaderPushConstants pc {};
-    pc.dst_w = dst_w; pc.dst_h = dst_h;
+    pc.dst_w = dst_w;
+    pc.dst_h = dst_h;
     for (int i = 0; i < 3; ++i) {
-        pc.m_r[i]   = cm.m_r[i];
-        pc.m_g[i]   = cm.m_g[i];
-        pc.m_b[i]   = cm.m_b[i];
+        pc.m_r[i]    = cm.m_r[i];
+        pc.m_g[i]    = cm.m_g[i];
+        pc.m_b[i]    = cm.m_b[i];
         pc.offset[i] = cm.offset[i];
     }
-    vkCmdPushConstants(cmd_, pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT,
-                       0, sizeof(pc), &pc);
+    vkCmdPushConstants(cmd_, pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
     const uint32_t gx = (dst_w + 7) / 8;
     const uint32_t gy = (dst_h + 7) / 8;
     vkCmdDispatch(cmd_, gx, gy, 1);
 
-    /* dst: GENERAL → GENERAL (release to FOREIGN, matches bridge contract). */
-    barrier_image(cmd_, dst,
-                  VK_ACCESS_SHADER_WRITE_BIT, 0,
-                  VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
-                  VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-                  queue_family_, VK_QUEUE_FAMILY_FOREIGN_EXT);
+    barrier_dst_from_storage(cmd_, dst, target, queue_family_);
 
     if (VkResult r = vkEndCommandBuffer(cmd_); r != VK_SUCCESS) {
         fail(err, std::string("vkEndCommandBuffer: ") + vk_result_str(r));
@@ -689,11 +791,14 @@ int YuvToRgba::convert_nv12_(VkImage             dst,
     }
 
     VkSubmitInfo si {};
-    si.sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    si.commandBufferCount   = 1;
-    si.pCommandBuffers      = &cmd_;
-    si.signalSemaphoreCount = 1;
-    si.pSignalSemaphores    = &signal_sem_;
+    si.sType                   = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    si.commandBufferCount      = 1;
+    si.pCommandBuffers         = &cmd_;
+    VkSemaphore signal_sems[1] = { signal_sem_ };
+    if (target_exports_sync_fd(target)) {
+        si.signalSemaphoreCount = 1;
+        si.pSignalSemaphores    = signal_sems;
+    }
     if (VkResult r = vkQueueSubmit(queue_, 1, &si, done_fence_); r != VK_SUCCESS) {
         fail(err, std::string("vkQueueSubmit: ") + vk_result_str(r));
         vkDestroyImageView(device_, dst_view, nullptr);
@@ -701,16 +806,17 @@ int YuvToRgba::convert_nv12_(VkImage             dst,
     }
     fence_pending_ = true;
 
-    /* Export sync_fd. */
-    VkSemaphoreGetFdInfoKHR sgfi {};
-    sgfi.sType      = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR;
-    sgfi.semaphore  = signal_sem_;
-    sgfi.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
     int sync_fd = -1;
-    if (VkResult r = vkGetSemaphoreFdKHR_(device_, &sgfi, &sync_fd); r != VK_SUCCESS) {
-        fail(err, std::string("vkGetSemaphoreFdKHR: ") + vk_result_str(r));
-        vkDestroyImageView(device_, dst_view, nullptr);
-        return -1;
+    if (target_exports_sync_fd(target)) {
+        VkSemaphoreGetFdInfoKHR sgfi {};
+        sgfi.sType      = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR;
+        sgfi.semaphore  = signal_sem_;
+        sgfi.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
+        if (VkResult r = vkGetSemaphoreFdKHR_(device_, &sgfi, &sync_fd); r != VK_SUCCESS) {
+            fail(err, std::string("vkGetSemaphoreFdKHR: ") + vk_result_str(r));
+            vkDestroyImageView(device_, dst_view, nullptr);
+            return -1;
+        }
     }
 
     /* Schedule dst_view destruction at next fence wait. We avoid a
@@ -732,17 +838,13 @@ int YuvToRgba::convert_nv12_(VkImage             dst,
     return sync_fd;
 }
 
-// VUID-VkImageCreateInfo-pNext-06811, -VkVideoBeginCodingInfoKHR-slotIndex-07245,
-// -VkImageViewCreateInfo-image-08333 still fire on NVIDIA — those originate
-// in libavutil/vulkan_video and libavcodec/vulkan_decode and are not fixable
-// from here. Switch hwaccel away from Vulkan or upgrade FFmpeg to silence.
-int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im,
-                                   VkImage             dst,
-                                   uint32_t            dst_w,
-                                   uint32_t            dst_h,
-                                   const ColorMatrix&  cm,
-                                   Error* err) {
-    if (dst == VK_NULL_HANDLE) { fail(err, "convert_av_vk_frame: dst null"); return -1; }
+int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im, VkImage dst, uint32_t dst_w,
+                                    uint32_t dst_h, const ColorMatrix& cm, ConvertTarget target,
+                                    Error* err) {
+    if (dst == VK_NULL_HANDLE) {
+        fail(err, "convert_av_vk_frame: dst null");
+        return -1;
+    }
     if (im.y_image == VK_NULL_HANDLE) {
         fail(err, "convert_av_vk_frame: AVVkFrame y_image NULL");
         return -1;
@@ -757,8 +859,7 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im,
      *                         DISABLE_MULTIPLANE is silently ignored for
      *                         the DPB by the spec).
      * In single-image mode we sample plane 0 / plane 1 via aspect masks. */
-    const bool single_image = (im.uv_image == VK_NULL_HANDLE)
-                           || (im.uv_image == im.y_image);
+    const bool single_image = (im.uv_image == VK_NULL_HANDLE) || (im.uv_image == im.y_image);
     if ((dst_w & 1u) || (dst_h & 1u)) {
         fail(err, "convert_av_vk_frame: dst dims must be even");
         return -1;
@@ -772,8 +873,7 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im,
      * as convert_nv12; the in-flight last_*_view_ destruction below also
      * relies on this. */
     if (fence_pending_) {
-        if (VkResult r = vkWaitForFences(device_, 1, &done_fence_, VK_TRUE,
-                                         1'000'000'000ull);
+        if (VkResult r = vkWaitForFences(device_, 1, &done_fence_, VK_TRUE, 1'000'000'000ull);
             r != VK_SUCCESS) {
             fail(err, std::string("vkWaitForFences: ") + vk_result_str(r));
             return -1;
@@ -792,16 +892,25 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im,
 
     auto cleanup_views = [&]() {
         if (dst_view) vkDestroyImageView(device_, dst_view, nullptr);
-        if (y_view)   vkDestroyImageView(device_, y_view,   nullptr);
-        if (uv_view)  vkDestroyImageView(device_, uv_view,  nullptr);
+        if (y_view) vkDestroyImageView(device_, y_view, nullptr);
+        if (uv_view) vkDestroyImageView(device_, uv_view, nullptr);
     };
 
     {
+        VkImageViewUsageCreateInfo sampled_usage {};
+        sampled_usage.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO;
+        sampled_usage.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
+        VkImageViewUsageCreateInfo storage_usage {};
+        storage_usage.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO;
+        storage_usage.usage = VK_IMAGE_USAGE_STORAGE_BIT;
         VkImageViewCreateInfo vci {};
-        vci.sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        vci.viewType         = VK_IMAGE_VIEW_TYPE_2D;
-        vci.components       = { VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
-                                 VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY };
+        vci.sType      = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        vci.pNext      = &sampled_usage;
+        vci.viewType   = VK_IMAGE_VIEW_TYPE_2D;
+        vci.components = { VK_COMPONENT_SWIZZLE_IDENTITY,
+                           VK_COMPONENT_SWIZZLE_IDENTITY,
+                           VK_COMPONENT_SWIZZLE_IDENTITY,
+                           VK_COMPONENT_SWIZZLE_IDENTITY };
 
         /* Per-plane formats:
          *   - disjoint 8-bit:  R8_UNORM    / R8G8_UNORM
@@ -815,52 +924,53 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im,
             y_fmt  = VK_FORMAT_R8_UNORM;
             uv_fmt = VK_FORMAT_R8G8_UNORM;
         } else {
-            y_fmt  = (im.bit_depth >= 16)
-                ? VK_FORMAT_R16_UNORM   : VK_FORMAT_R8_UNORM;
-            uv_fmt = (im.bit_depth >= 16)
-                ? VK_FORMAT_R16G16_UNORM : VK_FORMAT_R8G8_UNORM;
+            y_fmt  = (im.bit_depth >= 16) ? VK_FORMAT_R16_UNORM : VK_FORMAT_R8_UNORM;
+            uv_fmt = (im.bit_depth >= 16) ? VK_FORMAT_R16G16_UNORM : VK_FORMAT_R8G8_UNORM;
         }
 
         const VkImageAspectFlags y_aspect  = single_image
-            ? VkImageAspectFlags(VK_IMAGE_ASPECT_PLANE_0_BIT)
-            : VkImageAspectFlags(VK_IMAGE_ASPECT_COLOR_BIT);
+                                                 ? VkImageAspectFlags(VK_IMAGE_ASPECT_PLANE_0_BIT)
+                                                 : VkImageAspectFlags(VK_IMAGE_ASPECT_COLOR_BIT);
         const VkImageAspectFlags uv_aspect = single_image
-            ? VkImageAspectFlags(VK_IMAGE_ASPECT_PLANE_1_BIT)
-            : VkImageAspectFlags(VK_IMAGE_ASPECT_COLOR_BIT);
+                                                 ? VkImageAspectFlags(VK_IMAGE_ASPECT_PLANE_1_BIT)
+                                                 : VkImageAspectFlags(VK_IMAGE_ASPECT_COLOR_BIT);
 
-        vci.image  = im.y_image;
-        vci.format = y_fmt;
+        vci.image            = im.y_image;
+        vci.format           = y_fmt;
         vci.subresourceRange = { y_aspect, 0, 1, 0, 1 };
-        if (VkResult r = vkCreateImageView(device_, &vci, nullptr, &y_view);
-            r != VK_SUCCESS) {
+        if (VkResult r = vkCreateImageView(device_, &vci, nullptr, &y_view); r != VK_SUCCESS) {
             fail(err, std::string("vkCreateImageView(Y, AVVkFrame): ") + vk_result_str(r));
-            cleanup_views(); return -1;
+            cleanup_views();
+            return -1;
         }
-        vci.image  = single_image ? im.y_image : im.uv_image;
-        vci.format = uv_fmt;
+        vci.image            = single_image ? im.y_image : im.uv_image;
+        vci.format           = uv_fmt;
         vci.subresourceRange = { uv_aspect, 0, 1, 0, 1 };
-        if (VkResult r = vkCreateImageView(device_, &vci, nullptr, &uv_view);
-            r != VK_SUCCESS) {
+        if (VkResult r = vkCreateImageView(device_, &vci, nullptr, &uv_view); r != VK_SUCCESS) {
             fail(err, std::string("vkCreateImageView(UV, AVVkFrame): ") + vk_result_str(r));
-            cleanup_views(); return -1;
+            cleanup_views();
+            return -1;
         }
-        vci.image  = dst;
-        vci.format = VK_FORMAT_R8G8B8A8_UNORM;
+        vci.image            = dst;
+        vci.pNext            = &storage_usage;
+        vci.format           = VK_FORMAT_R8G8B8A8_UNORM;
         vci.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-        if (VkResult r = vkCreateImageView(device_, &vci, nullptr, &dst_view);
-            r != VK_SUCCESS) {
+        if (VkResult r = vkCreateImageView(device_, &vci, nullptr, &dst_view); r != VK_SUCCESS) {
             fail(err, std::string("vkCreateImageView(dst, AVVkFrame): ") + vk_result_str(r));
-            cleanup_views(); return -1;
+            cleanup_views();
+            return -1;
         }
     }
 
     /* Re-bind all three descriptor slots: Y/UV now alias FFmpeg's
      * images, dst is a fresh slot. */
     {
-        VkDescriptorImageInfo dii_y  { sampler_, y_view,   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-        VkDescriptorImageInfo dii_uv { sampler_, uv_view,  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-        VkDescriptorImageInfo dii_d  { VK_NULL_HANDLE, dst_view, VK_IMAGE_LAYOUT_GENERAL };
-        VkWriteDescriptorSet ws[3] {};
+        VkDescriptorImageInfo dii_y { sampler_, y_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+        VkDescriptorImageInfo dii_uv { sampler_,
+                                       uv_view,
+                                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+        VkDescriptorImageInfo dii_d { VK_NULL_HANDLE, dst_view, VK_IMAGE_LAYOUT_GENERAL };
+        VkWriteDescriptorSet  ws[3] {};
         for (int i = 0; i < 3; ++i) {
             ws[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             ws[i].dstSet          = dset_;
@@ -878,14 +988,16 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im,
 
     if (VkResult r = vkResetCommandBuffer(cmd_, 0); r != VK_SUCCESS) {
         fail(err, std::string("vkResetCommandBuffer: ") + vk_result_str(r));
-        cleanup_views(); return -1;
+        cleanup_views();
+        return -1;
     }
     VkCommandBufferBeginInfo bi {};
     bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     if (VkResult r = vkBeginCommandBuffer(cmd_, &bi); r != VK_SUCCESS) {
         fail(err, std::string("vkBeginCommandBuffer: ") + vk_result_str(r));
-        cleanup_views(); return -1;
+        cleanup_views();
+        return -1;
     }
 
     /* Acquire Y/UV from FFmpeg's image. FFmpeg's vulkan hwframes pool
@@ -901,7 +1013,7 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im,
      * emits ONE barrier on the shared VkImage (covers all planes). */
     const uint32_t y_avvk_qf  = *im.y_qf_in_out;
     const uint32_t uv_avvk_qf = *im.uv_qf_in_out;
-    auto qfot_pair = [this](uint32_t avvk_qf) -> std::pair<uint32_t, uint32_t> {
+    auto           qfot_pair  = [this](uint32_t avvk_qf) -> std::pair<uint32_t, uint32_t> {
         if (avvk_qf == VK_QUEUE_FAMILY_IGNORED || avvk_qf == queue_family_) {
             return { VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED };
         }
@@ -915,37 +1027,44 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im,
     // srcAccess=0: the semaphore release covers memory visibility.
     auto [y_acq_src, y_acq_dst]   = qfot_pair(y_avvk_qf);
     auto [uv_acq_src, uv_acq_dst] = qfot_pair(uv_avvk_qf);
-    barrier_image2(cmd_, im.y_image,
-                   VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0,
-                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                   *im.y_layout_in_out, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                   y_acq_src, y_acq_dst);
-    if (!single_image) {
-        barrier_image2(cmd_, im.uv_image,
-                       VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0,
-                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                       *im.uv_layout_in_out, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                       uv_acq_src, uv_acq_dst);
+    barrier_image2(cmd_,
+                   im.y_image,
+                   VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                   0,
+                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                   VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                   *im.y_layout_in_out,
+                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                   y_acq_src,
+                   y_acq_dst);
+    if (! single_image) {
+        barrier_image2(cmd_,
+                       im.uv_image,
+                       VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                       0,
+                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                       VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                       *im.uv_layout_in_out,
+                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                       uv_acq_src,
+                       uv_acq_dst);
     }
 
-    /* dst: UNDEFINED → GENERAL. */
-    barrier_image(cmd_, dst, 0, VK_ACCESS_SHADER_WRITE_BIT,
-                  VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
-                  VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+    barrier_dst_to_storage(cmd_, dst, target);
 
     vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_);
-    vkCmdBindDescriptorSets(cmd_, VK_PIPELINE_BIND_POINT_COMPUTE,
-                            pipeline_layout_, 0, 1, &dset_, 0, nullptr);
+    vkCmdBindDescriptorSets(
+        cmd_, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_layout_, 0, 1, &dset_, 0, nullptr);
     ShaderPushConstants pc {};
-    pc.dst_w = dst_w; pc.dst_h = dst_h;
+    pc.dst_w = dst_w;
+    pc.dst_h = dst_h;
     for (int i = 0; i < 3; ++i) {
-        pc.m_r[i]   = cm.m_r[i];
-        pc.m_g[i]   = cm.m_g[i];
-        pc.m_b[i]   = cm.m_b[i];
+        pc.m_r[i]    = cm.m_r[i];
+        pc.m_g[i]    = cm.m_g[i];
+        pc.m_b[i]    = cm.m_b[i];
         pc.offset[i] = cm.offset[i];
     }
-    vkCmdPushConstants(cmd_, pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT,
-                       0, sizeof(pc), &pc);
+    vkCmdPushConstants(cmd_, pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
     const uint32_t gx = (dst_w + 7) / 8;
     const uint32_t gy = (dst_h + 7) / 8;
     vkCmdDispatch(cmd_, gx, gy, 1);
@@ -954,39 +1073,46 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im,
      * expects that), and release dst to FOREIGN for the bridge consumer.
      * Same QFOT rules as ACQUIRE: when AVVkFrame says IGNORED (CONCURRENT
      * pool) we transition layout only and keep both indices IGNORED. */
-    auto [y_rel_src, y_rel_dst]   = (y_avvk_qf == VK_QUEUE_FAMILY_IGNORED
-                                     || y_avvk_qf == queue_family_)
-        ? std::pair<uint32_t, uint32_t>{ VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED }
-        : std::pair<uint32_t, uint32_t>{ queue_family_, y_avvk_qf };
-    auto [uv_rel_src, uv_rel_dst] = (uv_avvk_qf == VK_QUEUE_FAMILY_IGNORED
-                                     || uv_avvk_qf == queue_family_)
-        ? std::pair<uint32_t, uint32_t>{ VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED }
-        : std::pair<uint32_t, uint32_t>{ queue_family_, uv_avvk_qf };
+    auto [y_rel_src, y_rel_dst] =
+        (y_avvk_qf == VK_QUEUE_FAMILY_IGNORED || y_avvk_qf == queue_family_)
+            ? std::pair<uint32_t, uint32_t> { VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED }
+            : std::pair<uint32_t, uint32_t> { queue_family_, y_avvk_qf };
+    auto [uv_rel_src, uv_rel_dst] =
+        (uv_avvk_qf == VK_QUEUE_FAMILY_IGNORED || uv_avvk_qf == queue_family_)
+            ? std::pair<uint32_t, uint32_t> { VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED }
+            : std::pair<uint32_t, uint32_t> { queue_family_, uv_avvk_qf };
     // dst side: VIDEO_DECODE on this queue would be meaningless. The
     // semaphore signal happens after all our cmds (sync1 vkQueueSubmit
     // signals at ALL_COMMANDS implicitly), so dstStage=ALL_COMMANDS,
     // dstAccess=0 just sequences the layout transition before signal.
-    barrier_image2(cmd_, im.y_image,
-                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                   VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0,
-                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
-                   y_rel_src, y_rel_dst);
-    if (!single_image) {
-        barrier_image2(cmd_, im.uv_image,
-                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                       VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0,
-                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
-                       uv_rel_src, uv_rel_dst);
+    barrier_image2(cmd_,
+                   im.y_image,
+                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                   VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                   VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                   0,
+                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                   VK_IMAGE_LAYOUT_GENERAL,
+                   y_rel_src,
+                   y_rel_dst);
+    if (! single_image) {
+        barrier_image2(cmd_,
+                       im.uv_image,
+                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                       VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                       VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                       0,
+                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                       VK_IMAGE_LAYOUT_GENERAL,
+                       uv_rel_src,
+                       uv_rel_dst);
     }
-    barrier_image(cmd_, dst,
-                  VK_ACCESS_SHADER_WRITE_BIT, 0,
-                  VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
-                  VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-                  queue_family_, VK_QUEUE_FAMILY_FOREIGN_EXT);
+    barrier_dst_from_storage(cmd_, dst, target, queue_family_);
 
     if (VkResult r = vkEndCommandBuffer(cmd_); r != VK_SUCCESS) {
         fail(err, std::string("vkEndCommandBuffer: ") + vk_result_str(r));
-        cleanup_views(); return -1;
+        cleanup_views();
+        return -1;
     }
 
     /* Wait on AVVkFrame's timeline semaphores at their current values,
@@ -995,28 +1121,34 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im,
      * timeline; main.cpp aliases y/uv to the same sem/value pointer
      * so we deduplicate here to avoid waiting on the same semaphore
      * twice (Vulkan UB). */
-    const bool sem_shared       = (im.y_sem == im.uv_sem);
-    const uint64_t y_wait_val   = *im.y_sem_val_in_out;
-    const uint64_t uv_wait_val  = *im.uv_sem_val_in_out;
-    const uint64_t y_signal_val  = y_wait_val  + 1;
+    const bool     sem_shared    = (im.y_sem == im.uv_sem);
+    const uint64_t y_wait_val    = *im.y_sem_val_in_out;
+    const uint64_t uv_wait_val   = *im.uv_sem_val_in_out;
+    const uint64_t y_signal_val  = y_wait_val + 1;
     const uint64_t uv_signal_val = uv_wait_val + 1;
 
-    VkSemaphore wait_sems[2]  = { im.y_sem, im.uv_sem };
-    uint64_t    wait_vals[2]  = { y_wait_val, uv_wait_val };
+    VkSemaphore          wait_sems[2]   = { im.y_sem, im.uv_sem };
+    uint64_t             wait_vals[2]   = { y_wait_val, uv_wait_val };
     VkPipelineStageFlags wait_stages[2] = {
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
     };
     const uint32_t wait_count = sem_shared ? 1u : 2u;
 
-    /* Signal: timeline(s) + binary (binary value is ignored; we set 0). */
+    /* Signal FFmpeg timeline semaphore(s). Bridge mode also signals the
+     * binary semaphore that is exported as a sync_fd. */
     VkSemaphore signal_sems[3] = { im.y_sem, im.uv_sem, signal_sem_ };
     uint64_t    signal_vals[3] = { y_signal_val, uv_signal_val, 0 };
-    if (sem_shared) {
-        signal_sems[1] = signal_sem_;
-        signal_vals[1] = 0;
+    uint32_t    signal_count   = sem_shared ? 1u : 2u;
+    if (target_exports_sync_fd(target)) {
+        if (sem_shared) {
+            signal_sems[1] = signal_sem_;
+            signal_vals[1] = 0;
+            signal_count   = 2u;
+        } else {
+            signal_count = 3u;
+        }
     }
-    const uint32_t signal_count = sem_shared ? 2u : 3u;
 
     VkTimelineSemaphoreSubmitInfo tsi {};
     tsi.sType                     = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
@@ -1037,7 +1169,8 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im,
     si.pSignalSemaphores    = signal_sems;
     if (VkResult r = vkQueueSubmit(queue_, 1, &si, done_fence_); r != VK_SUCCESS) {
         fail(err, std::string("vkQueueSubmit: ") + vk_result_str(r));
-        cleanup_views(); return -1;
+        cleanup_views();
+        return -1;
     }
     fence_pending_ = true;
 
@@ -1048,24 +1181,26 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im,
     *im.uv_layout_in_out  = VK_IMAGE_LAYOUT_GENERAL;
     // CONCURRENT pool: both stay IGNORED. Cross-family QFOT: we just
     // released back to the family AVVkFrame had on entry — preserve it.
-    *im.y_qf_in_out       = y_avvk_qf;
-    *im.uv_qf_in_out      = uv_avvk_qf;
+    *im.y_qf_in_out  = y_avvk_qf;
+    *im.uv_qf_in_out = uv_avvk_qf;
 
-    /* Export sync_fd for the bridge. */
-    VkSemaphoreGetFdInfoKHR sgfi {};
-    sgfi.sType      = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR;
-    sgfi.semaphore  = signal_sem_;
-    sgfi.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
     int sync_fd = -1;
-    if (VkResult r = vkGetSemaphoreFdKHR_(device_, &sgfi, &sync_fd); r != VK_SUCCESS) {
-        fail(err, std::string("vkGetSemaphoreFdKHR: ") + vk_result_str(r));
-        cleanup_views(); return -1;
+    if (target_exports_sync_fd(target)) {
+        VkSemaphoreGetFdInfoKHR sgfi {};
+        sgfi.sType      = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR;
+        sgfi.semaphore  = signal_sem_;
+        sgfi.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
+        if (VkResult r = vkGetSemaphoreFdKHR_(device_, &sgfi, &sync_fd); r != VK_SUCCESS) {
+            fail(err, std::string("vkGetSemaphoreFdKHR: ") + vk_result_str(r));
+            cleanup_views();
+            return -1;
+        }
     }
 
     /* Cycle the per-call views into the deferred destroy slots. */
     if (last_dst_view_) vkDestroyImageView(device_, last_dst_view_, nullptr);
-    if (last_y_view_)   vkDestroyImageView(device_, last_y_view_,   nullptr);
-    if (last_uv_view_)  vkDestroyImageView(device_, last_uv_view_,  nullptr);
+    if (last_y_view_) vkDestroyImageView(device_, last_y_view_, nullptr);
+    if (last_uv_view_) vkDestroyImageView(device_, last_uv_view_, nullptr);
     last_dst_view_ = dst_view;
     last_y_view_   = y_view;
     last_uv_view_  = uv_view;
@@ -1079,14 +1214,14 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im,
  * imported VkImage and its memory objects are deferred-destroyed at the
  * *next* convert_drm_prime call (after the wait on done_fence_) so the
  * GPU has fully consumed them. fds are dup'd for Vulkan to own. */
-int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm,
-                                  VkImage             dst,
-                                  uint32_t            dst_w,
-                                  uint32_t            dst_h,
-                                  const ColorMatrix&  cm,
+int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm, VkImage dst, uint32_t dst_w,
+                                  uint32_t dst_h, const ColorMatrix& cm, ConvertTarget target,
                                   Error* err) {
-    if (dst == VK_NULL_HANDLE) { fail(err, "convert_drm_prime: dst null"); return -1; }
-    if (!vkGetMemoryFdPropertiesKHR_) {
+    if (dst == VK_NULL_HANDLE) {
+        fail(err, "convert_drm_prime: dst null");
+        return -1;
+    }
+    if (! vkGetMemoryFdPropertiesKHR_) {
         fail(err, "convert_drm_prime: vkGetMemoryFdPropertiesKHR missing");
         return -1;
     }
@@ -1103,10 +1238,10 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm,
         return -1;
     }
 
-    /* Wait for prior submit before we destroy last-cycle imports + reuse cmd_/dset_. */
+    /* Wait for prior submit before we destroy last-cycle imports + reuse
+     * cmd_/dset_. */
     if (fence_pending_) {
-        if (VkResult r = vkWaitForFences(device_, 1, &done_fence_, VK_TRUE,
-                                         1'000'000'000ull);
+        if (VkResult r = vkWaitForFences(device_, 1, &done_fence_, VK_TRUE, 1'000'000'000ull);
             r != VK_SUCCESS) {
             fail(err, std::string("vkWaitForFences: ") + vk_result_str(r));
             return -1;
@@ -1142,7 +1277,7 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm,
         uint64_t pitch;
     };
     FlatPlane flat[2] {};
-    int flat_n = 0;
+    int       flat_n = 0;
     for (uint32_t li = 0; li < drm.layer_count && flat_n < 2; ++li) {
         const auto& la = drm.layers[li];
         for (uint32_t pi = 0; pi < la.plane_count && flat_n < 2; ++pi) {
@@ -1153,8 +1288,7 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm,
         }
     }
     if (flat_n != 2) {
-        fail(err, "convert_drm_prime: expected 2 NV12 planes, got " +
-                  std::to_string(flat_n));
+        fail(err, "convert_drm_prime: expected 2 NV12 planes, got " + std::to_string(flat_n));
         return -1;
     }
 
@@ -1163,19 +1297,19 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm,
     /* Build the multi-plane VkImage with explicit modifier + per-plane
      * layout. DISJOINT lets us bind a separate VkDeviceMemory per plane
      * — required when planes live in different fds. */
-    VkImage         drm_image      = VK_NULL_HANDLE;
-    VkDeviceMemory  plane_mem[2]   = { VK_NULL_HANDLE, VK_NULL_HANDLE };
-    VkImageView     y_view         = VK_NULL_HANDLE;
-    VkImageView     uv_view        = VK_NULL_HANDLE;
-    VkImageView     dst_view       = VK_NULL_HANDLE;
-    int             dup_fds[2]     = { -1, -1 };
-    bool            disjoint       = (flat[0].object_index != flat[1].object_index);
+    VkImage        drm_image    = VK_NULL_HANDLE;
+    VkDeviceMemory plane_mem[2] = { VK_NULL_HANDLE, VK_NULL_HANDLE };
+    VkImageView    y_view       = VK_NULL_HANDLE;
+    VkImageView    uv_view      = VK_NULL_HANDLE;
+    VkImageView    dst_view     = VK_NULL_HANDLE;
+    int            dup_fds[2]   = { -1, -1 };
+    bool           disjoint     = (flat[0].object_index != flat[1].object_index);
 
     auto cleanup_on_fail = [&]() {
-        if (dst_view)   vkDestroyImageView(device_, dst_view, nullptr);
-        if (y_view)     vkDestroyImageView(device_, y_view, nullptr);
-        if (uv_view)    vkDestroyImageView(device_, uv_view, nullptr);
-        if (drm_image)  vkDestroyImage(device_, drm_image, nullptr);
+        if (dst_view) vkDestroyImageView(device_, dst_view, nullptr);
+        if (y_view) vkDestroyImageView(device_, y_view, nullptr);
+        if (uv_view) vkDestroyImageView(device_, uv_view, nullptr);
+        if (drm_image) vkDestroyImage(device_, drm_image, nullptr);
         for (int i = 0; i < 2; ++i) {
             if (plane_mem[i]) vkFreeMemory(device_, plane_mem[i], nullptr);
             if (dup_fds[i] >= 0) rstd::sys::libc::close(dup_fds[i]);
@@ -1189,17 +1323,28 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm,
         pl[1].offset   = flat[1].offset;
         pl[1].rowPitch = flat[1].pitch;
         VkImageDrmFormatModifierExplicitCreateInfoEXT mci {};
-        mci.sType         = VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_EXPLICIT_CREATE_INFO_EXT;
-        mci.drmFormatModifier   = modifier;
+        mci.sType = VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_EXPLICIT_CREATE_INFO_EXT;
+        mci.drmFormatModifier           = modifier;
         mci.drmFormatModifierPlaneCount = 2;
-        mci.pPlaneLayouts = pl;
+        mci.pPlaneLayouts               = pl;
         VkExternalMemoryImageCreateInfo emi {};
-        emi.sType        = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO;
-        emi.handleTypes  = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
-        emi.pNext        = &mci;
+        emi.sType       = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO;
+        emi.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+        emi.pNext       = &mci;
+        VkFormat view_formats[] = {
+            VK_FORMAT_G8_B8R8_2PLANE_420_UNORM,
+            VK_FORMAT_R8_UNORM,
+            VK_FORMAT_R8G8_UNORM,
+        };
+        VkImageFormatListCreateInfo flci {};
+        flci.sType           = VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO;
+        flci.pNext           = &emi;
+        flci.viewFormatCount = static_cast<uint32_t>(std::size(view_formats));
+        flci.pViewFormats    = view_formats;
         VkImageCreateInfo ici {};
         ici.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-        ici.pNext         = &emi;
+        ici.pNext         = &flci;
+        ici.flags         = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
         ici.imageType     = VK_IMAGE_TYPE_2D;
         ici.format        = VK_FORMAT_G8_B8R8_2PLANE_420_UNORM;
         ici.extent        = { drm.width, drm.height, 1 };
@@ -1211,10 +1356,10 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm,
         ici.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
         ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         if (disjoint) ici.flags |= VK_IMAGE_CREATE_DISJOINT_BIT;
-        if (VkResult r = vkCreateImage(device_, &ici, nullptr, &drm_image);
-            r != VK_SUCCESS) {
-            fail(err, std::string("vkCreateImage(DRM_PRIME, modifier=0x") +
-                      std::to_string(modifier) + "): " + vk_result_str(r));
+        if (VkResult r = vkCreateImage(device_, &ici, nullptr, &drm_image); r != VK_SUCCESS) {
+            fail(err,
+                 std::string("vkCreateImage(DRM_PRIME, modifier=0x") + std::to_string(modifier) +
+                     "): " + vk_result_str(r));
             cleanup_on_fail();
             return -1;
         }
@@ -1222,8 +1367,7 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm,
 
     /* Per-plane memory import. Vulkan takes ownership of imported fds —
      * dup so the AVFrame can keep its own copy alive for the next pull. */
-    auto import_plane = [&](int plane_idx, uint32_t obj_idx,
-                            VkImageAspectFlagBits aspect) -> bool {
+    auto import_plane = [&](int plane_idx, uint32_t obj_idx, VkImageAspectFlagBits aspect) -> bool {
         const int src_fd = drm.objects[obj_idx].fd;
         const int dfd    = rstd::sys::libc::dup(src_fd);
         if (dfd < 0) {
@@ -1253,7 +1397,7 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm,
         vkGetImageMemoryRequirements2(device_, &req_info, &req2);
 
         const uint32_t type_bits = req2.memoryRequirements.memoryTypeBits & fdp.memoryTypeBits;
-        const uint32_t mtype = pick_memory_type(phys_, type_bits, 0);
+        const uint32_t mtype     = pick_memory_type(phys_, type_bits, 0);
         if (mtype == UINT32_MAX) {
             fail(err, "convert_drm_prime: no compatible memory type for imported DMA-BUF");
             return false;
@@ -1283,8 +1427,8 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm,
     };
 
     if (disjoint) {
-        if (!import_plane(0, flat[0].object_index, VK_IMAGE_ASPECT_PLANE_0_BIT) ||
-            !import_plane(1, flat[1].object_index, VK_IMAGE_ASPECT_PLANE_1_BIT)) {
+        if (! import_plane(0, flat[0].object_index, VK_IMAGE_ASPECT_PLANE_0_BIT) ||
+            ! import_plane(1, flat[1].object_index, VK_IMAGE_ASPECT_PLANE_1_BIT)) {
             cleanup_on_fail();
             return -1;
         }
@@ -1312,12 +1456,11 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm,
         }
     } else {
         /* Both planes share one fd → one allocation, single bind. */
-        if (!import_plane(0, flat[0].object_index, VK_IMAGE_ASPECT_COLOR_BIT)) {
+        if (! import_plane(0, flat[0].object_index, VK_IMAGE_ASPECT_COLOR_BIT)) {
             cleanup_on_fail();
             return -1;
         }
-        if (VkResult r = vkBindImageMemory(device_, drm_image, plane_mem[0], 0);
-            r != VK_SUCCESS) {
+        if (VkResult r = vkBindImageMemory(device_, drm_image, plane_mem[0], 0); r != VK_SUCCESS) {
             fail(err, std::string("vkBindImageMemory(joint): ") + vk_result_str(r));
             cleanup_on_fail();
             return -1;
@@ -1327,32 +1470,31 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm,
     /* Two single-aspect plane views: Y as R8, UV as R8G8. */
     {
         VkImageViewCreateInfo vci {};
-        vci.sType        = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        vci.viewType     = VK_IMAGE_VIEW_TYPE_2D;
-        vci.image        = drm_image;
-        vci.components   = { VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
-                             VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY };
+        vci.sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        vci.viewType         = VK_IMAGE_VIEW_TYPE_2D;
+        vci.image            = drm_image;
+        vci.components       = { VK_COMPONENT_SWIZZLE_IDENTITY,
+                                 VK_COMPONENT_SWIZZLE_IDENTITY,
+                                 VK_COMPONENT_SWIZZLE_IDENTITY,
+                                 VK_COMPONENT_SWIZZLE_IDENTITY };
         vci.subresourceRange = { VK_IMAGE_ASPECT_PLANE_0_BIT, 0, 1, 0, 1 };
-        vci.format       = VK_FORMAT_R8_UNORM;
-        if (VkResult r = vkCreateImageView(device_, &vci, nullptr, &y_view);
-            r != VK_SUCCESS) {
+        vci.format           = VK_FORMAT_R8_UNORM;
+        if (VkResult r = vkCreateImageView(device_, &vci, nullptr, &y_view); r != VK_SUCCESS) {
             fail(err, std::string("vkCreateImageView(DRM Y): ") + vk_result_str(r));
             cleanup_on_fail();
             return -1;
         }
         vci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_PLANE_1_BIT;
-        vci.format       = VK_FORMAT_R8G8_UNORM;
-        if (VkResult r = vkCreateImageView(device_, &vci, nullptr, &uv_view);
-            r != VK_SUCCESS) {
+        vci.format                      = VK_FORMAT_R8G8_UNORM;
+        if (VkResult r = vkCreateImageView(device_, &vci, nullptr, &uv_view); r != VK_SUCCESS) {
             fail(err, std::string("vkCreateImageView(DRM UV): ") + vk_result_str(r));
             cleanup_on_fail();
             return -1;
         }
         vci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        vci.image  = dst;
-        vci.format = VK_FORMAT_R8G8B8A8_UNORM;
-        if (VkResult r = vkCreateImageView(device_, &vci, nullptr, &dst_view);
-            r != VK_SUCCESS) {
+        vci.image                       = dst;
+        vci.format                      = VK_FORMAT_R8G8B8A8_UNORM;
+        if (VkResult r = vkCreateImageView(device_, &vci, nullptr, &dst_view); r != VK_SUCCESS) {
             fail(err, std::string("vkCreateImageView(DRM dst): ") + vk_result_str(r));
             cleanup_on_fail();
             return -1;
@@ -1361,10 +1503,12 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm,
 
     /* Descriptor write — same shape as the AVVkFrame path. */
     {
-        VkDescriptorImageInfo dii_y  { sampler_, y_view,   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-        VkDescriptorImageInfo dii_uv { sampler_, uv_view,  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-        VkDescriptorImageInfo dii_d  { VK_NULL_HANDLE, dst_view, VK_IMAGE_LAYOUT_GENERAL };
-        VkWriteDescriptorSet ws[3] {};
+        VkDescriptorImageInfo dii_y { sampler_, y_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+        VkDescriptorImageInfo dii_uv { sampler_,
+                                       uv_view,
+                                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+        VkDescriptorImageInfo dii_d { VK_NULL_HANDLE, dst_view, VK_IMAGE_LAYOUT_GENERAL };
+        VkWriteDescriptorSet  ws[3] {};
         for (int i = 0; i < 3; ++i) {
             ws[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             ws[i].dstSet          = dset_;
@@ -1399,27 +1543,31 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm,
      * because Vulkan must NOT preserve anything across the import — VAAPI
      * already wrote NV12 contents into the dma-buf; the foreign-queue
      * acquire grants us read access. */
-    barrier_image(cmd_, drm_image, 0, VK_ACCESS_SHADER_READ_BIT,
-                  VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                  VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                  VK_QUEUE_FAMILY_FOREIGN_EXT, queue_family_);
-    barrier_image(cmd_, dst, 0, VK_ACCESS_SHADER_WRITE_BIT,
-                  VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
-                  VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+    barrier_image(cmd_,
+                  drm_image,
+                  0,
+                  VK_ACCESS_SHADER_READ_BIT,
+                  VK_IMAGE_LAYOUT_UNDEFINED,
+                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                  VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                  VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                  VK_QUEUE_FAMILY_FOREIGN_EXT,
+                  queue_family_);
+    barrier_dst_to_storage(cmd_, dst, target);
 
     vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_);
-    vkCmdBindDescriptorSets(cmd_, VK_PIPELINE_BIND_POINT_COMPUTE,
-                            pipeline_layout_, 0, 1, &dset_, 0, nullptr);
+    vkCmdBindDescriptorSets(
+        cmd_, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_layout_, 0, 1, &dset_, 0, nullptr);
     ShaderPushConstants pc {};
-    pc.dst_w = dst_w; pc.dst_h = dst_h;
+    pc.dst_w = dst_w;
+    pc.dst_h = dst_h;
     for (int i = 0; i < 3; ++i) {
         pc.m_r[i]    = cm.m_r[i];
         pc.m_g[i]    = cm.m_g[i];
         pc.m_b[i]    = cm.m_b[i];
         pc.offset[i] = cm.offset[i];
     }
-    vkCmdPushConstants(cmd_, pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT,
-                       0, sizeof(pc), &pc);
+    vkCmdPushConstants(cmd_, pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
     const uint32_t gx = (dst_w + 7) / 8;
     const uint32_t gy = (dst_h + 7) / 8;
     vkCmdDispatch(cmd_, gx, gy, 1);
@@ -1428,16 +1576,17 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm,
      * imported drm_image goes back to FOREIGN too — VAAPI doesn't track
      * Vulkan layouts, but the foreign-queue release is the spec-required
      * way to relinquish ownership of an external resource. */
-    barrier_image(cmd_, drm_image,
-                  VK_ACCESS_SHADER_READ_BIT, 0,
-                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
-                  VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-                  queue_family_, VK_QUEUE_FAMILY_FOREIGN_EXT);
-    barrier_image(cmd_, dst,
-                  VK_ACCESS_SHADER_WRITE_BIT, 0,
-                  VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
-                  VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-                  queue_family_, VK_QUEUE_FAMILY_FOREIGN_EXT);
+    barrier_image(cmd_,
+                  drm_image,
+                  VK_ACCESS_SHADER_READ_BIT,
+                  0,
+                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                  VK_IMAGE_LAYOUT_GENERAL,
+                  VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                  VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                  queue_family_,
+                  VK_QUEUE_FAMILY_FOREIGN_EXT);
+    barrier_dst_from_storage(cmd_, dst, target, queue_family_);
 
     if (VkResult r = vkEndCommandBuffer(cmd_); r != VK_SUCCESS) {
         fail(err, std::string("vkEndCommandBuffer: ") + vk_result_str(r));
@@ -1450,11 +1599,14 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm,
      * to the dma-buf via implicit sync; the foreign-queue acquire
      * barrier above is the cross-API sync point. */
     VkSubmitInfo si {};
-    si.sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    si.commandBufferCount   = 1;
-    si.pCommandBuffers      = &cmd_;
-    si.signalSemaphoreCount = 1;
-    si.pSignalSemaphores    = &signal_sem_;
+    si.sType                   = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    si.commandBufferCount      = 1;
+    si.pCommandBuffers         = &cmd_;
+    VkSemaphore signal_sems[1] = { signal_sem_ };
+    if (target_exports_sync_fd(target)) {
+        si.signalSemaphoreCount = 1;
+        si.pSignalSemaphores    = signal_sems;
+    }
     if (VkResult r = vkQueueSubmit(queue_, 1, &si, done_fence_); r != VK_SUCCESS) {
         fail(err, std::string("vkQueueSubmit: ") + vk_result_str(r));
         cleanup_on_fail();
@@ -1462,15 +1614,17 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm,
     }
     fence_pending_ = true;
 
-    VkSemaphoreGetFdInfoKHR sgfi {};
-    sgfi.sType      = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR;
-    sgfi.semaphore  = signal_sem_;
-    sgfi.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
     int sync_fd = -1;
-    if (VkResult r = vkGetSemaphoreFdKHR_(device_, &sgfi, &sync_fd); r != VK_SUCCESS) {
-        fail(err, std::string("vkGetSemaphoreFdKHR: ") + vk_result_str(r));
-        cleanup_on_fail();
-        return -1;
+    if (target_exports_sync_fd(target)) {
+        VkSemaphoreGetFdInfoKHR sgfi {};
+        sgfi.sType      = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR;
+        sgfi.semaphore  = signal_sem_;
+        sgfi.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
+        if (VkResult r = vkGetSemaphoreFdKHR_(device_, &sgfi, &sync_fd); r != VK_SUCCESS) {
+            fail(err, std::string("vkGetSemaphoreFdKHR: ") + vk_result_str(r));
+            cleanup_on_fail();
+            return -1;
+        }
     }
 
     /* Cycle this submit's resources into the deferred-destroy slots,
@@ -1478,12 +1632,12 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm,
      * standard last_*_view_ slots (sized for one cycle). The drm image
      * + memory get a private slot pair for the same one-cycle deferral. */
     if (last_dst_view_) vkDestroyImageView(device_, last_dst_view_, nullptr);
-    if (last_y_view_)   vkDestroyImageView(device_, last_y_view_,   nullptr);
-    if (last_uv_view_)  vkDestroyImageView(device_, last_uv_view_,  nullptr);
-    last_dst_view_ = dst_view;
-    last_y_view_   = y_view;
-    last_uv_view_  = uv_view;
-    last_drm_image_ = drm_image;
+    if (last_y_view_) vkDestroyImageView(device_, last_y_view_, nullptr);
+    if (last_uv_view_) vkDestroyImageView(device_, last_uv_view_, nullptr);
+    last_dst_view_         = dst_view;
+    last_y_view_           = y_view;
+    last_uv_view_          = uv_view;
+    last_drm_image_        = drm_image;
     last_drm_memory_count_ = disjoint ? 2u : 1u;
     last_drm_memories_[0]  = plane_mem[0];
     last_drm_memories_[1]  = plane_mem[1];
@@ -1494,32 +1648,48 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm,
 // Public Result wrappers around the legacy out-param helpers above.
 // ---------------------------------------------------------------------------
 
-auto YuvToRgba::convert_nv12(VkImage dst, uint32_t dst_w, uint32_t dst_h,
-                             const uint8_t* nv12, std::size_t nv12_size,
-                             const ColorMatrix& cm) -> rstd::Result<int, Error> {
+auto YuvToRgba::convert_nv12(VkImage dst, uint32_t dst_w, uint32_t dst_h, const uint8_t* nv12,
+                             std::size_t nv12_size, const ColorMatrix& cm)
+    -> rstd::Result<int, Error> {
+    return convert_nv12(dst, dst_w, dst_h, nv12, nv12_size, cm, ConvertTarget::BridgeForeign);
+}
+
+auto YuvToRgba::convert_nv12(VkImage dst, uint32_t dst_w, uint32_t dst_h, const uint8_t* nv12,
+                             std::size_t nv12_size, const ColorMatrix& cm, ConvertTarget target)
+    -> rstd::Result<int, Error> {
     Error err;
-    int   fd = convert_nv12_(dst, dst_w, dst_h, nv12, nv12_size, cm, &err);
-    if (fd < 0) return rstd::Err(std::move(err));
+    int   fd = convert_nv12_(dst, dst_w, dst_h, nv12, nv12_size, cm, target, &err);
+    if (fd < 0 && ! err.message.empty()) return rstd::Err(std::move(err));
     return rstd::Ok(fd);
 }
 
-auto YuvToRgba::convert_av_vk_frame(const VkFrameImports& imports, VkImage dst,
-                                    uint32_t dst_w, uint32_t dst_h,
-                                    const ColorMatrix& cm)
+auto YuvToRgba::convert_av_vk_frame(const VkFrameImports& imports, VkImage dst, uint32_t dst_w,
+                                    uint32_t dst_h, const ColorMatrix& cm)
+    -> rstd::Result<int, Error> {
+    return convert_av_vk_frame(imports, dst, dst_w, dst_h, cm, ConvertTarget::BridgeForeign);
+}
+
+auto YuvToRgba::convert_av_vk_frame(const VkFrameImports& imports, VkImage dst, uint32_t dst_w,
+                                    uint32_t dst_h, const ColorMatrix& cm, ConvertTarget target)
     -> rstd::Result<int, Error> {
     Error err;
-    int   fd = convert_av_vk_frame_(imports, dst, dst_w, dst_h, cm, &err);
-    if (fd < 0) return rstd::Err(std::move(err));
+    int   fd = convert_av_vk_frame_(imports, dst, dst_w, dst_h, cm, target, &err);
+    if (fd < 0 && ! err.message.empty()) return rstd::Err(std::move(err));
     return rstd::Ok(fd);
 }
 
-auto YuvToRgba::convert_drm_prime(const DrmFrameView& drm, VkImage dst,
-                                  uint32_t dst_w, uint32_t dst_h,
-                                  const ColorMatrix& cm)
+auto YuvToRgba::convert_drm_prime(const DrmFrameView& drm, VkImage dst, uint32_t dst_w,
+                                  uint32_t dst_h, const ColorMatrix& cm)
+    -> rstd::Result<int, Error> {
+    return convert_drm_prime(drm, dst, dst_w, dst_h, cm, ConvertTarget::BridgeForeign);
+}
+
+auto YuvToRgba::convert_drm_prime(const DrmFrameView& drm, VkImage dst, uint32_t dst_w,
+                                  uint32_t dst_h, const ColorMatrix& cm, ConvertTarget target)
     -> rstd::Result<int, Error> {
     Error err;
-    int   fd = convert_drm_prime_(drm, dst, dst_w, dst_h, cm, &err);
-    if (fd < 0) return rstd::Err(std::move(err));
+    int   fd = convert_drm_prime_(drm, dst, dst_w, dst_h, cm, target, &err);
+    if (fd < 0 && ! err.message.empty()) return rstd::Err(std::move(err));
     return rstd::Ok(fd);
 }
 
