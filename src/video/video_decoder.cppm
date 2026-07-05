@@ -33,6 +33,8 @@ struct ProbeResult {
 // arm of Result; clean stream end is Eof in the Ok arm.
 enum class NextFrame {
     Ok,
+    // Frame data is valid and belongs to a new loop iteration.
+    Looped,
     Eof,
 };
 

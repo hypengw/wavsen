@@ -737,6 +737,7 @@ int VideoDecoder::next_vk_frame_(VkFrameView& out, Error* err) {
         return -1;
     }
     State& st = *st_;
+    bool   looped = false;
 
     /* Release the previously-yielded AVVkFrame back to the pool. The
      * caller's GPU work that referenced it has been queue-submitted by
@@ -780,7 +781,7 @@ int VideoDecoder::next_vk_frame_(VkFrameView& out, Error* err) {
             out.pts_seconds = (pts == AV_NOPTS_VALUE)
                 ? -1.0
                 : static_cast<double>(pts) * ffi::av_q2d(st.stream_tb);
-            return 0;
+            return looped ? 2 : 0;
         }
         if (rc == AVERROR_EOF) {
             if (loop_) {
@@ -788,6 +789,7 @@ int VideoDecoder::next_vk_frame_(VkFrameView& out, Error* err) {
                     fail(err, "loop seek-to-zero failed");
                     return -1;
                 }
+                looped = true;
                 continue;
             }
             return 1;
@@ -827,6 +829,7 @@ int VideoDecoder::next_drm_frame_(DrmFrameView& out, Error* err) {
         return -1;
     }
     State& st = *st_;
+    bool   looped = false;
 
     if (!st.drm_frame) st.drm_frame.reset(av_frame_alloc());
     if (!st.drm_frame) { fail(err, "av_frame_alloc(drm_frame) failed"); return -1; }
@@ -894,7 +897,7 @@ int VideoDecoder::next_drm_frame_(DrmFrameView& out, Error* err) {
             out.pts_seconds = (pts == AV_NOPTS_VALUE)
                 ? -1.0
                 : static_cast<double>(pts) * ffi::av_q2d(st.stream_tb);
-            return 0;
+            return looped ? 2 : 0;
         }
         if (rc == AVERROR_EOF) {
             if (loop_) {
@@ -902,6 +905,7 @@ int VideoDecoder::next_drm_frame_(DrmFrameView& out, Error* err) {
                     fail(err, "loop seek-to-zero failed");
                     return -1;
                 }
+                looped = true;
                 continue;
             }
             return 1;
@@ -937,6 +941,7 @@ int VideoDecoder::next_drm_frame_(DrmFrameView& out, Error* err) {
 
 int VideoDecoder::next_frame_(Nv12Frame& out, Error* err) {
     State& st = *st_;
+    bool   looped = false;
 
     /* Resize output buffer to NV12 size on first call (and on extent
      * change, but the extent is fixed for VideoDecoder lifetime). */
@@ -1010,7 +1015,7 @@ int VideoDecoder::next_frame_(Nv12Frame& out, Error* err) {
             out.color_range = map_range(feed->color_range);
             av_frame_unref(st.src_frame.get());
             if (st.sw_frame) av_frame_unref(st.sw_frame.get());
-            return 0;
+            return looped ? 2 : 0;
         }
         if (rc == AVERROR_EOF) {
             if (loop_) {
@@ -1018,6 +1023,7 @@ int VideoDecoder::next_frame_(Nv12Frame& out, Error* err) {
                     fail(err, "loop seek-to-zero failed");
                     return -1;
                 }
+                looped = true;
                 continue;
             }
             return 1;
@@ -1060,21 +1066,27 @@ auto VideoDecoder::next_frame(Nv12Frame& out) -> rstd::Result<NextFrame, Error> 
     Error err;
     int   rc = next_frame_(out, &err);
     if (rc < 0) return rstd::Err(std::move(err));
-    return rstd::Ok(rc == 1 ? NextFrame::Eof : NextFrame::Ok);
+    if (rc == 1) return rstd::Ok(NextFrame::Eof);
+    if (rc == 2) return rstd::Ok(NextFrame::Looped);
+    return rstd::Ok(NextFrame::Ok);
 }
 
 auto VideoDecoder::next_vk_frame(VkFrameView& out) -> rstd::Result<NextFrame, Error> {
     Error err;
     int   rc = next_vk_frame_(out, &err);
     if (rc < 0) return rstd::Err(std::move(err));
-    return rstd::Ok(rc == 1 ? NextFrame::Eof : NextFrame::Ok);
+    if (rc == 1) return rstd::Ok(NextFrame::Eof);
+    if (rc == 2) return rstd::Ok(NextFrame::Looped);
+    return rstd::Ok(NextFrame::Ok);
 }
 
 auto VideoDecoder::next_drm_frame(DrmFrameView& out) -> rstd::Result<NextFrame, Error> {
     Error err;
     int   rc = next_drm_frame_(out, &err);
     if (rc < 0) return rstd::Err(std::move(err));
-    return rstd::Ok(rc == 1 ? NextFrame::Eof : NextFrame::Ok);
+    if (rc == 1) return rstd::Ok(NextFrame::Eof);
+    if (rc == 2) return rstd::Ok(NextFrame::Looped);
+    return rstd::Ok(NextFrame::Ok);
 }
 
 } // namespace wavsen::video

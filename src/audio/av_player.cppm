@@ -33,8 +33,8 @@ public:
     bool is_paused() const;
 
     // Reset playback to t=0. Call from the video plugin's loop boundary
-    // (NextFrame::Eof) after the video decoder seeks back to the start.
-    // The clock will re-anchor on the next data callback.
+    // after the video decoder seeks back to the start. The clock will
+    // re-anchor on the next data callback.
     void seek_to_start();
 
     // PTS in seconds of the audio sample currently being played by the
