@@ -11,9 +11,11 @@ import rstd.log;
 import pulse;
 import :core;
 
-namespace wavsen::audio {
+namespace wavsen::audio
+{
 
-namespace {
+namespace
+{
 
 constexpr std::uint32_t kDefaultRate     = 48000;
 constexpr std::uint32_t kDefaultChannels = 2;
@@ -120,7 +122,7 @@ public:
         // stalls at silence for its whole lifetime.
         desc_ = { kDefaultChannels, kDefaultRate };
 
-        const auto frame_bytes = kDefaultChannels * static_cast<std::uint32_t>(sizeof(float));
+        const auto     frame_bytes = kDefaultChannels * static_cast<std::uint32_t>(sizeof(float));
         pa_buffer_attr ba {};
         ba.maxlength = static_cast<std::uint32_t>(-1);
         ba.tlength   = kQuantum * frame_bytes * 4;
@@ -128,11 +130,9 @@ public:
         ba.minreq    = kQuantum * frame_bytes;
         ba.fragsize  = static_cast<std::uint32_t>(-1);
 
-        const auto flags = static_cast<pa_stream_flags_t>(
-            PA_STREAM_ADJUST_LATENCY |
-            PA_STREAM_AUTO_TIMING_UPDATE |
-            PA_STREAM_INTERPOLATE_TIMING |
-            PA_STREAM_START_CORKED);
+        const auto flags =
+            static_cast<pa_stream_flags_t>(PA_STREAM_ADJUST_LATENCY | PA_STREAM_AUTO_TIMING_UPDATE |
+                                           PA_STREAM_INTERPOLATE_TIMING | PA_STREAM_START_CORKED);
 
         if (pa_stream_connect_playback(stream_, nullptr, &ba, flags, nullptr, nullptr) < 0) {
             rstd::log::error("wavsen::audio: pa_stream_connect_playback failed: {}",
@@ -179,7 +179,8 @@ public:
         }
 
         rstd::log::info("wavsen::audio: pulse device inited ({} ch @ {} Hz)",
-                        desc_.channels, desc_.sample_rate);
+                        desc_.channels,
+                        desc_.sample_rate);
         return true;
     }
 
@@ -212,7 +213,8 @@ public:
         if (! stream_ || ! loop_) return;
         pa_threaded_mainloop_lock(loop_);
         auto* op = pa_stream_cork(stream_, 0, nullptr, nullptr);
-        if (op) {} // fire-and-forget; mainloop frees it via callback=nullptr
+        if (op) {
+        } // fire-and-forget; mainloop frees it via callback=nullptr
         pa_threaded_mainloop_unlock(loop_);
     }
 
@@ -220,7 +222,8 @@ public:
         if (! stream_ || ! loop_) return;
         pa_threaded_mainloop_lock(loop_);
         auto* op = pa_stream_cork(stream_, 1, nullptr, nullptr);
-        if (op) {}
+        if (op) {
+        }
         pa_threaded_mainloop_unlock(loop_);
     }
 
@@ -240,9 +243,9 @@ public:
     DeviceDesc desc() const { return desc_; }
 
     float volume() const { return volume_.load(std::memory_order_relaxed); }
-    bool  muted()  const { return muted_.load(std::memory_order_relaxed); }
+    bool  muted() const { return muted_.load(std::memory_order_relaxed); }
     void  set_volume(float v) { volume_.store(v, std::memory_order_relaxed); }
-    void  set_muted(bool m)   { muted_.store(m,  std::memory_order_relaxed); }
+    void  set_muted(bool m) { muted_.store(m, std::memory_order_relaxed); }
     float volume_scale() const { return volume_scale_.load(std::memory_order_relaxed); }
     void  set_volume_scale(float v) {
         v = clamp_volume_scale(v);
@@ -259,8 +262,8 @@ public:
             set_volume_scale(v);
             return;
         }
-        const auto rate = desc_.sample_rate != 0 ? desc_.sample_rate : kDefaultRate;
-        auto fade_frames64 = static_cast<std::uint64_t>(rate) * fade_ms / 1000ULL;
+        const auto rate          = desc_.sample_rate != 0 ? desc_.sample_rate : kDefaultRate;
+        auto       fade_frames64 = static_cast<std::uint64_t>(rate) * fade_ms / 1000ULL;
         if (fade_frames64 == 0) {
             set_volume_scale(v);
             return;
@@ -298,9 +301,8 @@ private:
         const float volume = volume_.load(std::memory_order_relaxed);
         auto        left   = volume_scale_frames_left_.load(std::memory_order_relaxed);
         if (left == 0) {
-            const float gain =
-                volume * volume_scale_.load(std::memory_order_relaxed);
-            const auto total_samples = static_cast<std::size_t>(n_frames) * channels;
+            const float gain          = volume * volume_scale_.load(std::memory_order_relaxed);
+            const auto  total_samples = static_cast<std::size_t>(n_frames) * channels;
             for (std::size_t i = 0; i < total_samples; ++i) {
                 out_f[i] *= gain;
             }
@@ -322,8 +324,7 @@ private:
                 scale = left == 0 ? target : scale + step;
             }
         }
-        if ((epoch & 1u) == 0 &&
-            volume_scale_epoch_.load(std::memory_order_acquire) == epoch) {
+        if ((epoch & 1u) == 0 && volume_scale_epoch_.load(std::memory_order_acquire) == epoch) {
             volume_scale_.store(scale, std::memory_order_relaxed);
             volume_scale_frames_left_.store(left, std::memory_order_relaxed);
         }
@@ -355,9 +356,9 @@ private:
                 return;
             }
 
-            const auto n_frames = static_cast<std::uint32_t>(want / stride);
+            const auto n_frames      = static_cast<std::uint32_t>(want / stride);
             const auto total_samples = static_cast<std::size_t>(n_frames) * channels;
-            auto* out_f = static_cast<float*>(buf);
+            auto*      out_f         = static_cast<float*>(buf);
             std::memset(out_f, 0, total_samples * sizeof(float));
 
             if (! self->muted_.load(std::memory_order_relaxed)) {
@@ -367,9 +368,8 @@ private:
                     std::lock_guard<std::mutex> lk(self->channels_mu_);
                     for (auto& ch : self->channels_) {
                         std::memset(scratch.data(), 0, total_samples * sizeof(float));
-                        const auto produced = ch->next_pcm(scratch.data(), n_frames);
-                        const auto produced_samples =
-                            static_cast<std::size_t>(produced) * channels;
+                        const auto produced         = ch->next_pcm(scratch.data(), n_frames);
+                        const auto produced_samples = static_cast<std::size_t>(produced) * channels;
                         for (std::size_t i = 0; i < produced_samples; ++i) {
                             out_f[i] += scratch[i];
                         }
@@ -395,35 +395,35 @@ private:
     std::mutex                                 channels_mu_;
     std::vector<std::unique_ptr<IPullChannel>> channels_;
 
-    std::atomic<float> volume_ { 1.0f };
-    std::atomic<float> volume_scale_ { 1.0f };
-    std::atomic<float> volume_scale_target_ { 1.0f };
-    std::atomic<float> volume_scale_step_ { 0.0f };
+    std::atomic<float>         volume_ { 1.0f };
+    std::atomic<float>         volume_scale_ { 1.0f };
+    std::atomic<float>         volume_scale_target_ { 1.0f };
+    std::atomic<float>         volume_scale_step_ { 0.0f };
     std::atomic<std::uint32_t> volume_scale_frames_left_ { 0 };
     std::atomic<std::uint32_t> volume_scale_epoch_ { 0 };
-    std::atomic<bool>  muted_ { false };
+    std::atomic<bool>          muted_ { false };
 };
 
-AudioDevice::AudioDevice() : impl_(std::make_unique<Impl>()) {}
+AudioDevice::AudioDevice(): impl_(std::make_unique<Impl>()) {}
 AudioDevice::~AudioDevice() = default;
 
-bool AudioDevice::init()                  { return impl_->init(); }
-void AudioDevice::uninit()                { impl_->uninit(); }
-bool AudioDevice::is_inited() const       { return impl_->is_inited(); }
-void AudioDevice::start()                 { impl_->start(); }
-void AudioDevice::stop()                  { impl_->stop(); }
-void AudioDevice::mount(std::unique_ptr<IPullChannel> ch) { impl_->mount(std::move(ch)); }
-void AudioDevice::unmount_all()           { impl_->unmount_all(); }
-float AudioDevice::volume() const         { return impl_->volume(); }
-bool  AudioDevice::muted()  const         { return impl_->muted(); }
-void  AudioDevice::set_volume(float v)    { impl_->set_volume(v); }
-void  AudioDevice::set_muted(bool m)      { impl_->set_muted(m); }
-float AudioDevice::volume_scale() const   { return impl_->volume_scale(); }
+bool  AudioDevice::init() { return impl_->init(); }
+void  AudioDevice::uninit() { impl_->uninit(); }
+bool  AudioDevice::is_inited() const { return impl_->is_inited(); }
+void  AudioDevice::start() { impl_->start(); }
+void  AudioDevice::stop() { impl_->stop(); }
+void  AudioDevice::mount(std::unique_ptr<IPullChannel> ch) { impl_->mount(std::move(ch)); }
+void  AudioDevice::unmount_all() { impl_->unmount_all(); }
+float AudioDevice::volume() const { return impl_->volume(); }
+bool  AudioDevice::muted() const { return impl_->muted(); }
+void  AudioDevice::set_volume(float v) { impl_->set_volume(v); }
+void  AudioDevice::set_muted(bool m) { impl_->set_muted(m); }
+float AudioDevice::volume_scale() const { return impl_->volume_scale(); }
 void  AudioDevice::set_volume_scale(float v) { impl_->set_volume_scale(v); }
 void  AudioDevice::set_volume_scale(float v, std::uint32_t fade_ms) {
     impl_->set_volume_scale(v, fade_ms);
 }
-DeviceDesc AudioDevice::desc() const      { return impl_->desc(); }
+DeviceDesc    AudioDevice::desc() const { return impl_->desc(); }
 std::uint64_t AudioDevice::stream_position_frames() const {
     return impl_->stream_position_frames();
 }

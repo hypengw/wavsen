@@ -2,9 +2,10 @@ export module wavsen.audio:av_sync;
 
 import rstd.cppstd;
 import rstd;
-import :byte_stream;  // IByteStream
+import :byte_stream; // IByteStream
 
-export namespace wavsen::audio {
+export namespace wavsen::audio
+{
 
 // Error type for AvPlayer::open. Mirrors the small-string Error pattern
 // used elsewhere in wavsen (no rich type — just a printable reason).

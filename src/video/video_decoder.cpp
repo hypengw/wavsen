@@ -11,9 +11,11 @@ import avcodec;
 import avformat;
 import swscale;
 
-namespace wavsen::video {
+namespace wavsen::video
+{
 
-namespace {
+namespace
+{
 
 struct FmtCtxDeleter {
     void operator()(AVFormatContext* p) const noexcept {
@@ -55,7 +57,7 @@ using BufRefPtr   = std::unique_ptr<AVBufferRef, BufRefDeleter>;
 
 /* Defined further down — forward-declared so the helpers above the
  * definitions can use them. */
-bool fail(Error* err, std::string m);
+bool        fail(Error* err, std::string m);
 std::string av_err_str(int rc);
 
 /* Translate FFmpeg's colorspace/range enums into our ColorSpace /
@@ -63,17 +65,15 @@ std::string av_err_str(int rc);
  * Unknowns default to BT.709 limited — the most common case. */
 uint32_t map_colorspace(int cs) {
     switch (cs) {
-    case AVCOL_SPC_BT709:        return 0;
-    case AVCOL_SPC_BT470BG:      // PAL / BT.601 625
-    case AVCOL_SPC_SMPTE170M:    return 1;
-    case AVCOL_SPC_BT2020_NCL:   return 2;
-    case AVCOL_SPC_BT2020_CL:    return 2;
-    default:                     return 0;
+    case AVCOL_SPC_BT709: return 0;
+    case AVCOL_SPC_BT470BG: // PAL / BT.601 625
+    case AVCOL_SPC_SMPTE170M: return 1;
+    case AVCOL_SPC_BT2020_NCL: return 2;
+    case AVCOL_SPC_BT2020_CL: return 2;
+    default: return 0;
     }
 }
-uint32_t map_range(int r) {
-    return (r == AVCOL_RANGE_JPEG) ? 1u : 0u;
-}
+uint32_t map_range(int r) { return (r == AVCOL_RANGE_JPEG) ? 1u : 0u; }
 
 /* `get_format` callback: prefer AV_PIX_FMT_VULKAN whenever the codec
  * offers it; fall back to whatever FFmpeg picks by default otherwise.
@@ -97,42 +97,38 @@ uint32_t map_range(int r) {
  * get_format → sw pix_fmt. build_internal probes after open by
  * sending one packet so cctx->pix_fmt is populated, then resets
  * kind_ to Sw if hwaccel was rejected. */
-AVPixelFormat get_format_prefer_vulkan(AVCodecContext* cctx,
-                                       const AVPixelFormat* fmts) {
+AVPixelFormat get_format_prefer_vulkan(AVCodecContext* cctx, const AVPixelFormat* fmts) {
     for (const AVPixelFormat* p = fmts; *p != AV_PIX_FMT_NONE; ++p) {
         if (*p != AV_PIX_FMT_VULKAN) continue;
 
         AVBufferRef* hw_frames = nullptr;
-        int rc = avcodec_get_hw_frames_parameters(
+        int          rc        = avcodec_get_hw_frames_parameters(
             cctx, cctx->hw_device_ctx, AV_PIX_FMT_VULKAN, &hw_frames);
-        if (rc < 0 || !hw_frames) {
-            rstd::log::warn(
-                "get_format_prefer_vulkan: avcodec_get_hw_frames_parameters "
-                "failed ({}); falling back to default get_format.",
-                av_err_str(rc));
+        if (rc < 0 || ! hw_frames) {
+            rstd::log::warn("get_format_prefer_vulkan: avcodec_get_hw_frames_parameters "
+                            "failed ({}); falling back to default get_format.",
+                            av_err_str(rc));
             if (hw_frames) av_buffer_unref(&hw_frames);
             break;
         }
-        auto* fc  = reinterpret_cast<AVHWFramesContext*>(hw_frames->data);
-        auto* vfc = reinterpret_cast<AVVulkanFramesContext*>(fc->hwctx);
+        auto* fc   = reinterpret_cast<AVHWFramesContext*>(hw_frames->data);
+        auto* vfc  = reinterpret_cast<AVVulkanFramesContext*>(fc->hwctx);
         vfc->flags = static_cast<AVVkFrameFlags>(
-            static_cast<unsigned>(vfc->flags)
-            | static_cast<unsigned>(AV_VK_FRAME_FLAG_NONE)
-            | static_cast<unsigned>(AV_VK_FRAME_FLAG_DISABLE_MULTIPLANE));
+            static_cast<unsigned>(vfc->flags) | static_cast<unsigned>(AV_VK_FRAME_FLAG_NONE) |
+            static_cast<unsigned>(AV_VK_FRAME_FLAG_DISABLE_MULTIPLANE));
         if (int irc = av_hwframe_ctx_init(hw_frames); irc < 0) {
-            rstd::log::warn(
-                "get_format_prefer_vulkan: av_hwframe_ctx_init "
-                "(DISABLE_MULTIPLANE) failed ({}); falling back to default "
-                "get_format.", av_err_str(irc));
+            rstd::log::warn("get_format_prefer_vulkan: av_hwframe_ctx_init "
+                            "(DISABLE_MULTIPLANE) failed ({}); falling back to default "
+                            "get_format.",
+                            av_err_str(irc));
             av_buffer_unref(&hw_frames);
             break;
         }
         if (cctx->hw_frames_ctx) av_buffer_unref(&cctx->hw_frames_ctx);
         cctx->hw_frames_ctx = hw_frames;
-        rstd::log::info(
-            "get_format_prefer_vulkan: AV_PIX_FMT_VULKAN selected "
-            "(DISABLE_MULTIPLANE, sw_format={}).",
-            av_get_pix_fmt_name(fc->sw_format));
+        rstd::log::info("get_format_prefer_vulkan: AV_PIX_FMT_VULKAN selected "
+                        "(DISABLE_MULTIPLANE, sw_format={}).",
+                        av_get_pix_fmt_name(fc->sw_format));
         return AV_PIX_FMT_VULKAN;
     }
     return avcodec_default_get_format(cctx, fmts);
@@ -143,8 +139,7 @@ AVPixelFormat get_format_prefer_vulkan(AVCodecContext* cctx,
  * bootstraps an internal AVHWFramesContext from the AVHWDeviceContext
  * we attached to cctx->hw_device_ctx, so we don't pre-allocate frames
  * either. */
-AVPixelFormat get_format_prefer_vaapi(AVCodecContext* cctx,
-                                      const AVPixelFormat* fmts) {
+AVPixelFormat get_format_prefer_vaapi(AVCodecContext* cctx, const AVPixelFormat* fmts) {
     for (const AVPixelFormat* p = fmts; *p != AV_PIX_FMT_NONE; ++p) {
         if (*p == AV_PIX_FMT_VAAPI) return AV_PIX_FMT_VAAPI;
     }
@@ -157,11 +152,12 @@ AVPixelFormat get_format_prefer_vaapi(AVCodecContext* cctx,
 AVBufferRef* make_vaapi_hwdevice(const std::string& render_node, Error* err) {
     AVBufferRef* hwd = nullptr;
     const char*  dev = render_node.empty() ? nullptr : render_node.c_str();
-    int rc = av_hwdevice_ctx_create(&hwd, AV_HWDEVICE_TYPE_VAAPI, dev, nullptr, 0);
-    if (rc < 0 || !hwd) {
-        fail(err, "av_hwdevice_ctx_create(VAAPI" +
-                  (render_node.empty() ? std::string{} : ", " + render_node) +
-                  "): " + av_err_str(rc));
+    int          rc  = av_hwdevice_ctx_create(&hwd, AV_HWDEVICE_TYPE_VAAPI, dev, nullptr, 0);
+    if (rc < 0 || ! hwd) {
+        fail(err,
+             "av_hwdevice_ctx_create(VAAPI" +
+                 (render_node.empty() ? std::string {} : ", " + render_node) +
+                 "): " + av_err_str(rc));
         if (hwd) av_buffer_unref(&hwd);
         return nullptr;
     }
@@ -174,7 +170,7 @@ AVBufferRef* make_vaapi_hwdevice(const std::string& render_node, Error* err) {
  * on success, or null + populated *err on any failure. */
 AVBufferRef* make_shared_vulkan_hwdevice(const Producer& vk, Error* err) {
     AVBufferRef* hwd = av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_VULKAN);
-    if (!hwd) {
+    if (! hwd) {
         fail(err, "av_hwdevice_ctx_alloc(VULKAN) failed");
         return nullptr;
     }
@@ -186,23 +182,22 @@ AVBufferRef* make_shared_vulkan_hwdevice(const Producer& vk, Error* err) {
     vctx->phys_dev      = vk.physical_device();
     vctx->act_dev       = vk.device();
 
-    const auto& iexts = vk.enabled_instance_extensions();
-    const auto& dexts = vk.enabled_device_extensions();
+    const auto& iexts                = vk.enabled_instance_extensions();
+    const auto& dexts                = vk.enabled_device_extensions();
     vctx->enabled_inst_extensions    = iexts.empty() ? nullptr : iexts.data();
     vctx->nb_enabled_inst_extensions = static_cast<int>(iexts.size());
     vctx->enabled_dev_extensions     = dexts.empty() ? nullptr : dexts.data();
     vctx->nb_enabled_dev_extensions  = static_cast<int>(dexts.size());
 
     const auto& qfs = vk.queue_families();
-    vctx->nb_qf = 0;
+    vctx->nb_qf     = 0;
     for (const auto& q : qfs) {
-        if (vctx->nb_qf >= static_cast<int>(sizeof(vctx->qf) / sizeof(vctx->qf[0])))
-            break;
+        if (vctx->nb_qf >= static_cast<int>(sizeof(vctx->qf) / sizeof(vctx->qf[0]))) break;
         AVVulkanDeviceQueueFamily entry {};
-        entry.idx        = static_cast<int>(q.index);
-        entry.num        = 1;
-        entry.flags      = static_cast<VkQueueFlagBits>(q.flags);
-        entry.video_caps = static_cast<VkVideoCodecOperationFlagBitsKHR>(q.video_caps);
+        entry.idx               = static_cast<int>(q.index);
+        entry.num               = 1;
+        entry.flags             = static_cast<VkQueueFlagBits>(q.flags);
+        entry.video_caps        = static_cast<VkVideoCodecOperationFlagBitsKHR>(q.video_caps);
         vctx->qf[vctx->nb_qf++] = entry;
     }
 
@@ -236,26 +231,26 @@ struct VideoDecoder::State {
     std::unique_ptr<IInputStream> input_stream;
     AVIOContext*                  avio_ctx { nullptr };
 
-    FmtCtxPtr     fmt;
-    CodecCtxPtr   cctx;
-    PacketPtr     pkt;
-    FramePtr      src_frame;
+    FmtCtxPtr   fmt;
+    CodecCtxPtr cctx;
+    PacketPtr   pkt;
+    FramePtr    src_frame;
     /* Sw landing frame for vulkan→sw downloads via
      * av_hwframe_transfer_data. Allocated lazily on first hw frame. */
-    FramePtr      sw_frame;
+    FramePtr sw_frame;
     /* DRM_PRIME mapping target frame; allocated lazily for the VAAPI
      * zero-copy path. Holds the dup'd dma-buf fds via av_hwframe_map. */
-    FramePtr      drm_frame;
-    SwsPtr        sws;
+    FramePtr drm_frame;
+    SwsPtr   sws;
     /* Hwdevice context owned by the codec when present. Best-effort: a
      * NULL `hwd` here just means we run sw decode. */
     BufRefPtr     hwd;
     AVPixelFormat sws_src_fmt { AV_PIX_FMT_NONE };
-    int           sws_src_w   { 0 };
-    int           sws_src_h   { 0 };
-    int           video_idx   { -1 };
-    AVRational    stream_tb   { 0, 1 };
-    bool          flushing    { false };
+    int           sws_src_w { 0 };
+    int           sws_src_h { 0 };
+    int           video_idx { -1 };
+    AVRational    stream_tb { 0, 1 };
+    bool          flushing { false };
 
     ~State() {
         /* Tear down libavformat first so it stops invoking our avio
@@ -271,23 +266,28 @@ struct VideoDecoder::State {
     }
 };
 
-namespace {
+namespace
+{
 
 bool ensure_sws(VideoDecoder::State& st, int src_w, int src_h, AVPixelFormat src_fmt,
                 uint32_t target_w, uint32_t target_h) {
-    if (st.sws && st.sws_src_w == src_w && st.sws_src_h == src_h
-        && st.sws_src_fmt == src_fmt) {
+    if (st.sws && st.sws_src_w == src_w && st.sws_src_h == src_h && st.sws_src_fmt == src_fmt) {
         return true;
     }
     /* Always emit NV12 — that's what YuvToRgba consumes. */
-    st.sws.reset(sws_getContext(src_w, src_h, src_fmt,
+    st.sws.reset(sws_getContext(src_w,
+                                src_h,
+                                src_fmt,
                                 static_cast<int>(target_w),
                                 static_cast<int>(target_h),
                                 AV_PIX_FMT_NV12,
-                                SWS_BICUBIC, nullptr, nullptr, nullptr));
-    if (!st.sws) return false;
-    st.sws_src_w = src_w;
-    st.sws_src_h = src_h;
+                                SWS_BICUBIC,
+                                nullptr,
+                                nullptr,
+                                nullptr));
+    if (! st.sws) return false;
+    st.sws_src_w   = src_w;
+    st.sws_src_h   = src_h;
     st.sws_src_fmt = src_fmt;
     return true;
 }
@@ -302,27 +302,30 @@ bool seek_to_start(VideoDecoder::State& st) {
 
 } // namespace
 
-namespace {
-bool probe_native_impl(const std::string& path,
-                       uint32_t* native_w, uint32_t* native_h,
+namespace
+{
+bool probe_native_impl(const std::string& path, uint32_t* native_w, uint32_t* native_h,
                        Error* err) {
-    *native_w = 0;
-    *native_h = 0;
+    *native_w                = 0;
+    *native_h                = 0;
     AVFormatContext* raw_fmt = nullptr;
-    if (int rc = avformat_open_input(&raw_fmt, path.c_str(), nullptr, nullptr);
-        rc < 0) {
+    if (int rc = avformat_open_input(&raw_fmt, path.c_str(), nullptr, nullptr); rc < 0) {
         fail(err, "avformat_open_input: " + av_err_str(rc));
         return false;
     }
-    std::unique_ptr<AVFormatContext, void(*)(AVFormatContext*)> fmt(
-        raw_fmt,
-        [](AVFormatContext* p) { if (p) avformat_close_input(&p); });
+    std::unique_ptr<AVFormatContext, void (*)(AVFormatContext*)> fmt(
+        raw_fmt, [](AVFormatContext* p) {
+            if (p) avformat_close_input(&p);
+        });
     if (int rc = avformat_find_stream_info(fmt.get(), nullptr); rc < 0) {
         fail(err, "avformat_find_stream_info: " + av_err_str(rc));
         return false;
     }
     int idx = av_find_best_stream(fmt.get(), AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
-    if (idx < 0) { fail(err, "no video stream in file"); return false; }
+    if (idx < 0) {
+        fail(err, "no video stream in file");
+        return false;
+    }
     AVCodecParameters* par = fmt->streams[idx]->codecpar;
     if (par->width <= 0 || par->height <= 0) {
         fail(err, "video stream has invalid native dimensions");
@@ -332,15 +335,16 @@ bool probe_native_impl(const std::string& path,
     *native_h = static_cast<uint32_t>(par->height);
     return true;
 }
-} // namespace (probe_native_impl)
+} // namespace
 
 /* AVIOContext shims that bounce libavformat IO into an IInputStream. */
-namespace {
+namespace
+{
 int avio_read_shim(void* opaque, uint8_t* buf, int buf_size) {
     auto* s = static_cast<IInputStream*>(opaque);
-    int n = s->read(buf, buf_size);
+    int   n = s->read(buf, buf_size);
     if (n == 0) return AVERROR_EOF;
-    if (n < 0)  return AVERROR(rstd::sys::libc::EIO);
+    if (n < 0) return AVERROR(rstd::sys::libc::EIO);
     return n;
 }
 int64_t avio_seek_shim(void* opaque, int64_t offset, int whence) {
@@ -351,47 +355,56 @@ int64_t avio_seek_shim(void* opaque, int64_t offset, int whence) {
 
 VideoDecoder::~VideoDecoder() = default;
 
-auto VideoDecoder::probe_native(const std::string& path)
-    -> rstd::Result<ProbeResult, Error> {
+auto VideoDecoder::probe_native(const std::string& path) -> rstd::Result<ProbeResult, Error> {
     Error    err;
     uint32_t w = 0, h = 0;
-    if (!probe_native_impl(path, &w, &h, &err)) {
+    if (! probe_native_impl(path, &w, &h, &err)) {
         return rstd::Err(std::move(err));
     }
     return rstd::Ok(ProbeResult { w, h });
 }
 
-auto VideoDecoder::open(const std::string& path,
-                        uint32_t target_w, uint32_t target_h, bool loop)
+auto VideoDecoder::open(const std::string& path, uint32_t target_w, uint32_t target_h, bool loop)
     -> rstd::Result<std::unique_ptr<VideoDecoder>, Error> {
     Error err;
     auto  p = build_internal(InputSpec { path, nullptr },
-                             target_w, target_h, loop,
+                             target_w,
+                             target_h,
+                             loop,
                              /*pre_built_hwdev=*/nullptr,
-                             /*requested_kind=*/FrameKind::Sw, &err);
-    if (!p) return rstd::Err(std::move(err));
+                             /*requested_kind=*/FrameKind::Sw,
+                             &err);
+    if (! p) return rstd::Err(std::move(err));
     return rstd::Ok(std::move(p));
 }
 
-auto VideoDecoder::open_with_vk(const std::string& path,
-                                uint32_t target_w, uint32_t target_h, bool loop,
-                                const Producer& vk,
-                                const OpenOpts& opts)
+auto VideoDecoder::open_with_vk(const std::string& path, uint32_t target_w, uint32_t target_h,
+                                bool loop, const Producer& vk, const OpenOpts& opts)
     -> rstd::Result<std::unique_ptr<VideoDecoder>, Error> {
     /* Resolve trial order. Auto = Vulkan first, then VAAPI; explicit
      * single-mode skips the others; None goes straight to sw. */
     HwAccel order[2] = { HwAccel::None, HwAccel::None };
     int     n_order  = 0;
     switch (opts.hwaccel) {
-    case HwAccel::Auto:   order[0] = HwAccel::Vulkan; order[1] = HwAccel::Vaapi; n_order = 2; break;
-    case HwAccel::Vulkan: order[0] = HwAccel::Vulkan; n_order = 1; break;
-    case HwAccel::Vaapi:  order[0] = HwAccel::Vaapi;  n_order = 1; break;
-    case HwAccel::None:   n_order = 0; break;
+    case HwAccel::Auto:
+        order[0] = HwAccel::Vulkan;
+        order[1] = HwAccel::Vaapi;
+        n_order  = 2;
+        break;
+    case HwAccel::Vulkan:
+        order[0] = HwAccel::Vulkan;
+        n_order  = 1;
+        break;
+    case HwAccel::Vaapi:
+        order[0] = HwAccel::Vaapi;
+        n_order  = 1;
+        break;
+    case HwAccel::None: n_order = 0; break;
     }
 
     for (int i = 0; i < n_order; ++i) {
         Error        local_err;
-        AVBufferRef* hwd = nullptr;
+        AVBufferRef* hwd  = nullptr;
         FrameKind    kind = FrameKind::Sw;
         if (order[i] == HwAccel::Vulkan) {
             hwd  = make_shared_vulkan_hwdevice(vk, &local_err);
@@ -404,15 +417,15 @@ auto VideoDecoder::open_with_vk(const std::string& path,
             local_err.message = "wavsen built without VAAPI support";
 #endif
         }
-        if (!hwd) {
+        if (! hwd) {
             rstd::log::info("VideoDecoder: hwaccel attempt {} skipped: {}",
                             order[i] == HwAccel::Vulkan ? "vulkan" : "vaapi",
                             local_err.message.c_str());
             continue;
         }
         Error err;
-        auto  p = build_internal(InputSpec { path, nullptr },
-                                 target_w, target_h, loop, hwd, kind, &err);
+        auto  p =
+            build_internal(InputSpec { path, nullptr }, target_w, target_h, loop, hwd, kind, &err);
         if (p) return rstd::Ok(std::move(p));
         rstd::log::info("VideoDecoder: hwaccel {} build_internal failed: {} — trying next",
                         order[i] == HwAccel::Vulkan ? "vulkan" : "vaapi",
@@ -423,36 +436,41 @@ auto VideoDecoder::open_with_vk(const std::string& path,
     /* Final fallback: pure sw decode. */
     Error err;
     auto  p = build_internal(InputSpec { path, nullptr },
-                             target_w, target_h, loop,
+                             target_w,
+                             target_h,
+                             loop,
                              /*pre_built_hwdev=*/nullptr,
-                             /*requested_kind=*/FrameKind::Sw, &err);
-    if (!p) return rstd::Err(std::move(err));
+                             /*requested_kind=*/FrameKind::Sw,
+                             &err);
+    if (! p) return rstd::Err(std::move(err));
     return rstd::Ok(std::move(p));
 }
 
-auto VideoDecoder::open_from_stream(InputStreamFactory make_stream,
-                                    uint32_t target_w, uint32_t target_h, bool loop,
-                                    const Producer* vk,
+auto VideoDecoder::open_from_stream(InputStreamFactory make_stream, uint32_t target_w,
+                                    uint32_t target_h, bool loop, const Producer* vk,
                                     const OpenOpts& opts)
     -> rstd::Result<std::unique_ptr<VideoDecoder>, Error> {
-    if (!make_stream) return rstd::Err(Error { "open_from_stream: factory is null" });
+    if (! make_stream) return rstd::Err(Error { "open_from_stream: factory is null" });
 
     auto fresh_stream = [&](Error* err) -> std::unique_ptr<IInputStream> {
         auto s = make_stream();
-        if (!s) fail(err, "open_from_stream: factory returned null");
+        if (! s) fail(err, "open_from_stream: factory returned null");
         return s;
     };
 
     /* Sw / vaapi-only fast path (no shared Vulkan hwdev). */
-    if (!vk) {
+    if (! vk) {
         Error err;
         auto  s = fresh_stream(&err);
-        if (!s) return rstd::Err(std::move(err));
-        auto  p = build_internal(InputSpec { {}, std::move(s) },
-                                 target_w, target_h, loop,
-                                 /*pre_built_hwdev=*/nullptr,
-                                 /*requested_kind=*/FrameKind::Sw, &err);
-        if (!p) return rstd::Err(std::move(err));
+        if (! s) return rstd::Err(std::move(err));
+        auto p = build_internal(InputSpec { {}, std::move(s) },
+                                target_w,
+                                target_h,
+                                loop,
+                                /*pre_built_hwdev=*/nullptr,
+                                /*requested_kind=*/FrameKind::Sw,
+                                &err);
+        if (! p) return rstd::Err(std::move(err));
         return rstd::Ok(std::move(p));
     }
 
@@ -462,15 +480,25 @@ auto VideoDecoder::open_from_stream(InputStreamFactory make_stream,
     HwAccel order[2] = { HwAccel::None, HwAccel::None };
     int     n_order  = 0;
     switch (opts.hwaccel) {
-    case HwAccel::Auto:   order[0] = HwAccel::Vulkan; order[1] = HwAccel::Vaapi; n_order = 2; break;
-    case HwAccel::Vulkan: order[0] = HwAccel::Vulkan; n_order = 1; break;
-    case HwAccel::Vaapi:  order[0] = HwAccel::Vaapi;  n_order = 1; break;
-    case HwAccel::None:   n_order = 0; break;
+    case HwAccel::Auto:
+        order[0] = HwAccel::Vulkan;
+        order[1] = HwAccel::Vaapi;
+        n_order  = 2;
+        break;
+    case HwAccel::Vulkan:
+        order[0] = HwAccel::Vulkan;
+        n_order  = 1;
+        break;
+    case HwAccel::Vaapi:
+        order[0] = HwAccel::Vaapi;
+        n_order  = 1;
+        break;
+    case HwAccel::None: n_order = 0; break;
     }
 
     for (int i = 0; i < n_order; ++i) {
         Error        local_err;
-        AVBufferRef* hwd = nullptr;
+        AVBufferRef* hwd  = nullptr;
         FrameKind    kind = FrameKind::Sw;
         if (order[i] == HwAccel::Vulkan) {
             hwd  = make_shared_vulkan_hwdevice(*vk, &local_err);
@@ -483,7 +511,7 @@ auto VideoDecoder::open_from_stream(InputStreamFactory make_stream,
             local_err.message = "wavsen built without VAAPI support";
 #endif
         }
-        if (!hwd) {
+        if (! hwd) {
             rstd::log::info("VideoDecoder: hwaccel attempt {} skipped: {}",
                             order[i] == HwAccel::Vulkan ? "vulkan" : "vaapi",
                             local_err.message.c_str());
@@ -491,12 +519,12 @@ auto VideoDecoder::open_from_stream(InputStreamFactory make_stream,
         }
         Error err;
         auto  s = fresh_stream(&err);
-        if (!s) {
+        if (! s) {
             av_buffer_unref(&hwd);
             return rstd::Err(std::move(err));
         }
-        auto  p = build_internal(InputSpec { {}, std::move(s) },
-                                 target_w, target_h, loop, hwd, kind, &err);
+        auto p = build_internal(
+            InputSpec { {}, std::move(s) }, target_w, target_h, loop, hwd, kind, &err);
         if (p) return rstd::Ok(std::move(p));
         rstd::log::info("VideoDecoder: hwaccel {} build_internal failed: {} — trying next",
                         order[i] == HwAccel::Vulkan ? "vulkan" : "vaapi",
@@ -507,28 +535,29 @@ auto VideoDecoder::open_from_stream(InputStreamFactory make_stream,
     /* Final sw fallback — also covers HwAccel::None (n_order == 0). */
     Error err;
     auto  s = fresh_stream(&err);
-    if (!s) return rstd::Err(std::move(err));
-    auto  p = build_internal(InputSpec { {}, std::move(s) },
-                             target_w, target_h, loop,
-                             /*pre_built_hwdev=*/nullptr,
-                             /*requested_kind=*/FrameKind::Sw, &err);
-    if (!p) return rstd::Err(std::move(err));
+    if (! s) return rstd::Err(std::move(err));
+    auto p = build_internal(InputSpec { {}, std::move(s) },
+                            target_w,
+                            target_h,
+                            loop,
+                            /*pre_built_hwdev=*/nullptr,
+                            /*requested_kind=*/FrameKind::Sw,
+                            &err);
+    if (! p) return rstd::Err(std::move(err));
     return rstd::Ok(std::move(p));
 }
 
-std::unique_ptr<VideoDecoder>
-VideoDecoder::build_internal(InputSpec input,
-                             uint32_t target_w, uint32_t target_h,
-                             bool loop, void* pre_built_hwdev_v,
-                             FrameKind requested_kind,
-                             Error* err) {
+std::unique_ptr<VideoDecoder> VideoDecoder::build_internal(InputSpec input, uint32_t target_w,
+                                                           uint32_t target_h, bool loop,
+                                                           void*     pre_built_hwdev_v,
+                                                           FrameKind requested_kind, Error* err) {
     AVBufferRef* pre_built_hwdev = static_cast<AVBufferRef*>(pre_built_hwdev_v);
     if (target_w == 0 || target_h == 0) {
         fail(err, "target dimensions must be non-zero");
         if (pre_built_hwdev) av_buffer_unref(&pre_built_hwdev);
         return nullptr;
     }
-    if (input.path.empty() && !input.stream) {
+    if (input.path.empty() && ! input.stream) {
         fail(err, "InputSpec: neither path nor stream provided");
         if (pre_built_hwdev) av_buffer_unref(&pre_built_hwdev);
         return nullptr;
@@ -537,13 +566,13 @@ VideoDecoder::build_internal(InputSpec input,
     if (target_w & 1u) ++target_w;
     if (target_h & 1u) ++target_h;
 
-    auto self = std::unique_ptr<VideoDecoder>(new VideoDecoder());
+    auto self       = std::unique_ptr<VideoDecoder>(new VideoDecoder());
     self->target_w_ = target_w;
     self->target_h_ = target_h;
     self->loop_     = loop;
     self->st_       = std::make_unique<VideoDecoder::State>();
     /* Provisional; downgraded to Sw below if hwdevice attach fails. */
-    self->kind_     = requested_kind;
+    self->kind_ = requested_kind;
     /* Take ownership of the caller's hwdevice ref immediately so that
      * any early-return path below (avformat_open_input failure etc.)
      * unrefs it via state.hwd's deleter rather than leaking. The codec
@@ -556,38 +585,39 @@ VideoDecoder::build_internal(InputSpec input,
          * the caller's IInputStream. fmt->pb must outlive fmt — see
          * State's explicit destructor for the cleanup ordering. */
         self->st_->input_stream = std::move(input.stream);
-        constexpr int kAvioBuf = 4096;
-        auto* avio_buf = static_cast<unsigned char*>(av_malloc(kAvioBuf));
-        if (!avio_buf) {
+        constexpr int kAvioBuf  = 4096;
+        auto*         avio_buf  = static_cast<unsigned char*>(av_malloc(kAvioBuf));
+        if (! avio_buf) {
             fail(err, "av_malloc(avio buffer) failed");
             return nullptr;
         }
-        self->st_->avio_ctx = avio_alloc_context(
-            avio_buf, kAvioBuf, /*write_flag=*/0,
-            /*opaque=*/self->st_->input_stream.get(),
-            &avio_read_shim, /*write_packet=*/nullptr, &avio_seek_shim);
-        if (!self->st_->avio_ctx) {
+        self->st_->avio_ctx = avio_alloc_context(avio_buf,
+                                                 kAvioBuf,
+                                                 /*write_flag=*/0,
+                                                 /*opaque=*/self->st_->input_stream.get(),
+                                                 &avio_read_shim,
+                                                 /*write_packet=*/nullptr,
+                                                 &avio_seek_shim);
+        if (! self->st_->avio_ctx) {
             av_free(avio_buf);
             fail(err, "avio_alloc_context failed");
             return nullptr;
         }
         raw_fmt = avformat_alloc_context();
-        if (!raw_fmt) {
+        if (! raw_fmt) {
             fail(err, "avformat_alloc_context failed");
             return nullptr;
         }
-        raw_fmt->pb    = self->st_->avio_ctx;
+        raw_fmt->pb = self->st_->avio_ctx;
         raw_fmt->flags |= AVFMT_FLAG_CUSTOM_IO;
-        if (int rc = avformat_open_input(&raw_fmt, nullptr, nullptr, nullptr);
-            rc < 0) {
+        if (int rc = avformat_open_input(&raw_fmt, nullptr, nullptr, nullptr); rc < 0) {
             /* On failure avformat_open_input frees raw_fmt for us, but
              * leaves avio_ctx alone — State's destructor will free it. */
             fail(err, "avformat_open_input(stream): " + av_err_str(rc));
             return nullptr;
         }
     } else {
-        if (int rc = avformat_open_input(&raw_fmt, input.path.c_str(),
-                                         nullptr, nullptr); rc < 0) {
+        if (int rc = avformat_open_input(&raw_fmt, input.path.c_str(), nullptr, nullptr); rc < 0) {
             fail(err, "avformat_open_input: " + av_err_str(rc));
             return nullptr;
         }
@@ -599,13 +629,15 @@ VideoDecoder::build_internal(InputSpec input,
         return nullptr;
     }
 
-    int idx = av_find_best_stream(self->st_->fmt.get(),
-                                  AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
-    if (idx < 0) { fail(err, "no video stream in file"); return nullptr; }
-    self->st_->video_idx = idx;
-    AVStream*           st  = self->st_->fmt->streams[idx];
-    AVCodecParameters*  par = st->codecpar;
-    self->st_->stream_tb = st->time_base;
+    int idx = av_find_best_stream(self->st_->fmt.get(), AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+    if (idx < 0) {
+        fail(err, "no video stream in file");
+        return nullptr;
+    }
+    self->st_->video_idx   = idx;
+    AVStream*          st  = self->st_->fmt->streams[idx];
+    AVCodecParameters* par = st->codecpar;
+    self->st_->stream_tb   = st->time_base;
 
     /* FFmpeg's native `av1` decoder has no software path — it's a
      * parser + hwaccel dispatcher and returns ENOSYS on send_packet when
@@ -615,13 +647,16 @@ VideoDecoder::build_internal(InputSpec input,
     if (par->codec_id == AV_CODEC_ID_AV1 && requested_kind == FrameKind::Sw) {
         dec = avcodec_find_decoder_by_name("libdav1d");
     }
-    if (!dec) dec = avcodec_find_decoder(par->codec_id);
-    if (!dec) {
+    if (! dec) dec = avcodec_find_decoder(par->codec_id);
+    if (! dec) {
         fail(err, std::string("no decoder for codec ") + avcodec_get_name(par->codec_id));
         return nullptr;
     }
     self->st_->cctx.reset(avcodec_alloc_context3(dec));
-    if (!self->st_->cctx) { fail(err, "avcodec_alloc_context3 failed"); return nullptr; }
+    if (! self->st_->cctx) {
+        fail(err, "avcodec_alloc_context3 failed");
+        return nullptr;
+    }
     if (int rc = avcodec_parameters_to_context(self->st_->cctx.get(), par); rc < 0) {
         fail(err, "avcodec_parameters_to_context: " + av_err_str(rc));
         return nullptr;
@@ -638,22 +673,18 @@ VideoDecoder::build_internal(InputSpec input,
              * callback the codec falls through to a sw pix_fmt; we
              * detect that after open and reset kind_ to Sw. */
             self->st_->cctx->get_format = get_format_prefer_vulkan;
-            rstd::log::info(
-                "VideoDecoder: AV_HWDEVICE_TYPE_VULKAN attached for codec {}.",
-                avcodec_get_name(par->codec_id));
+            rstd::log::info("VideoDecoder: AV_HWDEVICE_TYPE_VULKAN attached for codec {}.",
+                            avcodec_get_name(par->codec_id));
         }
 #if defined(WAVSEN_HAS_VAAPI)
         else if (requested_kind == FrameKind::VaapiDrm) {
             self->st_->cctx->get_format = get_format_prefer_vaapi;
-            rstd::log::info(
-                "VideoDecoder: AV_HWDEVICE_TYPE_VAAPI attached for codec {}.",
-                avcodec_get_name(par->codec_id));
+            rstd::log::info("VideoDecoder: AV_HWDEVICE_TYPE_VAAPI attached for codec {}.",
+                            avcodec_get_name(par->codec_id));
         }
 #endif
     } else {
-        rstd::log::info(
-            "VideoDecoder: sw decode for codec {}.",
-            avcodec_get_name(par->codec_id));
+        rstd::log::info("VideoDecoder: sw decode for codec {}.", avcodec_get_name(par->codec_id));
     }
 
     if (int rc = avcodec_open2(self->st_->cctx.get(), dec, nullptr); rc < 0) {
@@ -663,7 +694,7 @@ VideoDecoder::build_internal(InputSpec input,
 
     self->st_->pkt.reset(av_packet_alloc());
     self->st_->src_frame.reset(av_frame_alloc());
-    if (!self->st_->pkt || !self->st_->src_frame) {
+    if (! self->st_->pkt || ! self->st_->src_frame) {
         fail(err, "av_packet_alloc / av_frame_alloc failed");
         return nullptr;
     }
@@ -720,10 +751,10 @@ VideoDecoder::build_internal(InputSpec input,
              * final sw fallback, which picks libdav1d for AV1). Just
              * flipping kind_ would leave cctx bound to a hw-only native
              * decoder and trip ENOSYS / wrong-format on first frame. */
-            fail(err, std::string(hw_label) + " hwaccel rejected codec " +
-                      avcodec_get_name(par->codec_id) +
-                      " (probe pix_fmt=" +
-                      av_get_pix_fmt_name(self->st_->cctx->pix_fmt) + ")");
+            fail(err,
+                 std::string(hw_label) + " hwaccel rejected codec " +
+                     avcodec_get_name(par->codec_id) +
+                     " (probe pix_fmt=" + av_get_pix_fmt_name(self->st_->cctx->pix_fmt) + ")");
             return nullptr;
         }
     }
@@ -736,7 +767,7 @@ int VideoDecoder::next_vk_frame_(VkFrameView& out, Error* err) {
         fail(err, "next_vk_frame called on non-shared-device decoder");
         return -1;
     }
-    State& st = *st_;
+    State& st     = *st_;
     bool   looped = false;
 
     /* Release the previously-yielded AVVkFrame back to the pool. The
@@ -752,7 +783,7 @@ int VideoDecoder::next_vk_frame_(VkFrameView& out, Error* err) {
                 fail(err, "next_vk_frame: decoder produced non-vulkan frame");
                 return -1;
             }
-            auto* vkf = reinterpret_cast<AVVkFrame*>(st.src_frame->data[0]);
+            auto* vkf        = reinterpret_cast<AVVkFrame*>(st.src_frame->data[0]);
             out.img          = vkf->img;
             out.layout       = vkf->layout;
             out.sem          = vkf->sem;
@@ -768,24 +799,23 @@ int VideoDecoder::next_vk_frame_(VkFrameView& out, Error* err) {
              * 10-bit (P010). Both are 2-image disjoint formats here. */
             out.bit_depth = 8;
             if (st.src_frame->hw_frames_ctx) {
-                auto* hwfc = reinterpret_cast<AVHWFramesContext*>(
-                    st.src_frame->hw_frames_ctx->data);
-                if (hwfc->sw_format == AV_PIX_FMT_P010
-                    || hwfc->sw_format == AV_PIX_FMT_P016) {
+                auto* hwfc =
+                    reinterpret_cast<AVHWFramesContext*>(st.src_frame->hw_frames_ctx->data);
+                if (hwfc->sw_format == AV_PIX_FMT_P010 || hwfc->sw_format == AV_PIX_FMT_P016) {
                     out.bit_depth = 16;
                 }
             }
             const int64_t pts = (st.src_frame->best_effort_timestamp != AV_NOPTS_VALUE)
-                ? st.src_frame->best_effort_timestamp
-                : st.src_frame->pts;
-            out.pts_seconds = (pts == AV_NOPTS_VALUE)
-                ? -1.0
-                : static_cast<double>(pts) * ffi::av_q2d(st.stream_tb);
+                                    ? st.src_frame->best_effort_timestamp
+                                    : st.src_frame->pts;
+            out.pts_seconds   = (pts == AV_NOPTS_VALUE)
+                                    ? -1.0
+                                    : static_cast<double>(pts) * ffi::av_q2d(st.stream_tb);
             return looped ? 2 : 0;
         }
         if (rc == AVERROR_EOF) {
             if (loop_) {
-                if (!seek_to_start(st)) {
+                if (! seek_to_start(st)) {
                     fail(err, "loop seek-to-zero failed");
                     return -1;
                 }
@@ -828,11 +858,14 @@ int VideoDecoder::next_drm_frame_(DrmFrameView& out, Error* err) {
         fail(err, "next_drm_frame called on non-VAAPI decoder");
         return -1;
     }
-    State& st = *st_;
+    State& st     = *st_;
     bool   looped = false;
 
-    if (!st.drm_frame) st.drm_frame.reset(av_frame_alloc());
-    if (!st.drm_frame) { fail(err, "av_frame_alloc(drm_frame) failed"); return -1; }
+    if (! st.drm_frame) st.drm_frame.reset(av_frame_alloc());
+    if (! st.drm_frame) {
+        fail(err, "av_frame_alloc(drm_frame) failed");
+        return -1;
+    }
 
     /* Release prior pull's mapped fds before grabbing the next surface. */
     av_frame_unref(st.src_frame.get());
@@ -851,20 +884,20 @@ int VideoDecoder::next_drm_frame_(DrmFrameView& out, Error* err) {
             return -1;
 #endif
             st.drm_frame->format = AV_PIX_FMT_DRM_PRIME;
-            int mrc = av_hwframe_map(st.drm_frame.get(), st.src_frame.get(),
-                                     AV_HWFRAME_MAP_READ | AV_HWFRAME_MAP_DIRECT);
+            int mrc              = av_hwframe_map(st.drm_frame.get(),
+                                                  st.src_frame.get(),
+                                                  AV_HWFRAME_MAP_READ | AV_HWFRAME_MAP_DIRECT);
             if (mrc < 0) {
                 fail(err, "av_hwframe_map(DRM_PRIME): " + av_err_str(mrc));
                 return -1;
             }
-            const auto* desc = reinterpret_cast<const AVDRMFrameDescriptor*>(
-                st.drm_frame->data[0]);
-            if (!desc) {
+            const auto* desc = reinterpret_cast<const AVDRMFrameDescriptor*>(st.drm_frame->data[0]);
+            if (! desc) {
                 fail(err, "av_hwframe_map: DRM_PRIME descriptor null");
                 return -1;
             }
-            const int n_obj = desc->nb_objects < 4 ? desc->nb_objects : 4;
-            const int n_lay = desc->nb_layers  < 4 ? desc->nb_layers  : 4;
+            const int n_obj  = desc->nb_objects < 4 ? desc->nb_objects : 4;
+            const int n_lay  = desc->nb_layers < 4 ? desc->nb_layers : 4;
             out.object_count = static_cast<uint32_t>(n_obj);
             for (int i = 0; i < n_obj; ++i) {
                 out.objects[i].fd              = desc->objects[i].fd;
@@ -873,9 +906,9 @@ int VideoDecoder::next_drm_frame_(DrmFrameView& out, Error* err) {
             }
             out.layer_count = static_cast<uint32_t>(n_lay);
             for (int li = 0; li < n_lay; ++li) {
-                const auto& la = desc->layers[li];
+                const auto& la             = desc->layers[li];
                 out.layers[li].fourcc      = la.format;
-                const int np = la.nb_planes < 4 ? la.nb_planes : 4;
+                const int np               = la.nb_planes < 4 ? la.nb_planes : 4;
                 out.layers[li].plane_count = static_cast<uint32_t>(np);
                 for (int p = 0; p < np; ++p) {
                     out.layers[li].planes[p].object_index =
@@ -884,24 +917,24 @@ int VideoDecoder::next_drm_frame_(DrmFrameView& out, Error* err) {
                     out.layers[li].planes[p].pitch  = la.planes[p].pitch;
                 }
             }
-            out.width  = static_cast<uint32_t>(st.src_frame->width);
-            out.height = static_cast<uint32_t>(st.src_frame->height);
+            out.width       = static_cast<uint32_t>(st.src_frame->width);
+            out.height      = static_cast<uint32_t>(st.src_frame->height);
             out.colorspace  = map_colorspace(st.src_frame->colorspace);
             out.color_range = map_range(st.src_frame->color_range);
             /* VAAPI 8-bit profiles land as NV12; 10-bit as P010. We only
              * support 8-bit on the DRM_PRIME zero-copy path for now. */
-            out.bit_depth = 8;
+            out.bit_depth     = 8;
             const int64_t pts = (st.src_frame->best_effort_timestamp != AV_NOPTS_VALUE)
-                ? st.src_frame->best_effort_timestamp
-                : st.src_frame->pts;
-            out.pts_seconds = (pts == AV_NOPTS_VALUE)
-                ? -1.0
-                : static_cast<double>(pts) * ffi::av_q2d(st.stream_tb);
+                                    ? st.src_frame->best_effort_timestamp
+                                    : st.src_frame->pts;
+            out.pts_seconds   = (pts == AV_NOPTS_VALUE)
+                                    ? -1.0
+                                    : static_cast<double>(pts) * ffi::av_q2d(st.stream_tb);
             return looped ? 2 : 0;
         }
         if (rc == AVERROR_EOF) {
             if (loop_) {
-                if (!seek_to_start(st)) {
+                if (! seek_to_start(st)) {
                     fail(err, "loop seek-to-zero failed");
                     return -1;
                 }
@@ -940,7 +973,7 @@ int VideoDecoder::next_drm_frame_(DrmFrameView& out, Error* err) {
 }
 
 int VideoDecoder::next_frame_(Nv12Frame& out, Error* err) {
-    State& st = *st_;
+    State& st     = *st_;
     bool   looped = false;
 
     /* Resize output buffer to NV12 size on first call (and on extent
@@ -961,8 +994,8 @@ int VideoDecoder::next_frame_(Nv12Frame& out, Error* err) {
              * typically NV12 — and swscale handles whatever it is. */
             AVFrame* feed = st.src_frame.get();
             if (feed->format == AV_PIX_FMT_VULKAN) {
-                if (!st.sw_frame) st.sw_frame.reset(av_frame_alloc());
-                if (!st.sw_frame) {
+                if (! st.sw_frame) st.sw_frame.reset(av_frame_alloc());
+                if (! st.sw_frame) {
                     fail(err, "av_frame_alloc(sw_frame) failed");
                     return -1;
                 }
@@ -975,9 +1008,9 @@ int VideoDecoder::next_frame_(Nv12Frame& out, Error* err) {
                 }
                 /* Preserve PTS across the transfer (transfer_data copies
                  * pixel data only). */
-                st.sw_frame->pts                    = feed->pts;
-                st.sw_frame->best_effort_timestamp  = feed->best_effort_timestamp;
-                feed = st.sw_frame.get();
+                st.sw_frame->pts                   = feed->pts;
+                st.sw_frame->best_effort_timestamp = feed->best_effort_timestamp;
+                feed                               = st.sw_frame.get();
             }
 
             const auto src_fmt = static_cast<AVPixelFormat>(feed->format);
@@ -987,39 +1020,40 @@ int VideoDecoder::next_frame_(Nv12Frame& out, Error* err) {
                 fail(err, "decoded frame has invalid dimensions/format");
                 return -1;
             }
-            if (!ensure_sws(st, src_w, src_h, src_fmt, target_w_, target_h_)) {
-                fail(err, std::string("sws_getContext failed (src=") +
-                          av_get_pix_fmt_name(src_fmt) + ")");
+            if (! ensure_sws(st, src_w, src_h, src_fmt, target_w_, target_h_)) {
+                fail(err,
+                     std::string("sws_getContext failed (src=") + av_get_pix_fmt_name(src_fmt) +
+                         ")");
                 return -1;
             }
-            uint8_t* y_dst  = out.data.data();
-            uint8_t* uv_dst = out.data.data() + size_t(target_w_) * target_h_;
+            uint8_t* y_dst          = out.data.data();
+            uint8_t* uv_dst         = out.data.data() + size_t(target_w_) * target_h_;
             uint8_t* dst_planes[4]  = { y_dst, uv_dst, nullptr, nullptr };
             int      dst_strides[4] = { static_cast<int>(target_w_),
-                                        static_cast<int>(target_w_),  /* NV12 UV pitch == width */
-                                        0, 0 };
-            int scaled = sws_scale(st.sws.get(),
-                                   feed->data, feed->linesize,
-                                   0, src_h, dst_planes, dst_strides);
+                                        static_cast<int>(target_w_), /* NV12 UV pitch == width */
+                                        0,
+                                        0 };
+            int      scaled         = sws_scale(
+                st.sws.get(), feed->data, feed->linesize, 0, src_h, dst_planes, dst_strides);
             if (scaled <= 0) {
                 fail(err, "sws_scale produced no rows");
                 return -1;
             }
             const int64_t pts = (feed->best_effort_timestamp != AV_NOPTS_VALUE)
-                ? feed->best_effort_timestamp
-                : feed->pts;
-            out.pts_seconds = (pts == AV_NOPTS_VALUE)
-                ? -1.0
-                : static_cast<double>(pts) * ffi::av_q2d(st.stream_tb);
-            out.colorspace  = map_colorspace(feed->colorspace);
-            out.color_range = map_range(feed->color_range);
+                                    ? feed->best_effort_timestamp
+                                    : feed->pts;
+            out.pts_seconds   = (pts == AV_NOPTS_VALUE)
+                                    ? -1.0
+                                    : static_cast<double>(pts) * ffi::av_q2d(st.stream_tb);
+            out.colorspace    = map_colorspace(feed->colorspace);
+            out.color_range   = map_range(feed->color_range);
             av_frame_unref(st.src_frame.get());
             if (st.sw_frame) av_frame_unref(st.sw_frame.get());
             return looped ? 2 : 0;
         }
         if (rc == AVERROR_EOF) {
             if (loop_) {
-                if (!seek_to_start(st)) {
+                if (! seek_to_start(st)) {
                     fail(err, "loop seek-to-zero failed");
                     return -1;
                 }

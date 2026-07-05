@@ -2,7 +2,8 @@ export module wavsen.video:presenter;
 
 import rstd.cppstd;
 
-export namespace wavsen::video {
+export namespace wavsen::video
+{
 
 // PTS → wall-clock pacing helper for the video plugin's render loop.
 //
@@ -36,13 +37,15 @@ public:
 
     // Force the next call to re-prime the baseline. Useful when the
     // caller knows the stream just looped or the decoder was reset.
-    void reset() { primed_ = false; t0_pts_ = -1.0; external_drop_streak_ = 0; }
+    void reset() {
+        primed_               = false;
+        t0_pts_               = -1.0;
+        external_drop_streak_ = 0;
+    }
 
     // Install an external (audio) master clock. Pass nullptr to revert to
     // wall-clock pacing.
-    void set_external_clock(std::function<double()> clock_fn) {
-        clock_fn_ = std::move(clock_fn);
-    }
+    void set_external_clock(std::function<double()> clock_fn) { clock_fn_ = std::move(clock_fn); }
 
     // Returns true if the caller should render the frame now (possibly
     // after sleeping); false if the frame is too far behind schedule and
@@ -53,8 +56,8 @@ public:
 
         if (clock_fn_) {
             const double now_pts = clock_fn_();
-            if (!std::isnan(now_pts)) {
-                const double skew = pts_seconds - now_pts;
+            if (! std::isnan(now_pts)) {
+                const double skew        = pts_seconds - now_pts;
                 const double max_lag_s   = std::chrono::duration<double>(max_lag_).count();
                 const double max_sleep_s = std::chrono::duration<double>(max_sleep_).count();
                 if (skew < -max_lag_s) {
@@ -70,10 +73,9 @@ public:
                     return false;
                 }
                 external_drop_streak_ = 0;
-                if (skew >  max_sleep_s) return true;
+                if (skew > max_sleep_s) return true;
                 if (skew > 0.0) {
-                    std::this_thread::sleep_for(
-                        std::chrono::duration<double>(skew));
+                    std::this_thread::sleep_for(std::chrono::duration<double>(skew));
                 }
                 return true;
             }
@@ -81,7 +83,7 @@ public:
         }
 
         const auto now = Clock::now();
-        if (!primed_) {
+        if (! primed_) {
             t0_wall_ = now;
             t0_pts_  = pts_seconds;
             primed_  = true;
@@ -119,12 +121,12 @@ private:
     // burst, short enough that A/V doesn't drift past noticeable.
     static constexpr std::uint32_t kExternalDropStreakReset = 30;
 
-    Duration      max_lag_;
-    Duration      max_sleep_;
-    TimePoint     t0_wall_ {};
-    double        t0_pts_  { -1.0 };
-    bool          primed_  { false };
-    std::uint32_t external_drop_streak_ { 0 };
+    Duration                max_lag_;
+    Duration                max_sleep_;
+    TimePoint               t0_wall_ {};
+    double                  t0_pts_ { -1.0 };
+    bool                    primed_ { false };
+    std::uint32_t           external_drop_streak_ { 0 };
     std::function<double()> clock_fn_;
 };
 

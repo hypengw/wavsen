@@ -4,23 +4,23 @@ import rstd.cppstd;
 import rstd;
 import rstd.log;
 import :byte_stream;
-import :core;          // AudioDevice, IPullChannel, DeviceDesc
-import :file;          // StreamDecoder
+import :core; // AudioDevice, IPullChannel, DeviceDesc
+import :file; // StreamDecoder
 import :av_sync;
 
-namespace wavsen::audio {
+namespace wavsen::audio
+{
 
-namespace {
+namespace
+{
 
 // Internal pull channel for AvPlayer. Calls into StreamDecoder and
 // stamps the master-clock anchor on the first frame after open / seek.
 class AvPullChannel : public IPullChannel {
 public:
-    AvPullChannel(StreamDecoder*               decoder,
-                  std::atomic<double>*         pts_at_anchor,
-                  std::atomic<std::uint64_t>*  device_pos_at_anchor,
-                  std::atomic<bool>*           needs_reanchor,
-                  std::atomic<bool>*           anchored,
+    AvPullChannel(StreamDecoder* decoder, std::atomic<double>* pts_at_anchor,
+                  std::atomic<std::uint64_t>* device_pos_at_anchor,
+                  std::atomic<bool>* needs_reanchor, std::atomic<bool>* anchored,
                   std::function<std::uint64_t()> device_pos_now)
         : decoder_(decoder),
           pts_at_anchor_(pts_at_anchor),
@@ -35,19 +35,15 @@ public:
             // Anchor: at the moment this batch enters the device, the
             // decoder's most-recent PTS corresponds to the device's
             // current playback position.
-            pts_at_anchor_->store(decoder_->current_pts_seconds(),
-                                  std::memory_order_relaxed);
-            device_pos_at_anchor_->store(device_pos_now_(),
-                                         std::memory_order_relaxed);
+            pts_at_anchor_->store(decoder_->current_pts_seconds(), std::memory_order_relaxed);
+            device_pos_at_anchor_->store(device_pos_now_(), std::memory_order_relaxed);
             anchored_->store(true, std::memory_order_release);
             needs_reanchor_->store(false, std::memory_order_release);
         }
         return produced;
     }
 
-    void pass_desc(const DeviceDesc& d) override {
-        decoder_->retarget(d);
-    }
+    void pass_desc(const DeviceDesc& d) override { decoder_->retarget(d); }
 
 private:
     StreamDecoder*                 decoder_;
@@ -63,52 +59,52 @@ private:
 class AvPlayer::Impl {
 public:
     AudioDevice    device;
-    StreamDecoder* decoder_ptr = nullptr;  // owned by AvPullChannel via decoder_storage
+    StreamDecoder* decoder_ptr = nullptr; // owned by AvPullChannel via decoder_storage
     // The decoder must outlive the audio stream (which calls into it).
     // Owned via unique_ptr so the AvPullChannel can hold a stable pointer.
     std::unique_ptr<StreamDecoder> decoder_storage;
 
-    std::atomic<double>        pts_at_anchor        { 0.0 };
+    std::atomic<double>        pts_at_anchor { 0.0 };
     std::atomic<std::uint64_t> device_pos_at_anchor { 0 };
-    std::atomic<bool>          needs_reanchor       { true };
-    std::atomic<bool>          anchored             { false };
-    std::atomic<bool>          paused               { true };
+    std::atomic<bool>          needs_reanchor { true };
+    std::atomic<bool>          anchored { false };
+    std::atomic<bool>          paused { true };
 };
 
-AvPlayer::AvPlayer() : impl_(std::make_unique<Impl>()) {}
+AvPlayer::AvPlayer(): impl_(std::make_unique<Impl>()) {}
 AvPlayer::~AvPlayer() = default;
 
 auto AvPlayer::open(std::shared_ptr<IByteStream> src)
-    -> rstd::Result<std::unique_ptr<AvPlayer>, AvPlayerError>
-{
+    -> rstd::Result<std::unique_ptr<AvPlayer>, AvPlayerError> {
     auto p = std::unique_ptr<AvPlayer>(new AvPlayer());
 
-    if (!p->impl_->device.init()) {
-        return rstd::Err(AvPlayerError{ "audio device init failed" });
+    if (! p->impl_->device.init()) {
+        return rstd::Err(AvPlayerError { "audio device init failed" });
     }
 
     const auto desc = p->impl_->device.desc();
 
     p->impl_->decoder_storage = std::make_unique<StreamDecoder>();
-    if (!p->impl_->decoder_storage->open(std::move(src), desc)) {
-        return rstd::Err(AvPlayerError{ "audio decoder open failed" });
+    if (! p->impl_->decoder_storage->open(std::move(src), desc)) {
+        return rstd::Err(AvPlayerError { "audio decoder open failed" });
     }
     p->impl_->decoder_ptr = p->impl_->decoder_storage.get();
 
-    rstd::log::info(
-        "wavsen::audio::AvPlayer: opened ({} ch @ {} Hz device, source {} ch @ {} Hz)",
-        desc.channels, desc.sample_rate,
-        p->impl_->decoder_ptr->channels(),
-        p->impl_->decoder_ptr->sample_rate());
+    rstd::log::info("wavsen::audio::AvPlayer: opened ({} ch @ {} Hz device, source {} ch @ {} Hz)",
+                    desc.channels,
+                    desc.sample_rate,
+                    p->impl_->decoder_ptr->channels(),
+                    p->impl_->decoder_ptr->sample_rate());
 
-    auto* dev = &p->impl_->device;
-    auto channel = std::make_unique<AvPullChannel>(
-        p->impl_->decoder_ptr,
-        &p->impl_->pts_at_anchor,
-        &p->impl_->device_pos_at_anchor,
-        &p->impl_->needs_reanchor,
-        &p->impl_->anchored,
-        [dev]() { return dev->stream_position_frames(); });
+    auto* dev     = &p->impl_->device;
+    auto  channel = std::make_unique<AvPullChannel>(p->impl_->decoder_ptr,
+                                                    &p->impl_->pts_at_anchor,
+                                                    &p->impl_->device_pos_at_anchor,
+                                                    &p->impl_->needs_reanchor,
+                                                    &p->impl_->anchored,
+                                                    [dev]() {
+                                                       return dev->stream_position_frames();
+                                                    });
     p->impl_->device.mount(std::move(channel));
 
     return rstd::Ok(std::move(p));
@@ -124,12 +120,10 @@ void AvPlayer::pause() {
     impl_->paused.store(true, std::memory_order_relaxed);
 }
 
-bool AvPlayer::is_paused() const {
-    return impl_->paused.load(std::memory_order_relaxed);
-}
+bool AvPlayer::is_paused() const { return impl_->paused.load(std::memory_order_relaxed); }
 
 void AvPlayer::seek_to_start() {
-    const bool was_playing = !is_paused();
+    const bool was_playing = ! is_paused();
     impl_->device.stop();
     if (impl_->decoder_ptr) {
         impl_->decoder_ptr->seek_to(0.0);
@@ -142,7 +136,7 @@ void AvPlayer::seek_to_start() {
 }
 
 double AvPlayer::current_time_seconds() const {
-    if (!impl_->anchored.load(std::memory_order_acquire)) {
+    if (! impl_->anchored.load(std::memory_order_acquire)) {
         return std::numeric_limits<double>::quiet_NaN();
     }
     const auto sr = impl_->device.desc().sample_rate;
@@ -156,16 +150,14 @@ double AvPlayer::current_time_seconds() const {
     return pts0 + static_cast<double>(played - base) / static_cast<double>(sr);
 }
 
-void AvPlayer::set_volume(float v) { impl_->device.set_volume(v); }
-void AvPlayer::set_muted(bool m)   { impl_->device.set_muted(m); }
+void  AvPlayer::set_volume(float v) { impl_->device.set_volume(v); }
+void  AvPlayer::set_muted(bool m) { impl_->device.set_muted(m); }
 float AvPlayer::volume_scale() const { return impl_->device.volume_scale(); }
-void AvPlayer::set_volume_scale(float v) { impl_->device.set_volume_scale(v); }
-void AvPlayer::set_volume_scale(float v, std::uint32_t fade_ms) {
+void  AvPlayer::set_volume_scale(float v) { impl_->device.set_volume_scale(v); }
+void  AvPlayer::set_volume_scale(float v, std::uint32_t fade_ms) {
     impl_->device.set_volume_scale(v, fade_ms);
 }
 
-bool AvPlayer::is_eof() const {
-    return impl_->decoder_ptr && impl_->decoder_ptr->is_eof();
-}
+bool AvPlayer::is_eof() const { return impl_->decoder_ptr && impl_->decoder_ptr->is_eof(); }
 
 } // namespace wavsen::audio

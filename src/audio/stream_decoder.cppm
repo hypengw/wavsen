@@ -1,11 +1,12 @@
 export module wavsen.audio:file;
 
 import rstd.cppstd;
-import :byte_stream;  // IByteStream
-import :core;         // DeviceDesc
-import :mixer;        // SoundStream (for make_stream factory)
+import :byte_stream; // IByteStream
+import :core;        // DeviceDesc
+import :mixer;       // SoundStream (for make_stream factory)
 
-export namespace wavsen::audio {
+export namespace wavsen::audio
+{
 
 // libav*-backed audio decoder + resampler. Reads bytes from `IByteStream`
 // (via a custom AVIOContext), decodes via libavformat/libavcodec, and
@@ -48,7 +49,7 @@ public:
 
     // Source stream characteristics. Both return 0 before a successful open.
     auto sample_rate() const -> std::uint32_t;
-    auto channels()    const -> std::uint32_t;
+    auto channels() const -> std::uint32_t;
 
 private:
     class Impl;

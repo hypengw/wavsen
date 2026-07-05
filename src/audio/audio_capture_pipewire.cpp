@@ -16,13 +16,17 @@ import rstd.log;
 import pipewire;
 import :capture;
 
-namespace wavsen::audio {
+namespace wavsen::audio
+{
 
-namespace {
+namespace
+{
 
 std::once_flag g_pw_init_once_capture;
-void ensure_pw_init() {
-    std::call_once(g_pw_init_once_capture, [] { pw_init(nullptr, nullptr); });
+void           ensure_pw_init() {
+    std::call_once(g_pw_init_once_capture, [] {
+        pw_init(nullptr, nullptr);
+    });
 }
 
 constexpr std::uint32_t kDefaultRate     = 48000;
@@ -69,23 +73,25 @@ public:
 
         pw_thread_loop_lock(loop_);
 
-        auto* props = pw_properties_new(
-            PW_KEY_MEDIA_TYPE,       "Audio",
-            PW_KEY_MEDIA_CATEGORY,   "Capture",
-            PW_KEY_MEDIA_ROLE,       "Music",
-            PW_KEY_APP_NAME,         "wavsen",
-            PW_KEY_NODE_NAME,        "wavsen-capture",
-            PW_KEY_NODE_DESCRIPTION, "wavsen audio response capture",
-            PW_KEY_STREAM_CAPTURE_SINK, "true",
-            nullptr);
+        auto* props = pw_properties_new(PW_KEY_MEDIA_TYPE,
+                                        "Audio",
+                                        PW_KEY_MEDIA_CATEGORY,
+                                        "Capture",
+                                        PW_KEY_MEDIA_ROLE,
+                                        "Music",
+                                        PW_KEY_APP_NAME,
+                                        "wavsen",
+                                        PW_KEY_NODE_NAME,
+                                        "wavsen-capture",
+                                        PW_KEY_NODE_DESCRIPTION,
+                                        "wavsen audio response capture",
+                                        PW_KEY_STREAM_CAPTURE_SINK,
+                                        "true",
+                                        nullptr);
         pw_properties_setf(props, PW_KEY_NODE_LATENCY, "%u/%u", kQuantum, kDefaultRate);
 
         stream_ = pw_stream_new_simple(
-            pw_thread_loop_get_loop(loop_),
-            "wavsen-capture",
-            props,
-            &stream_events,
-            this);
+            pw_thread_loop_get_loop(loop_), "wavsen-capture", props, &stream_events, this);
         if (! stream_) {
             pw_thread_loop_unlock(loop_);
             rstd::log::error("wavsen::audio: capture pw_stream_new_simple failed");
@@ -95,7 +101,7 @@ public:
             return false;
         }
 
-        std::uint8_t   pod_buffer[1024];
+        std::uint8_t    pod_buffer[1024];
         spa_pod_builder b {};
         b.data = pod_buffer;
         b.size = sizeof(pod_buffer);
@@ -109,13 +115,9 @@ public:
         params[0] = spa_format_audio_raw_build(&b, SPA_PARAM_EnumFormat, &info);
 
         const auto flags = static_cast<pw_stream_flags>(
-            PW_STREAM_FLAG_AUTOCONNECT |
-            PW_STREAM_FLAG_MAP_BUFFERS |
-            PW_STREAM_FLAG_RT_PROCESS);
+            PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS | PW_STREAM_FLAG_RT_PROCESS);
 
-        if (pw_stream_connect(stream_, PW_DIRECTION_INPUT, PW_ID_ANY, flags,
-                              params, 1) < 0)
-        {
+        if (pw_stream_connect(stream_, PW_DIRECTION_INPUT, PW_ID_ANY, flags, params, 1) < 0) {
             rstd::log::error("wavsen::audio: capture pw_stream_connect failed");
             pw_stream_destroy(stream_);
             stream_ = nullptr;
@@ -129,7 +131,9 @@ public:
         pw_thread_loop_unlock(loop_);
 
         rstd::log::info("wavsen::audio: capture inited (monitor sink, "
-                        "{} ch @ {} Hz)", kDefaultChannels, kDefaultRate);
+                        "{} ch @ {} Hz)",
+                        kDefaultChannels,
+                        kDefaultRate);
         return true;
     }
 
@@ -183,15 +187,15 @@ private:
             return;
         }
 
-        auto& d         = sb->datas[0];
-        const auto stride = d.chunk->stride > 0
-                                ? static_cast<std::uint32_t>(d.chunk->stride)
-                                : kDefaultChannels * static_cast<std::uint32_t>(sizeof(float));
+        auto&      d        = sb->datas[0];
+        const auto stride   = d.chunk->stride > 0
+                                  ? static_cast<std::uint32_t>(d.chunk->stride)
+                                  : kDefaultChannels * static_cast<std::uint32_t>(sizeof(float));
         const auto channels = stride / static_cast<std::uint32_t>(sizeof(float));
         const std::uint32_t offset = d.chunk->offset % d.maxsize;
         const std::uint32_t bytes  = std::min(d.chunk->size, d.maxsize - offset);
-        const auto* src = reinterpret_cast<const float*>(
-            static_cast<const std::uint8_t*>(d.data) + offset);
+        const auto*         src =
+            reinterpret_cast<const float*>(static_cast<const std::uint8_t*>(d.data) + offset);
         const std::uint32_t n_frames = bytes / stride;
 
         self->ingest(src, n_frames, channels);
@@ -199,12 +203,12 @@ private:
         pw_stream_queue_buffer(self->stream_, b);
     }
 
-    static void on_state_changed(void* /*user*/, ::pw_stream_state /*old*/,
-                                 ::pw_stream_state state, const char* error) {
+    static void on_state_changed(void* /*user*/, ::pw_stream_state /*old*/, ::pw_stream_state state,
+                                 const char* error) {
         switch (state) {
         case PW_STREAM_STATE_ERROR:
             rstd::log::error("wavsen::audio: capture stream ERROR{}",
-                             error ? std::string(": ") + error : std::string{});
+                             error ? std::string(": ") + error : std::string {});
             break;
         case PW_STREAM_STATE_UNCONNECTED:
             rstd::log::debug("wavsen::audio: capture stream UNCONNECTED");
@@ -282,14 +286,14 @@ private:
     dsp::SpectrumBands               smoothed_ {};
 
     mutable std::atomic<std::uint32_t> seq_ { 0 };
-    AudioSpectrum                       published_ {};
+    AudioSpectrum                      published_ {};
 };
 
-AudioCapture::AudioCapture() : impl_(std::make_unique<Impl>()) {}
+AudioCapture::AudioCapture(): impl_(std::make_unique<Impl>()) {}
 AudioCapture::~AudioCapture() = default;
 
-bool AudioCapture::init()           { return impl_->init(); }
-void AudioCapture::uninit()         { impl_->uninit(); }
+bool AudioCapture::init() { return impl_->init(); }
+void AudioCapture::uninit() { impl_->uninit(); }
 bool AudioCapture::is_inited() const { return impl_->is_inited(); }
 bool AudioCapture::snapshot(AudioSpectrum& out) const { return impl_->snapshot(out); }
 

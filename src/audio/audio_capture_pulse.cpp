@@ -16,9 +16,11 @@ import rstd.log;
 import pulse;
 import :capture;
 
-namespace wavsen::audio {
+namespace wavsen::audio
+{
 
-namespace {
+namespace
+{
 
 constexpr std::uint32_t kDefaultRate     = 48000;
 constexpr std::uint32_t kDefaultChannels = 2;
@@ -84,7 +86,7 @@ public:
         // Resolve default sink → "<sink>.monitor" source name.
         default_sink_.clear();
         server_info_done_ = false;
-        auto* op = pa_context_get_server_info(ctx_, &Impl::on_server_info, this);
+        auto* op          = pa_context_get_server_info(ctx_, &Impl::on_server_info, this);
         if (! op) {
             rstd::log::error("wavsen::audio: capture pa_context_get_server_info failed");
             destroy_locked();
@@ -124,7 +126,7 @@ public:
         pa_stream_set_state_callback(stream_, &Impl::on_stream_state, this);
         pa_stream_set_read_callback(stream_, &Impl::on_read, this);
 
-        const auto frame_bytes = kDefaultChannels * static_cast<std::uint32_t>(sizeof(float));
+        const auto     frame_bytes = kDefaultChannels * static_cast<std::uint32_t>(sizeof(float));
         pa_buffer_attr ba {};
         ba.maxlength = static_cast<std::uint32_t>(-1);
         ba.tlength   = static_cast<std::uint32_t>(-1);
@@ -160,8 +162,10 @@ public:
         pa_threaded_mainloop_unlock(loop_);
 
         rstd::log::info("wavsen::audio: capture inited (pulse monitor '{}', "
-                        "{} ch @ {} Hz)", monitor_name,
-                        kDefaultChannels, kDefaultRate);
+                        "{} ch @ {} Hz)",
+                        monitor_name,
+                        kDefaultChannels,
+                        kDefaultRate);
         return true;
     }
 
@@ -253,8 +257,8 @@ private:
             }
             constexpr std::uint32_t channels = kDefaultChannels;
             constexpr std::uint32_t stride   = channels * sizeof(float);
-            const auto* src = static_cast<const float*>(data);
-            const std::uint32_t n_frames = static_cast<std::uint32_t>(sz / stride);
+            const auto*             src      = static_cast<const float*>(data);
+            const std::uint32_t     n_frames = static_cast<std::uint32_t>(sz / stride);
             self->ingest(src, n_frames, channels);
             pa_stream_drop(s);
         }
@@ -324,14 +328,14 @@ private:
     dsp::SpectrumBands               smoothed_ {};
 
     mutable std::atomic<std::uint32_t> seq_ { 0 };
-    AudioSpectrum                       published_ {};
+    AudioSpectrum                      published_ {};
 };
 
-AudioCapture::AudioCapture() : impl_(std::make_unique<Impl>()) {}
+AudioCapture::AudioCapture(): impl_(std::make_unique<Impl>()) {}
 AudioCapture::~AudioCapture() = default;
 
-bool AudioCapture::init()           { return impl_->init(); }
-void AudioCapture::uninit()         { impl_->uninit(); }
+bool AudioCapture::init() { return impl_->init(); }
+void AudioCapture::uninit() { impl_->uninit(); }
 bool AudioCapture::is_inited() const { return impl_->is_inited(); }
 bool AudioCapture::snapshot(AudioSpectrum& out) const { return impl_->snapshot(out); }
 

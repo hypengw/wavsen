@@ -5,7 +5,7 @@ module;
  * wavsen::ffi::vulkan module exports only a curated subset; pull the
  * full header into the GMF for the implementation. */
 #include <vulkan/vulkan.h>
-#include "nv12_to_rgba.spv.h"  // generated at build time by glslangValidator
+#include "nv12_to_rgba.spv.h" // generated at build time by glslangValidator
 
 module wavsen.video;
 
@@ -1328,9 +1328,9 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm, VkImage dst, uint32_t
         mci.drmFormatModifierPlaneCount = 2;
         mci.pPlaneLayouts               = pl;
         VkExternalMemoryImageCreateInfo emi {};
-        emi.sType       = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO;
-        emi.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
-        emi.pNext       = &mci;
+        emi.sType               = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO;
+        emi.handleTypes         = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+        emi.pNext               = &mci;
         VkFormat view_formats[] = {
             VK_FORMAT_G8_B8R8_2PLANE_420_UNORM,
             VK_FORMAT_R8_UNORM,

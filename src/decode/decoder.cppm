@@ -3,9 +3,11 @@ export module wavsen.decode;
 import rstd.cppstd;
 import rstd;
 
-export namespace wavsen::decode {
+export namespace wavsen::decode
+{
 
-enum class ErrorKind : std::int32_t {
+enum class ErrorKind : std::int32_t
+{
     InvalidArgs,
     OpenFailed,
     NoVideoStream,

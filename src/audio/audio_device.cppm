@@ -2,7 +2,8 @@ export module wavsen.audio:core;
 
 import rstd.cppstd;
 
-export namespace wavsen::audio {
+export namespace wavsen::audio
+{
 
 // Negotiated stream format — wavsen always asks the backend for f32 interleaved.
 struct DeviceDesc {
@@ -15,7 +16,7 @@ struct DeviceDesc {
 // number of interleaved frames to write into `dst`.
 class IPullChannel {
 public:
-    virtual ~IPullChannel() = default;
+    virtual ~IPullChannel()                                                 = default;
     virtual auto next_pcm(void* dst, std::uint32_t frames) -> std::uint64_t = 0;
     virtual void pass_desc(const DeviceDesc&)                               = 0;
 };

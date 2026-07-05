@@ -1,9 +1,10 @@
 export module wavsen.audio:mixer;
 
 import rstd.cppstd;
-import :byte_stream;  // IByteStream
+import :byte_stream; // IByteStream
 
-export namespace wavsen::audio {
+export namespace wavsen::audio
+{
 
 // A mountable PCM source. Data callback fills `frames` interleaved frames
 // of the device's negotiated format (f32 little-endian) and channel count.
