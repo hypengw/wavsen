@@ -76,13 +76,23 @@ AvPlayer::~AvPlayer() = default;
 
 auto AvPlayer::open(std::shared_ptr<IByteStream> src)
     -> rstd::Result<std::unique_ptr<AvPlayer>, AvPlayerError> {
+    return open(std::move(src), true);
+}
+
+auto AvPlayer::open(std::shared_ptr<IByteStream> src, bool open_device)
+    -> rstd::Result<std::unique_ptr<AvPlayer>, AvPlayerError> {
     auto p = std::unique_ptr<AvPlayer>(new AvPlayer());
 
-    if (! p->impl_->device.init()) {
+    DeviceDesc desc {
+        .channels    = 2,
+        .sample_rate = 48000,
+    };
+    if (open_device && ! p->impl_->device.init()) {
         return rstd::Err(AvPlayerError { "audio device init failed" });
     }
-
-    const auto desc = p->impl_->device.desc();
+    if (p->impl_->device.is_inited()) {
+        desc = p->impl_->device.desc();
+    }
 
     p->impl_->decoder_storage = std::make_unique<StreamDecoder>();
     if (! p->impl_->decoder_storage->open(std::move(src), desc)) {
@@ -90,7 +100,7 @@ auto AvPlayer::open(std::shared_ptr<IByteStream> src)
     }
     p->impl_->decoder_ptr = p->impl_->decoder_storage.get();
 
-    rstd::log::info("wavsen::audio::AvPlayer: opened ({} ch @ {} Hz device, source {} ch @ {} Hz)",
+    rstd::log::info("wavsen::audio::AvPlayer: opened ({} ch @ {} Hz target, source {} ch @ {} Hz)",
                     desc.channels,
                     desc.sample_rate,
                     p->impl_->decoder_ptr->channels(),
@@ -110,9 +120,33 @@ auto AvPlayer::open(std::shared_ptr<IByteStream> src)
     return rstd::Ok(std::move(p));
 }
 
+bool AvPlayer::open_device() {
+    if (impl_->device.is_inited()) return true;
+    if (! impl_->device.init()) {
+        return false;
+    }
+    impl_->anchored.store(false, std::memory_order_release);
+    impl_->needs_reanchor.store(true, std::memory_order_release);
+    impl_->device_pos_at_anchor.store(0, std::memory_order_relaxed);
+    if (! impl_->paused.load(std::memory_order_relaxed)) {
+        impl_->device.start();
+    }
+    return true;
+}
+
+void AvPlayer::close_device() {
+    if (! impl_->device.is_inited()) return;
+    impl_->device.uninit();
+    impl_->anchored.store(false, std::memory_order_release);
+    impl_->needs_reanchor.store(true, std::memory_order_release);
+    impl_->device_pos_at_anchor.store(0, std::memory_order_relaxed);
+}
+
+bool AvPlayer::is_device_open() const { return impl_->device.is_inited(); }
+
 void AvPlayer::play() {
-    impl_->device.start();
     impl_->paused.store(false, std::memory_order_relaxed);
+    impl_->device.start();
 }
 
 void AvPlayer::pause() {
@@ -122,20 +156,26 @@ void AvPlayer::pause() {
 
 bool AvPlayer::is_paused() const { return impl_->paused.load(std::memory_order_relaxed); }
 
-void AvPlayer::seek_to_start() {
+void AvPlayer::seek_to_start() { seek_to(0.0); }
+
+void AvPlayer::seek_to(double seconds) {
     const bool was_playing = ! is_paused();
     impl_->device.stop();
     if (impl_->decoder_ptr) {
-        impl_->decoder_ptr->seek_to(0.0);
+        impl_->decoder_ptr->seek_to(seconds);
     }
     impl_->anchored.store(false, std::memory_order_release);
     impl_->needs_reanchor.store(true, std::memory_order_release);
-    if (was_playing) {
+    impl_->device_pos_at_anchor.store(0, std::memory_order_relaxed);
+    if (was_playing && impl_->device.is_inited()) {
         impl_->device.start();
     }
 }
 
 double AvPlayer::current_time_seconds() const {
+    if (! impl_->device.is_inited()) {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
     if (! impl_->anchored.load(std::memory_order_acquire)) {
         return std::numeric_limits<double>::quiet_NaN();
     }

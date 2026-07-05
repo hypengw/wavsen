@@ -24,10 +24,16 @@ class AvPlayer {
 public:
     static auto open(std::shared_ptr<IByteStream> src)
         -> rstd::Result<std::unique_ptr<AvPlayer>, AvPlayerError>;
+    static auto open(std::shared_ptr<IByteStream> src, bool open_device)
+        -> rstd::Result<std::unique_ptr<AvPlayer>, AvPlayerError>;
 
     ~AvPlayer();
     AvPlayer(const AvPlayer&)            = delete;
     AvPlayer& operator=(const AvPlayer&) = delete;
+
+    bool open_device();
+    void close_device();
+    bool is_device_open() const;
 
     void play();
     void pause();
@@ -37,6 +43,7 @@ public:
     // after the video decoder seeks back to the start. The clock will
     // re-anchor on the next data callback.
     void seek_to_start();
+    void seek_to(double seconds);
 
     // PTS in seconds of the audio sample currently being played by the
     // device. Returns NaN before the device is primed; the caller should
