@@ -123,6 +123,8 @@ target_link_libraries(wavsen_video
         rstd.cppstd
         wavsen::ffi::ffmpeg
         wavsen::ffi::vulkan
+    PRIVATE
+        rstd.log
 )
 set_property(TARGET wavsen_video PROPERTY POSITION_INDEPENDENT_CODE ON)
 set_target_properties(wavsen_video PROPERTIES CXX_SCAN_FOR_MODULES ON)
@@ -179,6 +181,7 @@ target_link_libraries(wavsen_audio
         rstd.cppstd
         wavsen::ffi::ffmpeg
     PRIVATE
+        rstd.log
         ${_wavsen_audio_backend_target}
 )
 set_target_properties(wavsen_audio PROPERTIES CXX_SCAN_FOR_MODULES ON)
