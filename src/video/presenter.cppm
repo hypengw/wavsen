@@ -1,9 +1,11 @@
 export module wavsen.video:presenter;
 
-import rstd.cppstd;
+import rstd;
 
 export namespace wavsen::video
 {
+
+using namespace rstd::prelude;
 
 // PTS → wall-clock pacing helper for the video plugin's render loop.
 //
@@ -27,12 +29,11 @@ export namespace wavsen::video
 //   - If clock_fn returns NaN, fall back to the wall-clock algorithm.
 class Presenter {
 public:
-    using Clock     = std::chrono::steady_clock;
-    using Duration  = Clock::duration;
-    using TimePoint = Clock::time_point;
+    using Duration  = rstd::time::Duration;
+    using TimePoint = rstd::time::Instant;
 
-    explicit Presenter(Duration max_lag   = std::chrono::milliseconds(250),
-                       Duration max_sleep = std::chrono::seconds(1))
+    explicit Presenter(Duration max_lag   = Duration::from_millis(250),
+                       Duration max_sleep = Duration::from_secs(1))
         : max_lag_(max_lag), max_sleep_(max_sleep) {}
 
     // Force the next call to re-prime the baseline. Useful when the
@@ -43,9 +44,14 @@ public:
         external_drop_streak_ = 0;
     }
 
-    // Install an external (audio) master clock. Pass nullptr to revert to
-    // wall-clock pacing.
-    void set_external_clock(std::function<double()> clock_fn) { clock_fn_ = std::move(clock_fn); }
+    template<typename F>
+    void set_external_clock(F&& clock_fn)
+        requires rstd::Impled<rstd::mtp::rm_cvf<F>, rstd::FnMut<double()>>
+    {
+        clock_fn_ = Some(rstd::boxed::Box<dyn<FnMut<double()>>>::make(rstd::forward<F>(clock_fn)));
+    }
+
+    void clear_external_clock() { clock_fn_ = None(); }
 
     // Returns true if the caller should render the frame now (possibly
     // after sleeping); false if the frame is too far behind schedule and
@@ -54,12 +60,12 @@ public:
     bool present_frame(double pts_seconds) {
         if (pts_seconds < 0.0) return true;
 
-        if (clock_fn_) {
-            const double now_pts = clock_fn_();
-            if (! std::isnan(now_pts)) {
+        if (clock_fn_.is_some()) {
+            const double now_pts = clock_fn_->as_mut_ptr()->operator()();
+            if (now_pts == now_pts) {
                 const double skew        = pts_seconds - now_pts;
-                const double max_lag_s   = std::chrono::duration<double>(max_lag_).count();
-                const double max_sleep_s = std::chrono::duration<double>(max_sleep_).count();
+                const double max_lag_s   = max_lag_.as_secs_f64();
+                const double max_sleep_s = max_sleep_.as_secs_f64();
                 if (skew < -max_lag_s) {
                     // Video far behind the audio clock. Normally drop,
                     // but if we've been dropping for a long stretch the
@@ -75,14 +81,14 @@ public:
                 external_drop_streak_ = 0;
                 if (skew > max_sleep_s) return true;
                 if (skew > 0.0) {
-                    std::this_thread::sleep_for(std::chrono::duration<double>(skew));
+                    rstd::thread::sleep(Duration::from_secs_f64(skew));
                 }
                 return true;
             }
             // External clock not primed yet — fall through to wall-clock.
         }
 
-        const auto now = Clock::now();
+        const auto now = TimePoint::now();
         if (! primed_) {
             t0_wall_ = now;
             t0_pts_  = pts_seconds;
@@ -95,8 +101,7 @@ public:
             return true;
         }
 
-        const auto delta = std::chrono::duration_cast<Duration>(
-            std::chrono::duration<double>(pts_seconds - t0_pts_));
+        const auto delta  = Duration::from_secs_f64(pts_seconds - t0_pts_);
         const auto target = t0_wall_ + delta;
 
         if (target + max_lag_ < now) {
@@ -110,7 +115,7 @@ public:
                 t0_pts_  = pts_seconds;
                 return true;
             }
-            std::this_thread::sleep_until(target);
+            rstd::thread::sleep(target - now);
         }
         return true;
     }
@@ -119,15 +124,15 @@ private:
     // External-clock drop streak before forcing one present-through.
     // 30 ≈ 1 s @ 30 fps — long enough to ride out a real backpressure
     // burst, short enough that A/V doesn't drift past noticeable.
-    static constexpr std::uint32_t kExternalDropStreakReset = 30;
+    static constexpr u32 kExternalDropStreakReset = 30;
 
-    Duration                max_lag_;
-    Duration                max_sleep_;
-    TimePoint               t0_wall_ {};
-    double                  t0_pts_ { -1.0 };
-    bool                    primed_ { false };
-    std::uint32_t           external_drop_streak_ { 0 };
-    std::function<double()> clock_fn_;
+    Duration                                       max_lag_;
+    Duration                                       max_sleep_;
+    TimePoint                                      t0_wall_ {};
+    double                                         t0_pts_ { -1.0 };
+    bool                                           primed_ { false };
+    u32                                            external_drop_streak_ { 0 };
+    Option<rstd::boxed::Box<dyn<FnMut<double()>>>> clock_fn_;
 };
 
 } // namespace wavsen::video

@@ -9,7 +9,6 @@ module;
 
 module wavsen.video;
 
-import rstd.cppstd;
 import rstd;
 import vulkan;
 import :vk_device;
@@ -18,16 +17,18 @@ import :yuv_to_rgba;
 namespace wavsen::video
 {
 
+using namespace rstd::prelude;
+
 /* Push-constant struct mirroring `PC` in shaders/nv12_to_rgba.comp.
  * std140-friendly: padded to 16-byte boundaries. */
 struct alignas(16) ShaderPushConstants {
-    uint32_t dst_w;
-    uint32_t dst_h;
-    uint32_t _pad0[2];
-    float    m_r[4];
-    float    m_g[4];
-    float    m_b[4];
-    float    offset[4];
+    u32   dst_w;
+    u32   dst_h;
+    u32   _pad0[2];
+    float m_r[4];
+    float m_g[4];
+    float m_b[4];
+    float offset[4];
 };
 static_assert(sizeof(ShaderPushConstants) == 80, "PC size mismatch with shader");
 
@@ -125,8 +126,13 @@ ColorMatrix make_color_matrix(ColorSpace cs, ColorRange cr) {
 namespace
 {
 
-bool fail(Error* err, std::string m) {
-    if (err) err->message = std::move(m);
+bool fail(Error* err, ref<str> message) {
+    if (err) err->message = rstd::string::String::make(message);
+    return false;
+}
+
+bool fail(Error* err, rstd::string::String message) {
+    if (err) err->message = rstd::move(message);
     return false;
 }
 
@@ -142,10 +148,13 @@ const char* vk_result_str(VkResult r) {
     }
 }
 
-uint32_t pick_memory_type(VkPhysicalDevice phys, uint32_t mask, VkMemoryPropertyFlags want) {
-    VkPhysicalDeviceMemoryProperties mp {};
-    vkGetPhysicalDeviceMemoryProperties(phys, &mp);
-    for (uint32_t i = 0; i < mp.memoryTypeCount; ++i) {
+auto vk_error(ref<str> operation, VkResult result) -> rstd::string::String {
+    return rstd::format("{}: {}", operation, vk_result_str(result));
+}
+
+u32 pick_memory_type(const vvk::PhysicalDevice& phys, u32 mask, VkMemoryPropertyFlags want) {
+    const auto mp = phys.GetMemoryProperties().memoryProperties;
+    for (u32 i = 0; i < mp.memoryTypeCount; ++i) {
         if ((mask & (1u << i)) && (mp.memoryTypes[i].propertyFlags & want) == want) {
             return i;
         }
@@ -153,9 +162,9 @@ uint32_t pick_memory_type(VkPhysicalDevice phys, uint32_t mask, VkMemoryProperty
     return UINT32_MAX;
 }
 
-bool create_image_2d(VkDevice device, VkPhysicalDevice phys, VkFormat fmt, uint32_t w, uint32_t h,
-                     VkImageUsageFlags usage, VkImage* out_img, VkDeviceMemory* out_mem,
-                     Error* err) {
+bool create_image_2d(const vvk::Device& device, const vvk::PhysicalDevice& phys, VkFormat fmt,
+                     u32 w, u32 h, VkImageUsageFlags usage, vvk::Image& out_img,
+                     vvk::DeviceMemory& out_mem, Error* err) {
     VkImageCreateInfo ici {};
     ici.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     ici.imageType     = VK_IMAGE_TYPE_2D;
@@ -168,13 +177,12 @@ bool create_image_2d(VkDevice device, VkPhysicalDevice phys, VkFormat fmt, uint3
     ici.usage         = usage;
     ici.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
     ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    if (VkResult r = vkCreateImage(device, &ici, nullptr, out_img); r != VK_SUCCESS) {
-        fail(err, std::string("vkCreateImage: ") + vk_result_str(r));
+    if (VkResult r = device.CreateImage(ici, out_img); r != VK_SUCCESS) {
+        fail(err, vk_error("vkCreateImage", r));
         return false;
     }
-    VkMemoryRequirements mr {};
-    vkGetImageMemoryRequirements(device, *out_img, &mr);
-    uint32_t type = pick_memory_type(phys, mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    const auto mr = device.GetImageMemoryRequirements(*out_img);
+    u32 type      = pick_memory_type(phys, mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     if (type == UINT32_MAX) {
         fail(err, "no DEVICE_LOCAL memory type for plane image");
         return false;
@@ -183,18 +191,19 @@ bool create_image_2d(VkDevice device, VkPhysicalDevice phys, VkFormat fmt, uint3
     mai.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     mai.allocationSize  = mr.size;
     mai.memoryTypeIndex = type;
-    if (VkResult r = vkAllocateMemory(device, &mai, nullptr, out_mem); r != VK_SUCCESS) {
-        fail(err, std::string("vkAllocateMemory(plane): ") + vk_result_str(r));
+    if (VkResult r = device.AllocateMemory(mai, out_mem); r != VK_SUCCESS) {
+        fail(err, vk_error("vkAllocateMemory(plane)", r));
         return false;
     }
-    if (VkResult r = vkBindImageMemory(device, *out_img, *out_mem, 0); r != VK_SUCCESS) {
-        fail(err, std::string("vkBindImageMemory(plane): ") + vk_result_str(r));
+    if (VkResult r = out_img.BindMemory(*out_mem, 0); r != VK_SUCCESS) {
+        fail(err, vk_error("vkBindImageMemory(plane)", r));
         return false;
     }
     return true;
 }
 
-bool create_image_view(VkDevice device, VkImage img, VkFormat fmt, VkImageView* out, Error* err) {
+bool create_image_view(const vvk::Device& device, VkImage img, VkFormat fmt, vvk::ImageView& out,
+                       Error* err) {
     VkImageViewCreateInfo vci {};
     vci.sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     vci.image            = img;
@@ -205,17 +214,17 @@ bool create_image_view(VkDevice device, VkImage img, VkFormat fmt, VkImageView* 
                              VK_COMPONENT_SWIZZLE_IDENTITY,
                              VK_COMPONENT_SWIZZLE_IDENTITY };
     vci.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-    if (VkResult r = vkCreateImageView(device, &vci, nullptr, out); r != VK_SUCCESS) {
-        fail(err, std::string("vkCreateImageView: ") + vk_result_str(r));
+    if (VkResult r = device.CreateImageView(vci, out); r != VK_SUCCESS) {
+        fail(err, vk_error("vkCreateImageView", r));
         return false;
     }
     return true;
 }
 
-void barrier_image(VkCommandBuffer cmd, VkImage img, VkAccessFlags src_a, VkAccessFlags dst_a,
-                   VkImageLayout old_l, VkImageLayout new_l, VkPipelineStageFlags src_s,
-                   VkPipelineStageFlags dst_s, uint32_t src_qf = VK_QUEUE_FAMILY_IGNORED,
-                   uint32_t dst_qf = VK_QUEUE_FAMILY_IGNORED) {
+void barrier_image(const vvk::CommandBuffer& cmd, VkImage img, VkAccessFlags src_a,
+                   VkAccessFlags dst_a, VkImageLayout old_l, VkImageLayout new_l,
+                   VkPipelineStageFlags src_s, VkPipelineStageFlags dst_s,
+                   u32 src_qf = VK_QUEUE_FAMILY_IGNORED, u32 dst_qf = VK_QUEUE_FAMILY_IGNORED) {
     VkImageMemoryBarrier b {};
     b.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     b.srcAccessMask       = src_a;
@@ -226,16 +235,15 @@ void barrier_image(VkCommandBuffer cmd, VkImage img, VkAccessFlags src_a, VkAcce
     b.dstQueueFamilyIndex = dst_qf;
     b.image               = img;
     b.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-    vkCmdPipelineBarrier(cmd, src_s, dst_s, 0, 0, nullptr, 0, nullptr, 1, &b);
+    cmd.PipelineBarrier(src_s, dst_s, 0, b);
 }
 
 // sync2 variant: only this can name VK_PIPELINE_STAGE_2_VIDEO_DECODE_BIT_KHR
 // for the cross-queue hazard tracker after vkCmdDecodeVideoKHR.
-void barrier_image2(VkCommandBuffer cmd, VkImage img, VkPipelineStageFlags2 src_s,
+void barrier_image2(const vvk::CommandBuffer& cmd, VkImage img, VkPipelineStageFlags2 src_s,
                     VkAccessFlags2 src_a, VkPipelineStageFlags2 dst_s, VkAccessFlags2 dst_a,
-                    VkImageLayout old_l, VkImageLayout new_l,
-                    uint32_t src_qf = VK_QUEUE_FAMILY_IGNORED,
-                    uint32_t dst_qf = VK_QUEUE_FAMILY_IGNORED) {
+                    VkImageLayout old_l, VkImageLayout new_l, u32 src_qf = VK_QUEUE_FAMILY_IGNORED,
+                    u32 dst_qf = VK_QUEUE_FAMILY_IGNORED) {
     VkImageMemoryBarrier2 b {};
     b.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
     b.srcStageMask        = src_s;
@@ -252,12 +260,26 @@ void barrier_image2(VkCommandBuffer cmd, VkImage img, VkPipelineStageFlags2 src_
     di.sType                   = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
     di.imageMemoryBarrierCount = 1;
     di.pImageMemoryBarriers    = &b;
-    vkCmdPipelineBarrier2(cmd, &di);
+    cmd.PipelineBarrier2(di);
 }
 
 bool target_exports_sync_fd(ConvertTarget target) { return target == ConvertTarget::BridgeForeign; }
 
-void barrier_dst_to_storage(VkCommandBuffer cmd, VkImage dst, ConvertTarget target) {
+u64 next_completion_generation() {
+    static rstd::sync::atomic::Atomic<u64> next { 1 };
+    auto value = next.fetch_add(1, rstd::sync::atomic::Ordering::Relaxed);
+    if (value == 0) value = next.fetch_add(1, rstd::sync::atomic::Ordering::Relaxed);
+    return value;
+}
+
+u64 next_content_revision() {
+    static rstd::sync::atomic::Atomic<u64> next { 1 };
+    auto value = next.fetch_add(1, rstd::sync::atomic::Ordering::Relaxed);
+    if (value == 0) value = next.fetch_add(1, rstd::sync::atomic::Ordering::Relaxed);
+    return value;
+}
+
+void barrier_dst_to_storage(const vvk::CommandBuffer& cmd, VkImage dst, ConvertTarget target) {
     if (target == ConvertTarget::SampledLocal) {
         barrier_image(cmd,
                       dst,
@@ -279,8 +301,8 @@ void barrier_dst_to_storage(VkCommandBuffer cmd, VkImage dst, ConvertTarget targ
                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 }
 
-void barrier_dst_from_storage(VkCommandBuffer cmd, VkImage dst, ConvertTarget target,
-                              uint32_t queue_family) {
+void barrier_dst_from_storage(const vvk::CommandBuffer& cmd, VkImage dst, ConvertTarget target,
+                              u32 queue_family) {
     if (target == ConvertTarget::SampledLocal) {
         barrier_image(cmd,
                       dst,
@@ -307,73 +329,49 @@ void barrier_dst_from_storage(VkCommandBuffer cmd, VkImage dst, ConvertTarget ta
 } // namespace
 
 YuvToRgba::~YuvToRgba() {
-    if (device_ != VK_NULL_HANDLE) {
-        vkDeviceWaitIdle(device_);
-        if (last_dst_view_) vkDestroyImageView(device_, last_dst_view_, nullptr);
-        if (last_y_view_) vkDestroyImageView(device_, last_y_view_, nullptr);
-        if (last_uv_view_) vkDestroyImageView(device_, last_uv_view_, nullptr);
-        if (last_drm_image_) vkDestroyImage(device_, last_drm_image_, nullptr);
-        for (uint32_t i = 0; i < last_drm_memory_count_; ++i) {
-            if (last_drm_memories_[i]) vkFreeMemory(device_, last_drm_memories_[i], nullptr);
-        }
-        if (dpool_) vkDestroyDescriptorPool(device_, dpool_, nullptr);
-        if (signal_sem_) vkDestroySemaphore(device_, signal_sem_, nullptr);
-        if (done_fence_) vkDestroyFence(device_, done_fence_, nullptr);
-        if (cmd_pool_) vkDestroyCommandPool(device_, cmd_pool_, nullptr);
-        if (staging_map_) vkUnmapMemory(device_, staging_mem_);
-        if (staging_buf_) vkDestroyBuffer(device_, staging_buf_, nullptr);
-        if (staging_mem_) vkFreeMemory(device_, staging_mem_, nullptr);
-        if (y_view_) vkDestroyImageView(device_, y_view_, nullptr);
-        if (y_image_) vkDestroyImage(device_, y_image_, nullptr);
-        if (y_memory_) vkFreeMemory(device_, y_memory_, nullptr);
-        if (uv_view_) vkDestroyImageView(device_, uv_view_, nullptr);
-        if (uv_image_) vkDestroyImage(device_, uv_image_, nullptr);
-        if (uv_memory_) vkFreeMemory(device_, uv_memory_, nullptr);
-        if (sampler_) vkDestroySampler(device_, sampler_, nullptr);
-        if (pipeline_) vkDestroyPipeline(device_, pipeline_, nullptr);
-        if (pipeline_layout_) vkDestroyPipelineLayout(device_, pipeline_layout_, nullptr);
-        if (dsl_) vkDestroyDescriptorSetLayout(device_, dsl_, nullptr);
-        if (shader_) vkDestroyShaderModule(device_, shader_, nullptr);
-    }
+    if (device_) (void)device_.WaitIdle();
+    if (staging_map_ && staging_mem_) staging_mem_.Unmap();
+    (void)completion_timeline_.take();
 }
 
 auto YuvToRgba::create(VkInstance instance, VkPhysicalDevice phys, VkDevice device,
-                       uint32_t queue_family, VkQueue queue, uint32_t max_w, uint32_t max_h)
-    -> rstd::Result<std::unique_ptr<YuvToRgba>, Error> {
+                       u32 queue_family, VkQueue queue, u32 max_w, u32 max_h)
+    -> Result<rstd::boxed::Box<YuvToRgba>, Error> {
     if (max_w == 0 || max_h == 0) {
-        return rstd::Err(Error { "YuvToRgba: max_w/max_h must be non-zero" });
+        return Err(Error { "YuvToRgba: max_w/max_h must be non-zero" });
     }
     // NV12 chroma is 4:2:0, so plane W/H must be even.
     if (max_w & 1u) ++max_w;
     if (max_h & 1u) ++max_h;
-    auto  self = std::unique_ptr<YuvToRgba>(new YuvToRgba());
+    auto  self = rstd::boxed::Box<YuvToRgba>::make();
     Error err;
     if (! self->init(instance, phys, device, queue_family, queue, max_w, max_h, &err)) {
-        return rstd::Err(std::move(err));
+        return Err(rstd::move(err));
     }
-    return rstd::Ok(std::move(self));
+    return Ok(rstd::move(self));
 }
 
-bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device,
-                     uint32_t queue_family, VkQueue queue, uint32_t max_w, uint32_t max_h,
-                     Error* err) {
-    instance_     = instance;
-    phys_         = phys;
-    device_       = device;
-    queue_        = queue;
+bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device, u32 queue_family,
+                     VkQueue queue, u32 max_w, u32 max_h, Error* err) {
+    if (! vvk::Load(instance_dispatch_) || ! vvk::Load(instance, instance_dispatch_)) {
+        return fail(err, "YuvToRgba: failed to load instance dispatch");
+    }
+    device_dispatch_ = vvk::DeviceDispatch { instance_dispatch_ };
+    if (! vvk::Load(device, device_dispatch_)) {
+        return fail(err, "YuvToRgba: failed to load device dispatch");
+    }
+
+    instance_     = vvk::Instance(instance, instance_dispatch_, vvk::borrowed_handle);
+    phys_         = vvk::PhysicalDevice(phys, instance_dispatch_);
+    device_       = vvk::Device(device, device_dispatch_, vvk::borrowed_handle);
+    queue_        = vvk::Queue(queue, device_dispatch_);
     queue_family_ = queue_family;
     max_w_        = max_w;
     max_h_        = max_h;
 
-    vkGetSemaphoreFdKHR_ = reinterpret_cast<PFN_vkGetSemaphoreFdKHR>(
-        vkGetDeviceProcAddr(device_, "vkGetSemaphoreFdKHR"));
-    if (! vkGetSemaphoreFdKHR_) {
+    if (! device_dispatch_.vkGetSemaphoreFdKHR) {
         return fail(err, "vkGetSemaphoreFdKHR missing");
     }
-    /* Optional: only the convert_drm_prime path needs it; null-check at
-     * call site so devices without the extension still run sw / vulkan. */
-    vkGetMemoryFdPropertiesKHR_ = reinterpret_cast<PFN_vkGetMemoryFdPropertiesKHR>(
-        vkGetDeviceProcAddr(device_, "vkGetMemoryFdPropertiesKHR"));
 
     // ----- Sampler (linear, clamp-to-edge) -----
     {
@@ -386,8 +384,8 @@ bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device
         sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         sci.maxLod       = 0.0f;
-        if (VkResult r = vkCreateSampler(device_, &sci, nullptr, &sampler_); r != VK_SUCCESS)
-            return fail(err, std::string("vkCreateSampler: ") + vk_result_str(r));
+        if (VkResult r = device_.CreateSampler(sci, sampler_); r != VK_SUCCESS)
+            return fail(err, vk_error("vkCreateSampler", r));
     }
 
     // ----- Y image (R8_UNORM, max_w × max_h) -----
@@ -397,11 +395,11 @@ bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device
                           max_w_,
                           max_h_,
                           VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                          &y_image_,
-                          &y_memory_,
+                          y_image_,
+                          y_memory_,
                           err))
         return false;
-    if (! create_image_view(device_, y_image_, VK_FORMAT_R8_UNORM, &y_view_, err)) return false;
+    if (! create_image_view(device_, *y_image_, VK_FORMAT_R8_UNORM, y_view_, err)) return false;
 
     // ----- UV image (R8G8_UNORM, half resolution) -----
     if (! create_image_2d(device_,
@@ -410,11 +408,11 @@ bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device
                           max_w_ / 2,
                           max_h_ / 2,
                           VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                          &uv_image_,
-                          &uv_memory_,
+                          uv_image_,
+                          uv_memory_,
                           err))
         return false;
-    if (! create_image_view(device_, uv_image_, VK_FORMAT_R8G8_UNORM, &uv_view_, err)) return false;
+    if (! create_image_view(device_, *uv_image_, VK_FORMAT_R8G8_UNORM, uv_view_, err)) return false;
 
     // ----- Staging buffer (HOST_VISIBLE|COHERENT, NV12-sized) -----
     {
@@ -425,28 +423,25 @@ bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device
         bci.size        = nv12_size;
         bci.usage       = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
         bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        if (VkResult r = vkCreateBuffer(device_, &bci, nullptr, &staging_buf_); r != VK_SUCCESS)
-            return fail(err, std::string("vkCreateBuffer(stage): ") + vk_result_str(r));
-        VkMemoryRequirements mr {};
-        vkGetBufferMemoryRequirements(device_, staging_buf_, &mr);
-        uint32_t type = pick_memory_type(phys_,
-                                         mr.memoryTypeBits,
-                                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (VkResult r = device_.CreateBuffer(bci, staging_buf_); r != VK_SUCCESS)
+            return fail(err, vk_error("vkCreateBuffer(stage)", r));
+        const auto mr   = device_.GetBufferMemoryRequirements(*staging_buf_);
+        u32        type = pick_memory_type(phys_,
+                                           mr.memoryTypeBits,
+                                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         if (type == UINT32_MAX)
             return fail(err, "no HOST_VISIBLE|COHERENT memory type for staging");
         VkMemoryAllocateInfo mai {};
         mai.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         mai.allocationSize  = mr.size;
         mai.memoryTypeIndex = type;
-        if (VkResult r = vkAllocateMemory(device_, &mai, nullptr, &staging_mem_); r != VK_SUCCESS)
-            return fail(err, std::string("vkAllocateMemory(stage): ") + vk_result_str(r));
-        if (VkResult r = vkBindBufferMemory(device_, staging_buf_, staging_mem_, 0);
-            r != VK_SUCCESS)
-            return fail(err, std::string("vkBindBufferMemory(stage): ") + vk_result_str(r));
-        if (VkResult r = vkMapMemory(device_, staging_mem_, 0, VK_WHOLE_SIZE, 0, &staging_map_);
-            r != VK_SUCCESS)
-            return fail(err, std::string("vkMapMemory(stage): ") + vk_result_str(r));
+        if (VkResult r = device_.AllocateMemory(mai, staging_mem_); r != VK_SUCCESS)
+            return fail(err, vk_error("vkAllocateMemory(stage)", r));
+        if (VkResult r = staging_buf_.BindMemory(*staging_mem_, 0); r != VK_SUCCESS)
+            return fail(err, vk_error("vkBindBufferMemory(stage)", r));
+        if (VkResult r = staging_mem_.Map(0, VK_WHOLE_SIZE, &staging_map_); r != VK_SUCCESS)
+            return fail(err, vk_error("vkMapMemory(stage)", r));
     }
 
     // ----- Shader module -----
@@ -454,9 +449,9 @@ bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device
         VkShaderModuleCreateInfo smi {};
         smi.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
         smi.codeSize = sizeof(nv12_to_rgba_spv);
-        smi.pCode    = reinterpret_cast<const uint32_t*>(nv12_to_rgba_spv);
-        if (VkResult r = vkCreateShaderModule(device_, &smi, nullptr, &shader_); r != VK_SUCCESS)
-            return fail(err, std::string("vkCreateShaderModule: ") + vk_result_str(r));
+        smi.pCode    = reinterpret_cast<const u32*>(nv12_to_rgba_spv);
+        if (VkResult r = device_.CreateShaderModule(smi, shader_); r != VK_SUCCESS)
+            return fail(err, vk_error("vkCreateShaderModule", r));
     }
 
     // ----- Descriptor set layout (binding 0/1 = sampled, binding 2 = storage)
@@ -479,9 +474,8 @@ bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device
         dsli.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
         dsli.bindingCount = 3;
         dsli.pBindings    = bs;
-        if (VkResult r = vkCreateDescriptorSetLayout(device_, &dsli, nullptr, &dsl_);
-            r != VK_SUCCESS)
-            return fail(err, std::string("vkCreateDescriptorSetLayout: ") + vk_result_str(r));
+        if (VkResult r = device_.CreateDescriptorSetLayout(dsli, dsl_); r != VK_SUCCESS)
+            return fail(err, vk_error("vkCreateDescriptorSetLayout", r));
     }
 
     // ----- Pipeline layout (push constants: dst dims + color matrix) -----
@@ -491,14 +485,14 @@ bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device
         pcr.offset     = 0;
         pcr.size       = sizeof(ShaderPushConstants);
         VkPipelineLayoutCreateInfo pli {};
-        pli.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        pli.setLayoutCount         = 1;
-        pli.pSetLayouts            = &dsl_;
-        pli.pushConstantRangeCount = 1;
-        pli.pPushConstantRanges    = &pcr;
-        if (VkResult r = vkCreatePipelineLayout(device_, &pli, nullptr, &pipeline_layout_);
-            r != VK_SUCCESS)
-            return fail(err, std::string("vkCreatePipelineLayout: ") + vk_result_str(r));
+        pli.sType                        = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        pli.setLayoutCount               = 1;
+        const auto descriptor_set_layout = *dsl_;
+        pli.pSetLayouts                  = &descriptor_set_layout;
+        pli.pushConstantRangeCount       = 1;
+        pli.pPushConstantRanges          = &pcr;
+        if (VkResult r = device_.CreatePipelineLayout(pli, pipeline_layout_); r != VK_SUCCESS)
+            return fail(err, vk_error("vkCreatePipelineLayout", r));
     }
 
     // ----- Compute pipeline -----
@@ -506,16 +500,14 @@ bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device
         VkPipelineShaderStageCreateInfo ssi {};
         ssi.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         ssi.stage  = VK_SHADER_STAGE_COMPUTE_BIT;
-        ssi.module = shader_;
+        ssi.module = *shader_;
         ssi.pName  = "main";
         VkComputePipelineCreateInfo cpi {};
         cpi.sType  = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
         cpi.stage  = ssi;
-        cpi.layout = pipeline_layout_;
-        if (VkResult r =
-                vkCreateComputePipelines(device_, VK_NULL_HANDLE, 1, &cpi, nullptr, &pipeline_);
-            r != VK_SUCCESS)
-            return fail(err, std::string("vkCreateComputePipelines: ") + vk_result_str(r));
+        cpi.layout = *pipeline_layout_;
+        if (VkResult r = device_.CreateComputePipeline(cpi, pipeline_); r != VK_SUCCESS)
+            return fail(err, vk_error("vkCreateComputePipelines", r));
     }
 
     // ----- Descriptor pool + set -----
@@ -525,20 +517,21 @@ bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device
         ps[0].descriptorCount = 2;
         ps[1].type            = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         ps[1].descriptorCount = 1;
-        VkDescriptorPoolCreateInfo dpi {};
-        dpi.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        dpi.maxSets       = 1;
-        dpi.poolSizeCount = 2;
-        dpi.pPoolSizes    = ps;
-        if (VkResult r = vkCreateDescriptorPool(device_, &dpi, nullptr, &dpool_); r != VK_SUCCESS)
-            return fail(err, std::string("vkCreateDescriptorPool: ") + vk_result_str(r));
-        VkDescriptorSetAllocateInfo dsai {};
-        dsai.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-        dsai.descriptorPool     = dpool_;
-        dsai.descriptorSetCount = 1;
-        dsai.pSetLayouts        = &dsl_;
-        if (VkResult r = vkAllocateDescriptorSets(device_, &dsai, &dset_); r != VK_SUCCESS)
-            return fail(err, std::string("vkAllocateDescriptorSets: ") + vk_result_str(r));
+        const vvk::DescriptorDeviceDispatch dispatch {
+            .create_pool   = device_dispatch_.vkCreateDescriptorPool,
+            .destroy_pool  = device_dispatch_.vkDestroyDescriptorPool,
+            .allocate_sets = device_dispatch_.vkAllocateDescriptorSets,
+            .update_sets   = device_dispatch_.vkUpdateDescriptorSets,
+        };
+        auto arena = vvk::DescriptorArenaGeneration::Create(
+            *device_, 1, slice<VkDescriptorPoolSize>::from_raw_parts(ps, 2), dispatch);
+        if (! arena.created())
+            return fail(err, vk_error("vkCreateDescriptorPool", arena.api_result));
+        descriptor_arena_ = rstd::move(arena.arena);
+        auto allocation   = vvk::DescriptorArenaGeneration::Allocate(*descriptor_arena_, *dsl_);
+        if (! allocation.allocated())
+            return fail(err, vk_error("vkAllocateDescriptorSets", allocation.api_result));
+        descriptor_set_ = rstd::move(allocation.lease);
     }
 
     // ----- Cmd pool + buffer + per-submit fence + signal semaphore -----
@@ -547,20 +540,17 @@ bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device
         cpi.sType            = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
         cpi.flags            = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
         cpi.queueFamilyIndex = queue_family_;
-        if (VkResult r = vkCreateCommandPool(device_, &cpi, nullptr, &cmd_pool_); r != VK_SUCCESS)
-            return fail(err, std::string("vkCreateCommandPool: ") + vk_result_str(r));
-        VkCommandBufferAllocateInfo cbi {};
-        cbi.sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-        cbi.commandPool        = cmd_pool_;
-        cbi.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-        cbi.commandBufferCount = 1;
-        if (VkResult r = vkAllocateCommandBuffers(device_, &cbi, &cmd_); r != VK_SUCCESS)
-            return fail(err, std::string("vkAllocateCommandBuffers: ") + vk_result_str(r));
+        if (VkResult r = device_.CreateCommandPool(cpi, cmd_pool_); r != VK_SUCCESS)
+            return fail(err, vk_error("vkCreateCommandPool", r));
+        if (VkResult r = cmd_pool_.Allocate(1, VK_COMMAND_BUFFER_LEVEL_PRIMARY, command_buffers_);
+            r != VK_SUCCESS)
+            return fail(err, vk_error("vkAllocateCommandBuffers", r));
+        cmd_ = vvk::CommandBuffer(command_buffers_[0], device_dispatch_);
 
         VkFenceCreateInfo fci {};
         fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-        if (VkResult r = vkCreateFence(device_, &fci, nullptr, &done_fence_); r != VK_SUCCESS)
-            return fail(err, std::string("vkCreateFence: ") + vk_result_str(r));
+        if (VkResult r = device_.CreateFence(fci, done_fence_); r != VK_SUCCESS)
+            return fail(err, vk_error("vkCreateFence", r));
 
         VkExportSemaphoreCreateInfo es {};
         es.sType       = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO;
@@ -568,42 +558,58 @@ bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device
         VkSemaphoreCreateInfo sci {};
         sci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
         sci.pNext = &es;
-        if (VkResult r = vkCreateSemaphore(device_, &sci, nullptr, &signal_sem_); r != VK_SUCCESS)
-            return fail(err, std::string("vkCreateSemaphore(signal): ") + vk_result_str(r));
+        if (VkResult r = device_.CreateSemaphore(sci, signal_sem_); r != VK_SUCCESS)
+            return fail(err, vk_error("vkCreateSemaphore(signal)", r));
+
+        const auto generation = next_completion_generation();
+        auto       timeline   = vvk::TimelineSemaphoreGeneration::Create(
+            *device_,
+            vvk::MakeQueueDomain(*device_, *queue_, queue_family_, 0u, generation),
+            generation);
+        if (! timeline.created()) {
+            return fail(err,
+                        rstd::format("vkCreateSemaphore(completion): {}",
+                                     vk_result_str(timeline.api_result)));
+        }
+        completion_timeline_ = rstd::move(timeline.generation);
+        completion_observer_ = Some(vvk::TimelineCompletionObserver::AdoptVulkan(
+            *device_,
+            device_dispatch_.vkGetSemaphoreCounterValueKHR,
+            device_dispatch_.vkWaitSemaphoresKHR));
+        if (completion_timeline_.is_none() || ! (*completion_timeline_)->source().valid() ||
+            completion_observer_.is_none() || ! completion_observer_->valid()) {
+            return fail(err, "timeline completion observer unavailable");
+        }
     }
 
     // Bindings 0/1 are stable across frames — write them once.
     {
         VkDescriptorImageInfo dii_y {};
-        dii_y.sampler     = sampler_;
-        dii_y.imageView   = y_view_;
+        dii_y.sampler     = *sampler_;
+        dii_y.imageView   = *y_view_;
         dii_y.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         VkDescriptorImageInfo dii_uv {};
-        dii_uv.sampler     = sampler_;
-        dii_uv.imageView   = uv_view_;
+        dii_uv.sampler     = *sampler_;
+        dii_uv.imageView   = *uv_view_;
         dii_uv.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        VkWriteDescriptorSet ws[2] {};
-        ws[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        ws[0].dstSet          = dset_;
-        ws[0].dstBinding      = 0;
-        ws[0].descriptorCount = 1;
-        ws[0].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        ws[0].pImageInfo      = &dii_y;
-        ws[1].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        ws[1].dstSet          = dset_;
-        ws[1].dstBinding      = 1;
-        ws[1].descriptorCount = 1;
-        ws[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        ws[1].pImageInfo      = &dii_uv;
-        vkUpdateDescriptorSets(device_, 2, ws, 0, nullptr);
+        vvk::DescriptorUpdateBatch batch;
+        if (! batch.WriteImage(descriptor_set_.clone(),
+                               0,
+                               VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                               slice<VkDescriptorImageInfo>::from_raw_parts(&dii_y, 1)) ||
+            ! batch.WriteImage(descriptor_set_.clone(),
+                               1,
+                               VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                               slice<VkDescriptorImageInfo>::from_raw_parts(&dii_uv, 1)) ||
+            ! batch.Commit().committed())
+            return fail(err, "failed to update static YUV descriptors");
     }
 
     return true;
 }
 
-int YuvToRgba::convert_nv12_(VkImage dst, uint32_t dst_w, uint32_t dst_h, const uint8_t* nv12,
-                             size_t nv12_size, const ColorMatrix& cm, ConvertTarget target,
-                             Error* err) {
+int YuvToRgba::convert_nv12_(VkImage dst, u32 dst_w, u32 dst_h, const u8* nv12, usize nv12_size,
+                             const ColorMatrix& cm, ConvertTarget target, Error* err) {
     if (dst == VK_NULL_HANDLE) {
         fail(err, "convert_nv12: dst VkImage null");
         return -1;
@@ -620,7 +626,7 @@ int YuvToRgba::convert_nv12_(VkImage dst, uint32_t dst_w, uint32_t dst_h, const 
         fail(err, "convert_nv12: dst exceeds configured max extent");
         return -1;
     }
-    const size_t want = size_t(dst_w) * dst_h * 3 / 2;
+    const usize want = usize(dst_w) * dst_h * 3 / 2;
     if (nv12_size != want) {
         fail(err, "convert_nv12: nv12_size mismatch (expected NV12 layout)");
         return -1;
@@ -628,29 +634,24 @@ int YuvToRgba::convert_nv12_(VkImage dst, uint32_t dst_w, uint32_t dst_h, const 
 
     /* Wait for prior submit — protects cmd_/staging_/dset_ from races. */
     if (fence_pending_) {
-        if (VkResult r = vkWaitForFences(device_,
-                                         1,
-                                         &done_fence_,
-                                         VK_TRUE,
-                                         /* 1s */ 1'000'000'000ull);
-            r != VK_SUCCESS) {
-            fail(err, std::string("vkWaitForFences: ") + vk_result_str(r));
+        if (VkResult r = done_fence_.Wait(1'000'000'000ull); r != VK_SUCCESS) {
+            fail(err, vk_error("vkWaitForFences", r));
             return -1;
         }
-        if (VkResult r = vkResetFences(device_, 1, &done_fence_); r != VK_SUCCESS) {
-            fail(err, std::string("vkResetFences: ") + vk_result_str(r));
+        if (VkResult r = done_fence_.Reset(); r != VK_SUCCESS) {
+            fail(err, vk_error("vkResetFences", r));
             return -1;
         }
         fence_pending_ = false;
     }
 
     /* Copy NV12 bytes into staging. */
-    std::memcpy(staging_map_, nv12, nv12_size);
+    rstd::mem::memcpy(staging_map_, nv12, nv12_size);
 
     /* Create a transient view for the dst image — fresh each call because
      * the bridge cycles dst handles per slot. The view is destroyed at
      * the next call's fence wait via the deferred queue. */
-    VkImageView dst_view = VK_NULL_HANDLE;
+    vvk::ImageView dst_view;
     {
         VkImageViewCreateInfo vci {};
         vci.sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -662,8 +663,8 @@ int YuvToRgba::convert_nv12_(VkImage dst, uint32_t dst_w, uint32_t dst_h, const 
                                  VK_COMPONENT_SWIZZLE_IDENTITY,
                                  VK_COMPONENT_SWIZZLE_IDENTITY };
         vci.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-        if (VkResult r = vkCreateImageView(device_, &vci, nullptr, &dst_view); r != VK_SUCCESS) {
-            fail(err, std::string("vkCreateImageView(dst): ") + vk_result_str(r));
+        if (VkResult r = device_.CreateImageView(vci, dst_view); r != VK_SUCCESS) {
+            fail(err, vk_error("vkCreateImageView(dst)", r));
             return -1;
         }
     }
@@ -671,36 +672,35 @@ int YuvToRgba::convert_nv12_(VkImage dst, uint32_t dst_w, uint32_t dst_h, const 
     /* Bind dst into descriptor binding 2. */
     {
         VkDescriptorImageInfo dii {};
-        dii.imageView   = dst_view;
+        dii.imageView   = *dst_view;
         dii.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-        VkWriteDescriptorSet w {};
-        w.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        w.dstSet          = dset_;
-        w.dstBinding      = 2;
-        w.descriptorCount = 1;
-        w.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        w.pImageInfo      = &dii;
-        vkUpdateDescriptorSets(device_, 1, &w, 0, nullptr);
+        vvk::DescriptorUpdateBatch batch;
+        if (! batch.WriteImage(descriptor_set_.clone(),
+                               2,
+                               VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                               slice<VkDescriptorImageInfo>::from_raw_parts(&dii, 1)) ||
+            ! batch.Commit().committed()) {
+            fail(err, "failed to update destination descriptor");
+            return -1;
+        }
     }
 
     /* Reset + record. */
-    if (VkResult r = vkResetCommandBuffer(cmd_, 0); r != VK_SUCCESS) {
-        fail(err, std::string("vkResetCommandBuffer: ") + vk_result_str(r));
-        vkDestroyImageView(device_, dst_view, nullptr);
+    if (VkResult r = cmd_.Reset(); r != VK_SUCCESS) {
+        fail(err, vk_error("vkResetCommandBuffer", r));
         return -1;
     }
     VkCommandBufferBeginInfo bi {};
     bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    if (VkResult r = vkBeginCommandBuffer(cmd_, &bi); r != VK_SUCCESS) {
-        fail(err, std::string("vkBeginCommandBuffer: ") + vk_result_str(r));
-        vkDestroyImageView(device_, dst_view, nullptr);
+    if (VkResult r = cmd_.Begin(bi); r != VK_SUCCESS) {
+        fail(err, vk_error("vkBeginCommandBuffer", r));
         return -1;
     }
 
     /* Y plane: UNDEFINED → TRANSFER_DST. */
     barrier_image(cmd_,
-                  y_image_,
+                  *y_image_,
                   0,
                   VK_ACCESS_TRANSFER_WRITE_BIT,
                   VK_IMAGE_LAYOUT_UNDEFINED,
@@ -709,7 +709,7 @@ int YuvToRgba::convert_nv12_(VkImage dst, uint32_t dst_w, uint32_t dst_h, const 
                   VK_PIPELINE_STAGE_TRANSFER_BIT);
     /* UV plane: UNDEFINED → TRANSFER_DST. */
     barrier_image(cmd_,
-                  uv_image_,
+                  *uv_image_,
                   0,
                   VK_ACCESS_TRANSFER_WRITE_BIT,
                   VK_IMAGE_LAYOUT_UNDEFINED,
@@ -727,8 +727,7 @@ int YuvToRgba::convert_nv12_(VkImage dst, uint32_t dst_w, uint32_t dst_h, const 
         bic.imageSubresource.layerCount = 1;
         bic.imageOffset                 = { 0, 0, 0 };
         bic.imageExtent                 = { dst_w, dst_h, 1 };
-        vkCmdCopyBufferToImage(
-            cmd_, staging_buf_, y_image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bic);
+        cmd_.CopyBufferToImage(*staging_buf_, *y_image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, bic);
     }
     /* Copy UV from staging[W*H..W*H + W*H/2]. */
     {
@@ -740,13 +739,13 @@ int YuvToRgba::convert_nv12_(VkImage dst, uint32_t dst_w, uint32_t dst_h, const 
         bic.imageSubresource.layerCount = 1;
         bic.imageOffset                 = { 0, 0, 0 };
         bic.imageExtent                 = { dst_w / 2, dst_h / 2, 1 };
-        vkCmdCopyBufferToImage(
-            cmd_, staging_buf_, uv_image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bic);
+        cmd_.CopyBufferToImage(
+            *staging_buf_, *uv_image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, bic);
     }
 
     /* Y/UV: TRANSFER_DST → SHADER_READ_ONLY. */
     barrier_image(cmd_,
-                  y_image_,
+                  *y_image_,
                   VK_ACCESS_TRANSFER_WRITE_BIT,
                   VK_ACCESS_SHADER_READ_BIT,
                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -754,7 +753,7 @@ int YuvToRgba::convert_nv12_(VkImage dst, uint32_t dst_w, uint32_t dst_h, const 
                   VK_PIPELINE_STAGE_TRANSFER_BIT,
                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
     barrier_image(cmd_,
-                  uv_image_,
+                  *uv_image_,
                   VK_ACCESS_TRANSFER_WRITE_BIT,
                   VK_ACCESS_SHADER_READ_BIT,
                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -765,9 +764,13 @@ int YuvToRgba::convert_nv12_(VkImage dst, uint32_t dst_w, uint32_t dst_h, const 
     barrier_dst_to_storage(cmd_, dst, target);
 
     /* Bind + dispatch. */
-    vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_);
-    vkCmdBindDescriptorSets(
-        cmd_, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_layout_, 0, 1, &dset_, 0, nullptr);
+    cmd_.BindPipeline(VK_PIPELINE_BIND_POINT_COMPUTE, *pipeline_);
+    const VkDescriptorSet descriptor_set = descriptor_set_.handle;
+    cmd_.BindDescriptorSets(VK_PIPELINE_BIND_POINT_COMPUTE,
+                            *pipeline_layout_,
+                            0,
+                            slice<VkDescriptorSet>::from_raw_parts(&descriptor_set, 1),
+                            {});
     ShaderPushConstants pc {};
     pc.dst_w = dst_w;
     pc.dst_h = dst_h;
@@ -777,70 +780,59 @@ int YuvToRgba::convert_nv12_(VkImage dst, uint32_t dst_w, uint32_t dst_h, const 
         pc.m_b[i]    = cm.m_b[i];
         pc.offset[i] = cm.offset[i];
     }
-    vkCmdPushConstants(cmd_, pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
-    const uint32_t gx = (dst_w + 7) / 8;
-    const uint32_t gy = (dst_h + 7) / 8;
-    vkCmdDispatch(cmd_, gx, gy, 1);
+    cmd_.PushConstants(*pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT, pc);
+    const u32 gx = (dst_w + 7) / 8;
+    const u32 gy = (dst_h + 7) / 8;
+    cmd_.Dispatch(gx, gy, 1);
 
     barrier_dst_from_storage(cmd_, dst, target, queue_family_);
 
-    if (VkResult r = vkEndCommandBuffer(cmd_); r != VK_SUCCESS) {
-        fail(err, std::string("vkEndCommandBuffer: ") + vk_result_str(r));
-        vkDestroyImageView(device_, dst_view, nullptr);
+    if (VkResult r = cmd_.End(); r != VK_SUCCESS) {
+        fail(err, vk_error("vkEndCommandBuffer", r));
         return -1;
     }
 
+    auto next_completion_value = completion_value_ + 1;
+    if (next_completion_value == 0) ++next_completion_value;
+    VkSemaphore signal_sems[2] = { (*completion_timeline_)->handle(), *signal_sem_ };
+    u64         signal_vals[2] = { next_completion_value, 0 };
+    const auto  signal_count   = target_exports_sync_fd(target) ? 2u : 1u;
+    VkTimelineSemaphoreSubmitInfo timeline_info {};
+    timeline_info.sType                     = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
+    timeline_info.signalSemaphoreValueCount = signal_count;
+    timeline_info.pSignalSemaphoreValues    = signal_vals;
     VkSubmitInfo si {};
-    si.sType                   = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    si.commandBufferCount      = 1;
-    si.pCommandBuffers         = &cmd_;
-    VkSemaphore signal_sems[1] = { signal_sem_ };
-    if (target_exports_sync_fd(target)) {
-        si.signalSemaphoreCount = 1;
-        si.pSignalSemaphores    = signal_sems;
-    }
-    if (VkResult r = vkQueueSubmit(queue_, 1, &si, done_fence_); r != VK_SUCCESS) {
-        fail(err, std::string("vkQueueSubmit: ") + vk_result_str(r));
-        vkDestroyImageView(device_, dst_view, nullptr);
+    si.sType                             = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    si.pNext                             = &timeline_info;
+    si.commandBufferCount                = 1;
+    const VkCommandBuffer command_buffer = *cmd_;
+    si.pCommandBuffers                   = &command_buffer;
+    si.signalSemaphoreCount              = signal_count;
+    si.pSignalSemaphores                 = signal_sems;
+    if (VkResult r = queue_.Submit(si, *done_fence_); r != VK_SUCCESS) {
+        fail(err, vk_error("vkQueueSubmit", r));
         return -1;
     }
     fence_pending_ = true;
+    publish_submission(dst, dst_w, dst_h, target, next_completion_value);
+    last_dst_view_ = rstd::move(dst_view);
 
     int sync_fd = -1;
     if (target_exports_sync_fd(target)) {
         VkSemaphoreGetFdInfoKHR sgfi {};
         sgfi.sType      = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR;
-        sgfi.semaphore  = signal_sem_;
+        sgfi.semaphore  = *signal_sem_;
         sgfi.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
-        if (VkResult r = vkGetSemaphoreFdKHR_(device_, &sgfi, &sync_fd); r != VK_SUCCESS) {
-            fail(err, std::string("vkGetSemaphoreFdKHR: ") + vk_result_str(r));
-            vkDestroyImageView(device_, dst_view, nullptr);
+        if (VkResult r = device_.GetSemaphoreFdKHR(sgfi, &sync_fd); r != VK_SUCCESS) {
+            fail(err, vk_error("vkGetSemaphoreFdKHR", r));
             return -1;
         }
     }
-
-    /* Schedule dst_view destruction at next fence wait. We avoid a
-     * map/list by doing the simple thing: the GPU is using the view
-     * until done_fence_ signals, so destroying it here is unsafe. We
-     * leak it conceptually, but each frame we'd leak one — instead,
-     * use a tiny single-slot deferred queue. Iter 2 simplification:
-     * vkDeviceWaitIdle would stall the pipeline; instead we destroy
-     * the previous frame's view *now* after recording but before
-     * submit-completion is observable, exploiting the property that
-     * dset_ already references it (so it's GPU-live until our fence
-     * signals). Since we just waited on the fence at function entry,
-     * the previous-call's `dst_view` is by definition no longer in
-     * use; a single-slot queue works. */
-    if (last_dst_view_ != VK_NULL_HANDLE) {
-        vkDestroyImageView(device_, last_dst_view_, nullptr);
-    }
-    last_dst_view_ = dst_view;
     return sync_fd;
 }
 
-int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im, VkImage dst, uint32_t dst_w,
-                                    uint32_t dst_h, const ColorMatrix& cm, ConvertTarget target,
-                                    Error* err) {
+int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im, VkImage dst, u32 dst_w, u32 dst_h,
+                                    const ColorMatrix& cm, ConvertTarget target, Error* err) {
     if (dst == VK_NULL_HANDLE) {
         fail(err, "convert_av_vk_frame: dst null");
         return -1;
@@ -873,28 +865,21 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im, VkImage dst, uint3
      * as convert_nv12; the in-flight last_*_view_ destruction below also
      * relies on this. */
     if (fence_pending_) {
-        if (VkResult r = vkWaitForFences(device_, 1, &done_fence_, VK_TRUE, 1'000'000'000ull);
-            r != VK_SUCCESS) {
-            fail(err, std::string("vkWaitForFences: ") + vk_result_str(r));
+        if (VkResult r = done_fence_.Wait(1'000'000'000ull); r != VK_SUCCESS) {
+            fail(err, vk_error("vkWaitForFences", r));
             return -1;
         }
-        if (VkResult r = vkResetFences(device_, 1, &done_fence_); r != VK_SUCCESS) {
-            fail(err, std::string("vkResetFences: ") + vk_result_str(r));
+        if (VkResult r = done_fence_.Reset(); r != VK_SUCCESS) {
+            fail(err, vk_error("vkResetFences", r));
             return -1;
         }
         fence_pending_ = false;
     }
 
     /* Build per-call image views aliasing the AVVkFrame planes + dst. */
-    VkImageView dst_view = VK_NULL_HANDLE;
-    VkImageView y_view   = VK_NULL_HANDLE;
-    VkImageView uv_view  = VK_NULL_HANDLE;
-
-    auto cleanup_views = [&]() {
-        if (dst_view) vkDestroyImageView(device_, dst_view, nullptr);
-        if (y_view) vkDestroyImageView(device_, y_view, nullptr);
-        if (uv_view) vkDestroyImageView(device_, uv_view, nullptr);
-    };
+    vvk::ImageView dst_view;
+    vvk::ImageView y_view;
+    vvk::ImageView uv_view;
 
     {
         VkImageViewUsageCreateInfo sampled_usage {};
@@ -938,26 +923,23 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im, VkImage dst, uint3
         vci.image            = im.y_image;
         vci.format           = y_fmt;
         vci.subresourceRange = { y_aspect, 0, 1, 0, 1 };
-        if (VkResult r = vkCreateImageView(device_, &vci, nullptr, &y_view); r != VK_SUCCESS) {
-            fail(err, std::string("vkCreateImageView(Y, AVVkFrame): ") + vk_result_str(r));
-            cleanup_views();
+        if (VkResult r = device_.CreateImageView(vci, y_view); r != VK_SUCCESS) {
+            fail(err, vk_error("vkCreateImageView(Y, AVVkFrame)", r));
             return -1;
         }
         vci.image            = single_image ? im.y_image : im.uv_image;
         vci.format           = uv_fmt;
         vci.subresourceRange = { uv_aspect, 0, 1, 0, 1 };
-        if (VkResult r = vkCreateImageView(device_, &vci, nullptr, &uv_view); r != VK_SUCCESS) {
-            fail(err, std::string("vkCreateImageView(UV, AVVkFrame): ") + vk_result_str(r));
-            cleanup_views();
+        if (VkResult r = device_.CreateImageView(vci, uv_view); r != VK_SUCCESS) {
+            fail(err, vk_error("vkCreateImageView(UV, AVVkFrame)", r));
             return -1;
         }
         vci.image            = dst;
         vci.pNext            = &storage_usage;
         vci.format           = VK_FORMAT_R8G8B8A8_UNORM;
         vci.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-        if (VkResult r = vkCreateImageView(device_, &vci, nullptr, &dst_view); r != VK_SUCCESS) {
-            fail(err, std::string("vkCreateImageView(dst, AVVkFrame): ") + vk_result_str(r));
-            cleanup_views();
+        if (VkResult r = device_.CreateImageView(vci, dst_view); r != VK_SUCCESS) {
+            fail(err, vk_error("vkCreateImageView(dst, AVVkFrame)", r));
             return -1;
         }
     }
@@ -965,38 +947,41 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im, VkImage dst, uint3
     /* Re-bind all three descriptor slots: Y/UV now alias FFmpeg's
      * images, dst is a fresh slot. */
     {
-        VkDescriptorImageInfo dii_y { sampler_, y_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-        VkDescriptorImageInfo dii_uv { sampler_,
-                                       uv_view,
-                                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-        VkDescriptorImageInfo dii_d { VK_NULL_HANDLE, dst_view, VK_IMAGE_LAYOUT_GENERAL };
-        VkWriteDescriptorSet  ws[3] {};
-        for (int i = 0; i < 3; ++i) {
-            ws[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            ws[i].dstSet          = dset_;
-            ws[i].dstBinding      = static_cast<uint32_t>(i);
-            ws[i].descriptorCount = 1;
+        VkDescriptorImageInfo      dii_y { *sampler_,
+                                           *y_view,
+                                           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+        VkDescriptorImageInfo      dii_uv { *sampler_,
+                                            *uv_view,
+                                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+        VkDescriptorImageInfo      dii_d { VK_NULL_HANDLE, *dst_view, VK_IMAGE_LAYOUT_GENERAL };
+        vvk::DescriptorUpdateBatch batch;
+        if (! batch.WriteImage(descriptor_set_.clone(),
+                               0,
+                               VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                               slice<VkDescriptorImageInfo>::from_raw_parts(&dii_y, 1)) ||
+            ! batch.WriteImage(descriptor_set_.clone(),
+                               1,
+                               VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                               slice<VkDescriptorImageInfo>::from_raw_parts(&dii_uv, 1)) ||
+            ! batch.WriteImage(descriptor_set_.clone(),
+                               2,
+                               VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                               slice<VkDescriptorImageInfo>::from_raw_parts(&dii_d, 1)) ||
+            ! batch.Commit().committed()) {
+            fail(err, "failed to update AVVkFrame descriptors");
+            return -1;
         }
-        ws[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        ws[0].pImageInfo     = &dii_y;
-        ws[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        ws[1].pImageInfo     = &dii_uv;
-        ws[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        ws[2].pImageInfo     = &dii_d;
-        vkUpdateDescriptorSets(device_, 3, ws, 0, nullptr);
     }
 
-    if (VkResult r = vkResetCommandBuffer(cmd_, 0); r != VK_SUCCESS) {
-        fail(err, std::string("vkResetCommandBuffer: ") + vk_result_str(r));
-        cleanup_views();
+    if (VkResult r = cmd_.Reset(); r != VK_SUCCESS) {
+        fail(err, vk_error("vkResetCommandBuffer", r));
         return -1;
     }
     VkCommandBufferBeginInfo bi {};
     bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    if (VkResult r = vkBeginCommandBuffer(cmd_, &bi); r != VK_SUCCESS) {
-        fail(err, std::string("vkBeginCommandBuffer: ") + vk_result_str(r));
-        cleanup_views();
+    if (VkResult r = cmd_.Begin(bi); r != VK_SUCCESS) {
+        fail(err, vk_error("vkBeginCommandBuffer", r));
         return -1;
     }
 
@@ -1011,9 +996,13 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im, VkImage dst, uint3
      * barrier's srcStageMask to VIDEO_DECODE so the validation layer's
      * per-resource hazard tracker can relate them. Single-image path
      * emits ONE barrier on the shared VkImage (covers all planes). */
-    const uint32_t y_avvk_qf  = *im.y_qf_in_out;
-    const uint32_t uv_avvk_qf = *im.uv_qf_in_out;
-    auto           qfot_pair  = [this](uint32_t avvk_qf) -> std::pair<uint32_t, uint32_t> {
+    const u32 y_avvk_qf  = *im.y_qf_in_out;
+    const u32 uv_avvk_qf = *im.uv_qf_in_out;
+    struct QueueTransfer {
+        u32 source;
+        u32 destination;
+    };
+    auto qfot_pair = [this](u32 avvk_qf) -> QueueTransfer {
         if (avvk_qf == VK_QUEUE_FAMILY_IGNORED || avvk_qf == queue_family_) {
             return { VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED };
         }
@@ -1052,9 +1041,13 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im, VkImage dst, uint3
 
     barrier_dst_to_storage(cmd_, dst, target);
 
-    vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_);
-    vkCmdBindDescriptorSets(
-        cmd_, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_layout_, 0, 1, &dset_, 0, nullptr);
+    cmd_.BindPipeline(VK_PIPELINE_BIND_POINT_COMPUTE, *pipeline_);
+    const VkDescriptorSet descriptor_set = descriptor_set_.handle;
+    cmd_.BindDescriptorSets(VK_PIPELINE_BIND_POINT_COMPUTE,
+                            *pipeline_layout_,
+                            0,
+                            slice<VkDescriptorSet>::from_raw_parts(&descriptor_set, 1),
+                            {});
     ShaderPushConstants pc {};
     pc.dst_w = dst_w;
     pc.dst_h = dst_h;
@@ -1064,23 +1057,25 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im, VkImage dst, uint3
         pc.m_b[i]    = cm.m_b[i];
         pc.offset[i] = cm.offset[i];
     }
-    vkCmdPushConstants(cmd_, pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
-    const uint32_t gx = (dst_w + 7) / 8;
-    const uint32_t gy = (dst_h + 7) / 8;
-    vkCmdDispatch(cmd_, gx, gy, 1);
+    cmd_.PushConstants(*pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT, pc);
+    const u32 gx = (dst_w + 7) / 8;
+    const u32 gy = (dst_h + 7) / 8;
+    cmd_.Dispatch(gx, gy, 1);
 
     /* Release Y/UV back in GENERAL layout (FFmpeg's next decode submit
      * expects that), and release dst to FOREIGN for the bridge consumer.
      * Same QFOT rules as ACQUIRE: when AVVkFrame says IGNORED (CONCURRENT
      * pool) we transition layout only and keep both indices IGNORED. */
-    auto [y_rel_src, y_rel_dst] =
+    QueueTransfer y_release =
         (y_avvk_qf == VK_QUEUE_FAMILY_IGNORED || y_avvk_qf == queue_family_)
-            ? std::pair<uint32_t, uint32_t> { VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED }
-            : std::pair<uint32_t, uint32_t> { queue_family_, y_avvk_qf };
-    auto [uv_rel_src, uv_rel_dst] =
+            ? QueueTransfer { VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED }
+            : QueueTransfer { queue_family_, y_avvk_qf };
+    QueueTransfer uv_release =
         (uv_avvk_qf == VK_QUEUE_FAMILY_IGNORED || uv_avvk_qf == queue_family_)
-            ? std::pair<uint32_t, uint32_t> { VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED }
-            : std::pair<uint32_t, uint32_t> { queue_family_, uv_avvk_qf };
+            ? QueueTransfer { VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED }
+            : QueueTransfer { queue_family_, uv_avvk_qf };
+    auto [y_rel_src, y_rel_dst]   = y_release;
+    auto [uv_rel_src, uv_rel_dst] = uv_release;
     // dst side: VIDEO_DECODE on this queue would be meaningless. The
     // semaphore signal happens after all our cmds (sync1 vkQueueSubmit
     // signals at ALL_COMMANDS implicitly), so dstStage=ALL_COMMANDS,
@@ -1109,9 +1104,8 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im, VkImage dst, uint3
     }
     barrier_dst_from_storage(cmd_, dst, target, queue_family_);
 
-    if (VkResult r = vkEndCommandBuffer(cmd_); r != VK_SUCCESS) {
-        fail(err, std::string("vkEndCommandBuffer: ") + vk_result_str(r));
-        cleanup_views();
+    if (VkResult r = cmd_.End(); r != VK_SUCCESS) {
+        fail(err, vk_error("vkEndCommandBuffer", r));
         return -1;
     }
 
@@ -1121,34 +1115,43 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im, VkImage dst, uint3
      * timeline; main.cpp aliases y/uv to the same sem/value pointer
      * so we deduplicate here to avoid waiting on the same semaphore
      * twice (Vulkan UB). */
-    const bool     sem_shared    = (im.y_sem == im.uv_sem);
-    const uint64_t y_wait_val    = *im.y_sem_val_in_out;
-    const uint64_t uv_wait_val   = *im.uv_sem_val_in_out;
-    const uint64_t y_signal_val  = y_wait_val + 1;
-    const uint64_t uv_signal_val = uv_wait_val + 1;
+    const bool sem_shared    = (im.y_sem == im.uv_sem);
+    const u64  y_wait_val    = *im.y_sem_val_in_out;
+    const u64  uv_wait_val   = *im.uv_sem_val_in_out;
+    const u64  y_signal_val  = y_wait_val + 1;
+    const u64  uv_signal_val = uv_wait_val + 1;
 
     VkSemaphore          wait_sems[2]   = { im.y_sem, im.uv_sem };
-    uint64_t             wait_vals[2]   = { y_wait_val, uv_wait_val };
+    u64                  wait_vals[2]   = { y_wait_val, uv_wait_val };
     VkPipelineStageFlags wait_stages[2] = {
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
     };
-    const uint32_t wait_count = sem_shared ? 1u : 2u;
+    const u32 wait_count = sem_shared ? 1u : 2u;
 
-    /* Signal FFmpeg timeline semaphore(s). Bridge mode also signals the
-     * binary semaphore that is exported as a sync_fd. */
-    VkSemaphore signal_sems[3] = { im.y_sem, im.uv_sem, signal_sem_ };
-    uint64_t    signal_vals[3] = { y_signal_val, uv_signal_val, 0 };
-    uint32_t    signal_count   = sem_shared ? 1u : 2u;
-    if (target_exports_sync_fd(target)) {
-        if (sem_shared) {
-            signal_sems[1] = signal_sem_;
-            signal_vals[1] = 0;
-            signal_count   = 2u;
-        } else {
-            signal_count = 3u;
-        }
+    /* Signal FFmpeg timeline semaphore(s), the converter completion
+     * timeline, and the bridge binary semaphore when requested. */
+    auto next_completion_value = completion_value_ + 1;
+    if (next_completion_value == 0) ++next_completion_value;
+    VkSemaphore signal_sems[4] {};
+    u64         signal_vals[4] {};
+    u32         signal_count  = 0;
+    signal_sems[signal_count] = im.y_sem;
+    signal_vals[signal_count] = y_signal_val;
+    ++signal_count;
+    if (! sem_shared) {
+        signal_sems[signal_count] = im.uv_sem;
+        signal_vals[signal_count] = uv_signal_val;
+        ++signal_count;
     }
+    if (target_exports_sync_fd(target)) {
+        signal_sems[signal_count] = *signal_sem_;
+        signal_vals[signal_count] = 0;
+        ++signal_count;
+    }
+    signal_sems[signal_count] = (*completion_timeline_)->handle();
+    signal_vals[signal_count] = next_completion_value;
+    ++signal_count;
 
     VkTimelineSemaphoreSubmitInfo tsi {};
     tsi.sType                     = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
@@ -1158,21 +1161,22 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im, VkImage dst, uint3
     tsi.pSignalSemaphoreValues    = signal_vals;
 
     VkSubmitInfo si {};
-    si.sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    si.pNext                = &tsi;
-    si.waitSemaphoreCount   = wait_count;
-    si.pWaitSemaphores      = wait_sems;
-    si.pWaitDstStageMask    = wait_stages;
-    si.commandBufferCount   = 1;
-    si.pCommandBuffers      = &cmd_;
-    si.signalSemaphoreCount = signal_count;
-    si.pSignalSemaphores    = signal_sems;
-    if (VkResult r = vkQueueSubmit(queue_, 1, &si, done_fence_); r != VK_SUCCESS) {
-        fail(err, std::string("vkQueueSubmit: ") + vk_result_str(r));
-        cleanup_views();
+    si.sType                             = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    si.pNext                             = &tsi;
+    si.waitSemaphoreCount                = wait_count;
+    si.pWaitSemaphores                   = wait_sems;
+    si.pWaitDstStageMask                 = wait_stages;
+    si.commandBufferCount                = 1;
+    const VkCommandBuffer command_buffer = *cmd_;
+    si.pCommandBuffers                   = &command_buffer;
+    si.signalSemaphoreCount              = signal_count;
+    si.pSignalSemaphores                 = signal_sems;
+    if (VkResult r = queue_.Submit(si, *done_fence_); r != VK_SUCCESS) {
+        fail(err, vk_error("vkQueueSubmit", r));
         return -1;
     }
     fence_pending_ = true;
+    publish_submission(dst, dst_w, dst_h, target, next_completion_value);
 
     /* Update the AVVkFrame's tracked state — caller's contract. */
     *im.y_sem_val_in_out  = y_signal_val;
@@ -1184,26 +1188,21 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im, VkImage dst, uint3
     *im.y_qf_in_out  = y_avvk_qf;
     *im.uv_qf_in_out = uv_avvk_qf;
 
+    last_dst_view_ = rstd::move(dst_view);
+    last_y_view_   = rstd::move(y_view);
+    last_uv_view_  = rstd::move(uv_view);
+
     int sync_fd = -1;
     if (target_exports_sync_fd(target)) {
         VkSemaphoreGetFdInfoKHR sgfi {};
         sgfi.sType      = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR;
-        sgfi.semaphore  = signal_sem_;
+        sgfi.semaphore  = *signal_sem_;
         sgfi.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
-        if (VkResult r = vkGetSemaphoreFdKHR_(device_, &sgfi, &sync_fd); r != VK_SUCCESS) {
-            fail(err, std::string("vkGetSemaphoreFdKHR: ") + vk_result_str(r));
-            cleanup_views();
+        if (VkResult r = device_.GetSemaphoreFdKHR(sgfi, &sync_fd); r != VK_SUCCESS) {
+            fail(err, vk_error("vkGetSemaphoreFdKHR", r));
             return -1;
         }
     }
-
-    /* Cycle the per-call views into the deferred destroy slots. */
-    if (last_dst_view_) vkDestroyImageView(device_, last_dst_view_, nullptr);
-    if (last_y_view_) vkDestroyImageView(device_, last_y_view_, nullptr);
-    if (last_uv_view_) vkDestroyImageView(device_, last_uv_view_, nullptr);
-    last_dst_view_ = dst_view;
-    last_y_view_   = y_view;
-    last_uv_view_  = uv_view;
     return sync_fd;
 }
 
@@ -1214,14 +1213,13 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im, VkImage dst, uint3
  * imported VkImage and its memory objects are deferred-destroyed at the
  * *next* convert_drm_prime call (after the wait on done_fence_) so the
  * GPU has fully consumed them. fds are dup'd for Vulkan to own. */
-int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm, VkImage dst, uint32_t dst_w,
-                                  uint32_t dst_h, const ColorMatrix& cm, ConvertTarget target,
-                                  Error* err) {
+int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm, VkImage dst, u32 dst_w, u32 dst_h,
+                                  const ColorMatrix& cm, ConvertTarget target, Error* err) {
     if (dst == VK_NULL_HANDLE) {
         fail(err, "convert_drm_prime: dst null");
         return -1;
     }
-    if (! vkGetMemoryFdPropertiesKHR_) {
+    if (! device_dispatch_.vkGetMemoryFdPropertiesKHR) {
         fail(err, "convert_drm_prime: vkGetMemoryFdPropertiesKHR missing");
         return -1;
     }
@@ -1241,30 +1239,19 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm, VkImage dst, uint32_t
     /* Wait for prior submit before we destroy last-cycle imports + reuse
      * cmd_/dset_. */
     if (fence_pending_) {
-        if (VkResult r = vkWaitForFences(device_, 1, &done_fence_, VK_TRUE, 1'000'000'000ull);
-            r != VK_SUCCESS) {
-            fail(err, std::string("vkWaitForFences: ") + vk_result_str(r));
+        if (VkResult r = done_fence_.Wait(1'000'000'000ull); r != VK_SUCCESS) {
+            fail(err, vk_error("vkWaitForFences", r));
             return -1;
         }
-        if (VkResult r = vkResetFences(device_, 1, &done_fence_); r != VK_SUCCESS) {
-            fail(err, std::string("vkResetFences: ") + vk_result_str(r));
+        if (VkResult r = done_fence_.Reset(); r != VK_SUCCESS) {
+            fail(err, vk_error("vkResetFences", r));
             return -1;
         }
         fence_pending_ = false;
     }
 
-    /* Now safe to destroy last cycle's drm_image + memories. */
-    if (last_drm_image_) {
-        vkDestroyImage(device_, last_drm_image_, nullptr);
-        last_drm_image_ = VK_NULL_HANDLE;
-    }
-    for (uint32_t i = 0; i < last_drm_memory_count_; ++i) {
-        if (last_drm_memories_[i]) {
-            vkFreeMemory(device_, last_drm_memories_[i], nullptr);
-            last_drm_memories_[i] = VK_NULL_HANDLE;
-        }
-    }
-    last_drm_memory_count_ = 0;
+    last_drm_image_.reset();
+    last_drm_memories_.clear();
 
     /* Map (object_index, plane_index_in_layer) → flat plane index 0/1.
      * Two valid descriptor layouts for NV12:
@@ -1272,15 +1259,15 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm, VkImage dst, uint32_t
      *   B) 2 layers, 1 plane each (Y=layers[0].planes[0], UV=layers[1].planes[0])
      * We collapse both to a flat planes[0]=Y, planes[1]=UV. */
     struct FlatPlane {
-        uint32_t object_index;
-        uint64_t offset;
-        uint64_t pitch;
+        u32 object_index;
+        u64 offset;
+        u64 pitch;
     };
     FlatPlane flat[2] {};
     int       flat_n = 0;
-    for (uint32_t li = 0; li < drm.layer_count && flat_n < 2; ++li) {
+    for (u32 li = 0; li < drm.layer_count && flat_n < 2; ++li) {
         const auto& la = drm.layers[li];
-        for (uint32_t pi = 0; pi < la.plane_count && flat_n < 2; ++pi) {
+        for (u32 pi = 0; pi < la.plane_count && flat_n < 2; ++pi) {
             flat[flat_n].object_index = la.planes[pi].object_index;
             flat[flat_n].offset       = la.planes[pi].offset;
             flat[flat_n].pitch        = la.planes[pi].pitch;
@@ -1288,30 +1275,25 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm, VkImage dst, uint32_t
         }
     }
     if (flat_n != 2) {
-        fail(err, "convert_drm_prime: expected 2 NV12 planes, got " + std::to_string(flat_n));
+        fail(err, rstd::format("convert_drm_prime: expected 2 NV12 planes, got {}", flat_n));
         return -1;
     }
 
-    const uint64_t modifier = drm.objects[0].format_modifier;
+    const u64 modifier = drm.objects[0].format_modifier;
 
     /* Build the multi-plane VkImage with explicit modifier + per-plane
      * layout. DISJOINT lets us bind a separate VkDeviceMemory per plane
      * — required when planes live in different fds. */
-    VkImage        drm_image    = VK_NULL_HANDLE;
-    VkDeviceMemory plane_mem[2] = { VK_NULL_HANDLE, VK_NULL_HANDLE };
-    VkImageView    y_view       = VK_NULL_HANDLE;
-    VkImageView    uv_view      = VK_NULL_HANDLE;
-    VkImageView    dst_view     = VK_NULL_HANDLE;
-    int            dup_fds[2]   = { -1, -1 };
-    bool           disjoint     = (flat[0].object_index != flat[1].object_index);
+    vvk::DeviceMemory plane_mem[2];
+    vvk::Image        drm_image;
+    vvk::ImageView    y_view;
+    vvk::ImageView    uv_view;
+    vvk::ImageView    dst_view;
+    int               dup_fds[2] = { -1, -1 };
+    bool              disjoint   = (flat[0].object_index != flat[1].object_index);
 
     auto cleanup_on_fail = [&]() {
-        if (dst_view) vkDestroyImageView(device_, dst_view, nullptr);
-        if (y_view) vkDestroyImageView(device_, y_view, nullptr);
-        if (uv_view) vkDestroyImageView(device_, uv_view, nullptr);
-        if (drm_image) vkDestroyImage(device_, drm_image, nullptr);
         for (int i = 0; i < 2; ++i) {
-            if (plane_mem[i]) vkFreeMemory(device_, plane_mem[i], nullptr);
             if (dup_fds[i] >= 0) rstd::sys::libc::close(dup_fds[i]);
         }
     };
@@ -1339,7 +1321,7 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm, VkImage dst, uint32_t
         VkImageFormatListCreateInfo flci {};
         flci.sType           = VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO;
         flci.pNext           = &emi;
-        flci.viewFormatCount = static_cast<uint32_t>(std::size(view_formats));
+        flci.viewFormatCount = 3;
         flci.pViewFormats    = view_formats;
         VkImageCreateInfo ici {};
         ici.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -1356,10 +1338,10 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm, VkImage dst, uint32_t
         ici.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
         ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         if (disjoint) ici.flags |= VK_IMAGE_CREATE_DISJOINT_BIT;
-        if (VkResult r = vkCreateImage(device_, &ici, nullptr, &drm_image); r != VK_SUCCESS) {
+        if (VkResult r = device_.CreateImage(ici, drm_image); r != VK_SUCCESS) {
             fail(err,
-                 std::string("vkCreateImage(DRM_PRIME, modifier=0x") + std::to_string(modifier) +
-                     "): " + vk_result_str(r));
+                 rstd::format(
+                     "vkCreateImage(DRM_PRIME, modifier={}): {}", modifier, vk_result_str(r)));
             cleanup_on_fail();
             return -1;
         }
@@ -1367,21 +1349,21 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm, VkImage dst, uint32_t
 
     /* Per-plane memory import. Vulkan takes ownership of imported fds —
      * dup so the AVFrame can keep its own copy alive for the next pull. */
-    auto import_plane = [&](int plane_idx, uint32_t obj_idx, VkImageAspectFlagBits aspect) -> bool {
+    auto import_plane = [&](int plane_idx, u32 obj_idx, VkImageAspectFlagBits aspect) -> bool {
         const int src_fd = drm.objects[obj_idx].fd;
         const int dfd    = rstd::sys::libc::dup(src_fd);
         if (dfd < 0) {
-            fail(err, std::string("dup(dma_buf): ") + std::strerror(rstd::sys::libc::errno()));
+            fail(err, rstd::format("dup(dma_buf) failed with errno {}", rstd::sys::libc::errno()));
             return false;
         }
         dup_fds[plane_idx] = dfd;
 
         VkMemoryFdPropertiesKHR fdp {};
         fdp.sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR;
-        if (VkResult r = vkGetMemoryFdPropertiesKHR_(
-                device_, VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, dfd, &fdp);
+        if (VkResult r = device_.GetMemoryFdPropertiesKHR(
+                VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, dfd, fdp);
             r != VK_SUCCESS) {
-            fail(err, std::string("vkGetMemoryFdPropertiesKHR: ") + vk_result_str(r));
+            fail(err, vk_error("vkGetMemoryFdPropertiesKHR", r));
             return false;
         }
 
@@ -1390,14 +1372,12 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm, VkImage dst, uint32_t
         plane_req.planeAspect = aspect;
         VkImageMemoryRequirementsInfo2 req_info {};
         req_info.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2;
-        req_info.image = drm_image;
+        req_info.image = *drm_image;
         if (disjoint) req_info.pNext = &plane_req;
-        VkMemoryRequirements2 req2 {};
-        req2.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2;
-        vkGetImageMemoryRequirements2(device_, &req_info, &req2);
+        const auto req2 = device_.GetImageMemoryRequirements2(req_info);
 
-        const uint32_t type_bits = req2.memoryRequirements.memoryTypeBits & fdp.memoryTypeBits;
-        const uint32_t mtype     = pick_memory_type(phys_, type_bits, 0);
+        const u32 type_bits = req2.memoryRequirements.memoryTypeBits & fdp.memoryTypeBits;
+        const u32 mtype     = pick_memory_type(phys_, type_bits, 0);
         if (mtype == UINT32_MAX) {
             fail(err, "convert_drm_prime: no compatible memory type for imported DMA-BUF");
             return false;
@@ -1409,16 +1389,15 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm, VkImage dst, uint32_t
         ifi.fd         = dfd;
         VkMemoryDedicatedAllocateInfo dai {};
         dai.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO;
-        dai.image = drm_image;
+        dai.image = *drm_image;
         ifi.pNext = &dai;
         VkMemoryAllocateInfo mai {};
         mai.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         mai.pNext           = &ifi;
         mai.allocationSize  = drm.objects[obj_idx].size;
         mai.memoryTypeIndex = mtype;
-        if (VkResult r = vkAllocateMemory(device_, &mai, nullptr, &plane_mem[plane_idx]);
-            r != VK_SUCCESS) {
-            fail(err, std::string("vkAllocateMemory(import DMA-BUF): ") + vk_result_str(r));
+        if (VkResult r = device_.AllocateMemory(mai, plane_mem[plane_idx]); r != VK_SUCCESS) {
+            fail(err, vk_error("vkAllocateMemory(import DMA-BUF)", r));
             return false;
         }
         /* fd is consumed by Vulkan on success — drop our tracked copy. */
@@ -1441,16 +1420,18 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm, VkImage dst, uint32_t
         VkBindImageMemoryInfo binds[2] {};
         binds[0].sType        = VK_STRUCTURE_TYPE_BIND_IMAGE_MEMORY_INFO;
         binds[0].pNext        = &bp0;
-        binds[0].image        = drm_image;
-        binds[0].memory       = plane_mem[0];
+        binds[0].image        = *drm_image;
+        binds[0].memory       = *plane_mem[0];
         binds[0].memoryOffset = 0;
         binds[1].sType        = VK_STRUCTURE_TYPE_BIND_IMAGE_MEMORY_INFO;
         binds[1].pNext        = &bp1;
-        binds[1].image        = drm_image;
-        binds[1].memory       = plane_mem[1];
+        binds[1].image        = *drm_image;
+        binds[1].memory       = *plane_mem[1];
         binds[1].memoryOffset = 0;
-        if (VkResult r = vkBindImageMemory2(device_, 2, binds); r != VK_SUCCESS) {
-            fail(err, std::string("vkBindImageMemory2(disjoint): ") + vk_result_str(r));
+        if (VkResult r =
+                device_.BindImageMemory2(slice<VkBindImageMemoryInfo>::from_raw_parts(binds, 2));
+            r != VK_SUCCESS) {
+            fail(err, vk_error("vkBindImageMemory2(disjoint)", r));
             cleanup_on_fail();
             return -1;
         }
@@ -1460,8 +1441,8 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm, VkImage dst, uint32_t
             cleanup_on_fail();
             return -1;
         }
-        if (VkResult r = vkBindImageMemory(device_, drm_image, plane_mem[0], 0); r != VK_SUCCESS) {
-            fail(err, std::string("vkBindImageMemory(joint): ") + vk_result_str(r));
+        if (VkResult r = drm_image.BindMemory(*plane_mem[0], 0); r != VK_SUCCESS) {
+            fail(err, vk_error("vkBindImageMemory(joint)", r));
             cleanup_on_fail();
             return -1;
         }
@@ -1472,30 +1453,30 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm, VkImage dst, uint32_t
         VkImageViewCreateInfo vci {};
         vci.sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
         vci.viewType         = VK_IMAGE_VIEW_TYPE_2D;
-        vci.image            = drm_image;
+        vci.image            = *drm_image;
         vci.components       = { VK_COMPONENT_SWIZZLE_IDENTITY,
                                  VK_COMPONENT_SWIZZLE_IDENTITY,
                                  VK_COMPONENT_SWIZZLE_IDENTITY,
                                  VK_COMPONENT_SWIZZLE_IDENTITY };
         vci.subresourceRange = { VK_IMAGE_ASPECT_PLANE_0_BIT, 0, 1, 0, 1 };
         vci.format           = VK_FORMAT_R8_UNORM;
-        if (VkResult r = vkCreateImageView(device_, &vci, nullptr, &y_view); r != VK_SUCCESS) {
-            fail(err, std::string("vkCreateImageView(DRM Y): ") + vk_result_str(r));
+        if (VkResult r = device_.CreateImageView(vci, y_view); r != VK_SUCCESS) {
+            fail(err, vk_error("vkCreateImageView(DRM Y)", r));
             cleanup_on_fail();
             return -1;
         }
         vci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_PLANE_1_BIT;
         vci.format                      = VK_FORMAT_R8G8_UNORM;
-        if (VkResult r = vkCreateImageView(device_, &vci, nullptr, &uv_view); r != VK_SUCCESS) {
-            fail(err, std::string("vkCreateImageView(DRM UV): ") + vk_result_str(r));
+        if (VkResult r = device_.CreateImageView(vci, uv_view); r != VK_SUCCESS) {
+            fail(err, vk_error("vkCreateImageView(DRM UV)", r));
             cleanup_on_fail();
             return -1;
         }
         vci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         vci.image                       = dst;
         vci.format                      = VK_FORMAT_R8G8B8A8_UNORM;
-        if (VkResult r = vkCreateImageView(device_, &vci, nullptr, &dst_view); r != VK_SUCCESS) {
-            fail(err, std::string("vkCreateImageView(DRM dst): ") + vk_result_str(r));
+        if (VkResult r = device_.CreateImageView(vci, dst_view); r != VK_SUCCESS) {
+            fail(err, vk_error("vkCreateImageView(DRM dst)", r));
             cleanup_on_fail();
             return -1;
         }
@@ -1503,38 +1484,41 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm, VkImage dst, uint32_t
 
     /* Descriptor write — same shape as the AVVkFrame path. */
     {
-        VkDescriptorImageInfo dii_y { sampler_, y_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-        VkDescriptorImageInfo dii_uv { sampler_,
-                                       uv_view,
-                                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-        VkDescriptorImageInfo dii_d { VK_NULL_HANDLE, dst_view, VK_IMAGE_LAYOUT_GENERAL };
-        VkWriteDescriptorSet  ws[3] {};
-        for (int i = 0; i < 3; ++i) {
-            ws[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            ws[i].dstSet          = dset_;
-            ws[i].dstBinding      = static_cast<uint32_t>(i);
-            ws[i].descriptorCount = 1;
+        VkDescriptorImageInfo      dii_y { *sampler_,
+                                           *y_view,
+                                           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+        VkDescriptorImageInfo      dii_uv { *sampler_,
+                                            *uv_view,
+                                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+        VkDescriptorImageInfo      dii_d { VK_NULL_HANDLE, *dst_view, VK_IMAGE_LAYOUT_GENERAL };
+        vvk::DescriptorUpdateBatch batch;
+        if (! batch.WriteImage(descriptor_set_.clone(),
+                               0,
+                               VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                               slice<VkDescriptorImageInfo>::from_raw_parts(&dii_y, 1)) ||
+            ! batch.WriteImage(descriptor_set_.clone(),
+                               1,
+                               VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                               slice<VkDescriptorImageInfo>::from_raw_parts(&dii_uv, 1)) ||
+            ! batch.WriteImage(descriptor_set_.clone(),
+                               2,
+                               VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                               slice<VkDescriptorImageInfo>::from_raw_parts(&dii_d, 1)) ||
+            ! batch.Commit().committed()) {
+            fail(err, "failed to update DRM PRIME descriptors");
+            return -1;
         }
-        ws[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        ws[0].pImageInfo     = &dii_y;
-        ws[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        ws[1].pImageInfo     = &dii_uv;
-        ws[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        ws[2].pImageInfo     = &dii_d;
-        vkUpdateDescriptorSets(device_, 3, ws, 0, nullptr);
     }
 
-    if (VkResult r = vkResetCommandBuffer(cmd_, 0); r != VK_SUCCESS) {
-        fail(err, std::string("vkResetCommandBuffer: ") + vk_result_str(r));
-        cleanup_on_fail();
+    if (VkResult r = cmd_.Reset(); r != VK_SUCCESS) {
+        fail(err, vk_error("vkResetCommandBuffer", r));
         return -1;
     }
     VkCommandBufferBeginInfo bi {};
     bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    if (VkResult r = vkBeginCommandBuffer(cmd_, &bi); r != VK_SUCCESS) {
-        fail(err, std::string("vkBeginCommandBuffer: ") + vk_result_str(r));
-        cleanup_on_fail();
+    if (VkResult r = cmd_.Begin(bi); r != VK_SUCCESS) {
+        fail(err, vk_error("vkBeginCommandBuffer", r));
         return -1;
     }
 
@@ -1544,7 +1528,7 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm, VkImage dst, uint32_t
      * already wrote NV12 contents into the dma-buf; the foreign-queue
      * acquire grants us read access. */
     barrier_image(cmd_,
-                  drm_image,
+                  *drm_image,
                   0,
                   VK_ACCESS_SHADER_READ_BIT,
                   VK_IMAGE_LAYOUT_UNDEFINED,
@@ -1555,9 +1539,13 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm, VkImage dst, uint32_t
                   queue_family_);
     barrier_dst_to_storage(cmd_, dst, target);
 
-    vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_);
-    vkCmdBindDescriptorSets(
-        cmd_, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_layout_, 0, 1, &dset_, 0, nullptr);
+    cmd_.BindPipeline(VK_PIPELINE_BIND_POINT_COMPUTE, *pipeline_);
+    const VkDescriptorSet descriptor_set = descriptor_set_.handle;
+    cmd_.BindDescriptorSets(VK_PIPELINE_BIND_POINT_COMPUTE,
+                            *pipeline_layout_,
+                            0,
+                            slice<VkDescriptorSet>::from_raw_parts(&descriptor_set, 1),
+                            {});
     ShaderPushConstants pc {};
     pc.dst_w = dst_w;
     pc.dst_h = dst_h;
@@ -1567,17 +1555,17 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm, VkImage dst, uint32_t
         pc.m_b[i]    = cm.m_b[i];
         pc.offset[i] = cm.offset[i];
     }
-    vkCmdPushConstants(cmd_, pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
-    const uint32_t gx = (dst_w + 7) / 8;
-    const uint32_t gy = (dst_h + 7) / 8;
-    vkCmdDispatch(cmd_, gx, gy, 1);
+    cmd_.PushConstants(*pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT, pc);
+    const u32 gx = (dst_w + 7) / 8;
+    const u32 gy = (dst_h + 7) / 8;
+    cmd_.Dispatch(gx, gy, 1);
 
     /* Release dst to FOREIGN queue family for the bridge consumer. The
      * imported drm_image goes back to FOREIGN too — VAAPI doesn't track
      * Vulkan layouts, but the foreign-queue release is the spec-required
      * way to relinquish ownership of an external resource. */
     barrier_image(cmd_,
-                  drm_image,
+                  *drm_image,
                   VK_ACCESS_SHADER_READ_BIT,
                   0,
                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -1588,9 +1576,8 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm, VkImage dst, uint32_t
                   VK_QUEUE_FAMILY_FOREIGN_EXT);
     barrier_dst_from_storage(cmd_, dst, target, queue_family_);
 
-    if (VkResult r = vkEndCommandBuffer(cmd_); r != VK_SUCCESS) {
-        fail(err, std::string("vkEndCommandBuffer: ") + vk_result_str(r));
-        cleanup_on_fail();
+    if (VkResult r = cmd_.End(); r != VK_SUCCESS) {
+        fail(err, vk_error("vkEndCommandBuffer", r));
         return -1;
     }
 
@@ -1598,99 +1585,178 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm, VkImage dst, uint32_t
      * wait semaphore: VAAPI submits its own decode work synchronously
      * to the dma-buf via implicit sync; the foreign-queue acquire
      * barrier above is the cross-API sync point. */
+    auto next_completion_value = completion_value_ + 1;
+    if (next_completion_value == 0) ++next_completion_value;
+    VkSemaphore signal_sems[2] = { (*completion_timeline_)->handle(), *signal_sem_ };
+    u64         signal_vals[2] = { next_completion_value, 0 };
+    const auto  signal_count   = target_exports_sync_fd(target) ? 2u : 1u;
+    VkTimelineSemaphoreSubmitInfo timeline_info {};
+    timeline_info.sType                     = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
+    timeline_info.signalSemaphoreValueCount = signal_count;
+    timeline_info.pSignalSemaphoreValues    = signal_vals;
     VkSubmitInfo si {};
-    si.sType                   = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    si.commandBufferCount      = 1;
-    si.pCommandBuffers         = &cmd_;
-    VkSemaphore signal_sems[1] = { signal_sem_ };
-    if (target_exports_sync_fd(target)) {
-        si.signalSemaphoreCount = 1;
-        si.pSignalSemaphores    = signal_sems;
-    }
-    if (VkResult r = vkQueueSubmit(queue_, 1, &si, done_fence_); r != VK_SUCCESS) {
-        fail(err, std::string("vkQueueSubmit: ") + vk_result_str(r));
-        cleanup_on_fail();
+    si.sType                             = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    si.pNext                             = &timeline_info;
+    si.commandBufferCount                = 1;
+    const VkCommandBuffer command_buffer = *cmd_;
+    si.pCommandBuffers                   = &command_buffer;
+    si.signalSemaphoreCount              = signal_count;
+    si.pSignalSemaphores                 = signal_sems;
+    if (VkResult r = queue_.Submit(si, *done_fence_); r != VK_SUCCESS) {
+        fail(err, vk_error("vkQueueSubmit", r));
         return -1;
     }
     fence_pending_ = true;
+    publish_submission(dst, dst_w, dst_h, target, next_completion_value);
+
+    last_dst_view_  = rstd::move(dst_view);
+    last_y_view_    = rstd::move(y_view);
+    last_uv_view_   = rstd::move(uv_view);
+    last_drm_image_ = rstd::move(drm_image);
+    last_drm_memories_.push(rstd::move(plane_mem[0]));
+    if (disjoint) last_drm_memories_.push(rstd::move(plane_mem[1]));
 
     int sync_fd = -1;
     if (target_exports_sync_fd(target)) {
         VkSemaphoreGetFdInfoKHR sgfi {};
         sgfi.sType      = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR;
-        sgfi.semaphore  = signal_sem_;
+        sgfi.semaphore  = *signal_sem_;
         sgfi.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
-        if (VkResult r = vkGetSemaphoreFdKHR_(device_, &sgfi, &sync_fd); r != VK_SUCCESS) {
-            fail(err, std::string("vkGetSemaphoreFdKHR: ") + vk_result_str(r));
-            cleanup_on_fail();
+        if (VkResult r = device_.GetSemaphoreFdKHR(sgfi, &sync_fd); r != VK_SUCCESS) {
+            fail(err, vk_error("vkGetSemaphoreFdKHR", r));
             return -1;
         }
     }
-
-    /* Cycle this submit's resources into the deferred-destroy slots,
-     * destroyed at next call (or in the destructor). Views go to the
-     * standard last_*_view_ slots (sized for one cycle). The drm image
-     * + memory get a private slot pair for the same one-cycle deferral. */
-    if (last_dst_view_) vkDestroyImageView(device_, last_dst_view_, nullptr);
-    if (last_y_view_) vkDestroyImageView(device_, last_y_view_, nullptr);
-    if (last_uv_view_) vkDestroyImageView(device_, last_uv_view_, nullptr);
-    last_dst_view_         = dst_view;
-    last_y_view_           = y_view;
-    last_uv_view_          = uv_view;
-    last_drm_image_        = drm_image;
-    last_drm_memory_count_ = disjoint ? 2u : 1u;
-    last_drm_memories_[0]  = plane_mem[0];
-    last_drm_memories_[1]  = plane_mem[1];
     return sync_fd;
+}
+
+void YuvToRgba::publish_submission(VkImage dst, u32 dst_w, u32 dst_h, ConvertTarget target,
+                                   u64 completion_value) {
+    completion_value_           = completion_value;
+    const auto content_revision = next_content_revision();
+    last_submission_            = Some(ConversionSubmission {
+        .target       = dst,
+        .width        = dst_w,
+        .height       = dst_h,
+        .target_kind  = target,
+        .final_layout = target == ConvertTarget::SampledLocal
+                            ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                            : VK_IMAGE_LAYOUT_GENERAL,
+        .final_queue_family =
+            target == ConvertTarget::SampledLocal ? queue_family_ : VK_QUEUE_FAMILY_FOREIGN_EXT,
+        .content_revision = content_revision,
+        .readiness        = { (*completion_timeline_)->source(), completion_value },
+        .execution_dependency =
+            {
+                .timeline   = Some((*completion_timeline_).clone()),
+                .completion = { (*completion_timeline_)->source(), completion_value },
+            },
+    });
+}
+
+vvk::CompletionObservation YuvToRgba::poll_completion() const noexcept {
+    return completion_observer_.is_some() && completion_timeline_.is_some()
+               ? completion_observer_->Poll((*completion_timeline_)->source())
+               : vvk::CompletionObservation {};
+}
+
+Option<vvk::SubmissionToken> YuvToRgba::last_submission_readiness() const noexcept {
+    if (last_submission_.is_none()) return None();
+    auto readiness = last_submission_->readiness;
+    return Some(rstd::move(readiness));
+}
+
+vvk::CompletionObservation YuvToRgba::wait_completion(const vvk::SubmissionToken& required,
+                                                      u64 timeout_ns) const noexcept {
+    return completion_observer_.is_some() ? completion_observer_->Wait(required, timeout_ns)
+                                          : vvk::CompletionObservation {};
 }
 
 // ---------------------------------------------------------------------------
 // Public Result wrappers around the legacy out-param helpers above.
 // ---------------------------------------------------------------------------
 
-auto YuvToRgba::convert_nv12(VkImage dst, uint32_t dst_w, uint32_t dst_h, const uint8_t* nv12,
-                             std::size_t nv12_size, const ColorMatrix& cm)
-    -> rstd::Result<int, Error> {
+auto YuvToRgba::convert_nv12(VkImage dst, u32 dst_w, u32 dst_h, const u8* nv12, usize nv12_size,
+                             const ColorMatrix& cm) -> Result<int, Error> {
     return convert_nv12(dst, dst_w, dst_h, nv12, nv12_size, cm, ConvertTarget::BridgeForeign);
 }
 
-auto YuvToRgba::convert_nv12(VkImage dst, uint32_t dst_w, uint32_t dst_h, const uint8_t* nv12,
-                             std::size_t nv12_size, const ColorMatrix& cm, ConvertTarget target)
-    -> rstd::Result<int, Error> {
-    Error err;
-    int   fd = convert_nv12_(dst, dst_w, dst_h, nv12, nv12_size, cm, target, &err);
-    if (fd < 0 && ! err.message.empty()) return rstd::Err(std::move(err));
-    return rstd::Ok(fd);
+auto YuvToRgba::convert_nv12(VkImage dst, u32 dst_w, u32 dst_h, const u8* nv12, usize nv12_size,
+                             const ColorMatrix& cm, ConvertTarget target) -> Result<int, Error> {
+    auto submitted = submit_nv12(dst, dst_w, dst_h, nv12, nv12_size, cm, target);
+    if (submitted.is_err()) return Err(rstd::move(submitted).unwrap_err());
+    return Ok(rstd::move(submitted).unwrap().sync_fd);
 }
 
-auto YuvToRgba::convert_av_vk_frame(const VkFrameImports& imports, VkImage dst, uint32_t dst_w,
-                                    uint32_t dst_h, const ColorMatrix& cm)
-    -> rstd::Result<int, Error> {
+auto YuvToRgba::submit_nv12(VkImage dst, u32 dst_w, u32 dst_h, const u8* nv12, usize nv12_size,
+                            const ColorMatrix& cm, ConvertTarget target)
+    -> Result<ConversionSubmission, Error> {
+    (void)last_submission_.take();
+    Error err;
+    int   fd = convert_nv12_(dst, dst_w, dst_h, nv12, nv12_size, cm, target, &err);
+    if (fd < 0 && ! err.message.is_empty()) return Err(rstd::move(err));
+    if (! last_submission_ || ! last_submission_->submitted()) {
+        return Err(Error { "YuvToRgba: conversion returned without a submission" });
+    }
+    auto submission    = last_submission_->clone();
+    submission.sync_fd = fd;
+    return Ok(rstd::move(submission));
+}
+
+auto YuvToRgba::convert_av_vk_frame(const VkFrameImports& imports, VkImage dst, u32 dst_w,
+                                    u32 dst_h, const ColorMatrix& cm) -> Result<int, Error> {
     return convert_av_vk_frame(imports, dst, dst_w, dst_h, cm, ConvertTarget::BridgeForeign);
 }
 
-auto YuvToRgba::convert_av_vk_frame(const VkFrameImports& imports, VkImage dst, uint32_t dst_w,
-                                    uint32_t dst_h, const ColorMatrix& cm, ConvertTarget target)
-    -> rstd::Result<int, Error> {
-    Error err;
-    int   fd = convert_av_vk_frame_(imports, dst, dst_w, dst_h, cm, target, &err);
-    if (fd < 0 && ! err.message.empty()) return rstd::Err(std::move(err));
-    return rstd::Ok(fd);
+auto YuvToRgba::convert_av_vk_frame(const VkFrameImports& imports, VkImage dst, u32 dst_w,
+                                    u32 dst_h, const ColorMatrix& cm, ConvertTarget target)
+    -> Result<int, Error> {
+    auto submitted = submit_av_vk_frame(imports, dst, dst_w, dst_h, cm, target);
+    if (submitted.is_err()) return Err(rstd::move(submitted).unwrap_err());
+    return Ok(rstd::move(submitted).unwrap().sync_fd);
 }
 
-auto YuvToRgba::convert_drm_prime(const DrmFrameView& drm, VkImage dst, uint32_t dst_w,
-                                  uint32_t dst_h, const ColorMatrix& cm)
-    -> rstd::Result<int, Error> {
+auto YuvToRgba::submit_av_vk_frame(const VkFrameImports& imports, VkImage dst, u32 dst_w, u32 dst_h,
+                                   const ColorMatrix& cm, ConvertTarget target)
+    -> Result<ConversionSubmission, Error> {
+    (void)last_submission_.take();
+    Error err;
+    int   fd = convert_av_vk_frame_(imports, dst, dst_w, dst_h, cm, target, &err);
+    if (fd < 0 && ! err.message.is_empty()) return Err(rstd::move(err));
+    if (! last_submission_ || ! last_submission_->submitted()) {
+        return Err(Error { "YuvToRgba: conversion returned without a submission" });
+    }
+    auto submission    = last_submission_->clone();
+    submission.sync_fd = fd;
+    return Ok(rstd::move(submission));
+}
+
+auto YuvToRgba::convert_drm_prime(const DrmFrameView& drm, VkImage dst, u32 dst_w, u32 dst_h,
+                                  const ColorMatrix& cm) -> Result<int, Error> {
     return convert_drm_prime(drm, dst, dst_w, dst_h, cm, ConvertTarget::BridgeForeign);
 }
 
-auto YuvToRgba::convert_drm_prime(const DrmFrameView& drm, VkImage dst, uint32_t dst_w,
-                                  uint32_t dst_h, const ColorMatrix& cm, ConvertTarget target)
-    -> rstd::Result<int, Error> {
+auto YuvToRgba::convert_drm_prime(const DrmFrameView& drm, VkImage dst, u32 dst_w, u32 dst_h,
+                                  const ColorMatrix& cm, ConvertTarget target)
+    -> Result<int, Error> {
+    auto submitted = submit_drm_prime(drm, dst, dst_w, dst_h, cm, target);
+    if (submitted.is_err()) return Err(rstd::move(submitted).unwrap_err());
+    return Ok(rstd::move(submitted).unwrap().sync_fd);
+}
+
+auto YuvToRgba::submit_drm_prime(const DrmFrameView& drm, VkImage dst, u32 dst_w, u32 dst_h,
+                                 const ColorMatrix& cm, ConvertTarget target)
+    -> Result<ConversionSubmission, Error> {
+    (void)last_submission_.take();
     Error err;
     int   fd = convert_drm_prime_(drm, dst, dst_w, dst_h, cm, target, &err);
-    if (fd < 0 && ! err.message.empty()) return rstd::Err(std::move(err));
-    return rstd::Ok(fd);
+    if (fd < 0 && ! err.message.is_empty()) return Err(rstd::move(err));
+    if (! last_submission_ || ! last_submission_->submitted()) {
+        return Err(Error { "YuvToRgba: conversion returned without a submission" });
+    }
+    auto submission    = last_submission_->clone();
+    submission.sync_fd = fd;
+    return Ok(rstd::move(submission));
 }
 
 } // namespace wavsen::video

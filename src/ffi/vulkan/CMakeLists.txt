@@ -15,6 +15,9 @@ target_compile_options(wavsen_ffi_vulkan PRIVATE
 target_sources(wavsen_ffi_vulkan
     PUBLIC FILE_SET CXX_MODULES FILES
         vulkan.cppm
+        constants.cppm
+        types.cppm
+        functions.cppm
 )
 
 target_link_libraries(wavsen_ffi_vulkan

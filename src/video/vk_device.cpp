@@ -2,10 +2,12 @@ module;
 #include <cstdio>
 module wavsen.video;
 
-import rstd.cppstd;
 import rstd;
 import vulkan;
+import wavsen.vvk;
 import :vk_device;
+
+using namespace rstd::prelude;
 
 namespace wavsen::video
 {
@@ -13,358 +15,310 @@ namespace wavsen::video
 namespace
 {
 
-bool fail(Error* err, std::string msg) {
-    if (err) err->message = std::move(msg);
+bool fail(Error* err, ref<str> message) {
+    if (err) err->message = rstd::string::String::make(message);
     return false;
 }
 
-const char* vk_result_str(VkResult r) {
-    switch (r) {
-    case VK_SUCCESS: return "VK_SUCCESS";
-    case VK_ERROR_OUT_OF_HOST_MEMORY: return "VK_ERROR_OUT_OF_HOST_MEMORY";
-    case VK_ERROR_OUT_OF_DEVICE_MEMORY: return "VK_ERROR_OUT_OF_DEVICE_MEMORY";
-    case VK_ERROR_INITIALIZATION_FAILED: return "VK_ERROR_INITIALIZATION_FAILED";
-    case VK_ERROR_LAYER_NOT_PRESENT: return "VK_ERROR_LAYER_NOT_PRESENT";
-    case VK_ERROR_EXTENSION_NOT_PRESENT: return "VK_ERROR_EXTENSION_NOT_PRESENT";
-    case VK_ERROR_FEATURE_NOT_PRESENT: return "VK_ERROR_FEATURE_NOT_PRESENT";
-    case VK_ERROR_INCOMPATIBLE_DRIVER: return "VK_ERROR_INCOMPATIBLE_DRIVER";
-    case VK_ERROR_DEVICE_LOST: return "VK_ERROR_DEVICE_LOST";
-    case VK_ERROR_FORMAT_NOT_SUPPORTED: return "VK_ERROR_FORMAT_NOT_SUPPORTED";
-    default: return "VK_ERROR_?";
-    }
+bool fail(Error* err, rstd::string::String message) {
+    if (err) err->message = rstd::move(message);
+    return false;
 }
 
-bool device_has_ext(VkPhysicalDevice phys, const char* name) {
-    uint32_t n = 0;
-    vkEnumerateDeviceExtensionProperties(phys, nullptr, &n, nullptr);
-    std::vector<VkExtensionProperties> props(n);
-    vkEnumerateDeviceExtensionProperties(phys, nullptr, &n, props.data());
-    for (auto& p : props) {
-        if (std::strcmp(p.extensionName, name) == 0) return true;
+bool device_has_ext(const vvk::PhysicalDevice& physical_device, ref<str> name) {
+    rstd::vec::Vec<VkExtensionProperties> properties;
+    if (physical_device.EnumerateDeviceExtensionProperties(properties) != VK_SUCCESS) return false;
+    for (const auto& property : properties) {
+        if (ref<str>(property.extensionName) == name) return true;
     }
     return false;
+}
+
+auto vk_error(ref<str> operation, VkResult result) -> rstd::string::String {
+    return rstd::format("{}: {}", operation, vvk::ToString(result));
 }
 
 } // namespace
 
 Producer::~Producer() {
-    if (device_ != VK_NULL_HANDLE) {
-        vkDeviceWaitIdle(device_);
-        if (staging_map_) vkUnmapMemory(device_, staging_mem_);
-        if (staging_buf_) vkDestroyBuffer(device_, staging_buf_, nullptr);
-        if (staging_mem_) vkFreeMemory(device_, staging_mem_, nullptr);
-        if (signal_sem_) vkDestroySemaphore(device_, signal_sem_, nullptr);
-        if (done_fence_) vkDestroyFence(device_, done_fence_, nullptr);
-        if (cmd_pool_) vkDestroyCommandPool(device_, cmd_pool_, nullptr);
-        if (owns_device_) vkDestroyDevice(device_, nullptr);
-    }
-    if (owns_device_ && instance_) vkDestroyInstance(instance_, nullptr);
+    if (device_) (void)device_.WaitIdle();
+    if (staging_map_ && staging_mem_) staging_mem_.Unmap();
     if (drm_render_fd_ >= 0) rstd::sys::libc::close(drm_render_fd_);
 }
 
-auto Producer::create(uint32_t width, uint32_t height)
-    -> rstd::Result<std::unique_ptr<Producer>, Error> {
+auto Producer::create(u32 width, u32 height) -> Result<rstd::boxed::Box<Producer>, Error> {
     Error err;
-    auto  p = build_(width, height, /*render_node=*/nullptr, &err);
-    if (! p) return rstd::Err(std::move(err));
-    return rstd::Ok(std::move(p));
+    auto  producer = build_(width, height, None(), &err);
+    if (producer.is_none()) return Err(rstd::move(err));
+    return Ok(rstd::move(producer).unwrap());
 }
 
-auto Producer::create_with_render_node(uint32_t width, uint32_t height,
-                                       const std::string& render_node)
-    -> rstd::Result<std::unique_ptr<Producer>, Error> {
-    Error err;
-    auto  p = build_(width, height, &render_node, &err);
-    if (! p) return rstd::Err(std::move(err));
-    return rstd::Ok(std::move(p));
+auto Producer::create_with_render_node(u32 width, u32 height, ref<str> render_node)
+    -> Result<rstd::boxed::Box<Producer>, Error> {
+    Error            err;
+    Option<ref<str>> pinned_node = render_node.size() == 0 ? None() : Some(render_node);
+    auto             producer    = build_(width, height, pinned_node, &err);
+    if (producer.is_none()) return Err(rstd::move(err));
+    return Ok(rstd::move(producer).unwrap());
 }
 
-auto Producer::from_external(ExternalDeviceInfo info)
-    -> rstd::Result<std::unique_ptr<Producer>, Error> {
+auto Producer::from_external(ExternalDeviceInfo info) -> Result<rstd::boxed::Box<Producer>, Error> {
     if (! info.instance || ! info.physical_device || ! info.device || ! info.queue) {
-        return rstd::Err(Error { "Producer::from_external: missing handle(s)" });
+        return Err(Error { "Producer::from_external: missing handle(s)" });
     }
-    auto self                   = std::unique_ptr<Producer>(new Producer());
-    self->owns_device_          = false;
-    self->instance_             = info.instance;
-    self->phys_                 = info.physical_device;
-    self->device_               = info.device;
-    self->queue_                = info.queue;
+
+    auto self = rstd::boxed::Box<Producer>::make();
+    if (! vvk::Load(self->instance_dispatch_) ||
+        ! vvk::Load(info.instance, self->instance_dispatch_)) {
+        return Err(Error { "Producer::from_external: failed to load instance dispatch" });
+    }
+    self->device_dispatch_ = vvk::DeviceDispatch { self->instance_dispatch_ };
+    if (! vvk::Load(info.device, self->device_dispatch_)) {
+        return Err(Error { "Producer::from_external: failed to load device dispatch" });
+    }
+
+    self->owns_device_ = false;
+    self->instance_ = vvk::Instance(info.instance, self->instance_dispatch_, vvk::borrowed_handle);
+    self->phys_     = vvk::PhysicalDevice(info.physical_device, self->instance_dispatch_);
+    self->device_   = vvk::Device(info.device, self->device_dispatch_, vvk::borrowed_handle);
+    self->queue_    = vvk::Queue(info.queue, self->device_dispatch_);
     self->queue_family_         = info.queue_family_index;
     self->width_                = info.width;
     self->height_               = info.height;
     self->instance_api_version_ = info.api_version;
-    self->enabled_inst_exts_    = std::move(info.enabled_instance_extensions);
-    self->enabled_dev_exts_     = std::move(info.enabled_device_extensions);
-    self->queue_families_       = std::move(info.queue_families);
-    /* Caller-supplied DRM fd is adopted (Producer destructor closes it
-     * when >= 0). Passing -1 simply means "we don't have one"; FFmpeg's
-     * vaapi path doesn't need it when running on the shared Vulkan
-     * device. */
-    self->drm_render_fd_    = info.drm_render_fd;
-    self->drm_render_major_ = info.drm_render_major;
-    self->drm_render_minor_ = info.drm_render_minor;
-    /* Probe vkGetSemaphoreFdKHR — required by the bridge upload path,
-     * but adopted Producers don't expose upload_into. Best-effort. */
-    self->vkGetSemaphoreFdKHR_ = reinterpret_cast<PFN_vkGetSemaphoreFdKHR>(
-        vkGetDeviceProcAddr(self->device_, "vkGetSemaphoreFdKHR"));
-    return rstd::Ok(std::move(self));
+    self->enabled_inst_exts_    = rstd::move(info.enabled_instance_extensions);
+    self->enabled_dev_exts_     = rstd::move(info.enabled_device_extensions);
+    self->queue_families_       = rstd::move(info.queue_families);
+    self->drm_render_fd_        = info.drm_render_fd;
+    self->drm_render_major_     = info.drm_render_major;
+    self->drm_render_minor_     = info.drm_render_minor;
+    return Ok(rstd::move(self));
 }
 
-std::unique_ptr<Producer> Producer::build_(uint32_t width, uint32_t height,
-                                           const std::string* render_node_ptr, Error* err) {
-    const std::string render_node = render_node_ptr ? *render_node_ptr : std::string {};
+Option<rstd::boxed::Box<Producer>> Producer::build_(u32 width, u32 height,
+                                                    Option<ref<str>> render_node, Error* err) {
     if (width == 0 || height == 0) {
         fail(err, "Producer: width/height must be non-zero");
-        return nullptr;
+        return None();
     }
 
-    auto self     = std::unique_ptr<Producer>(new Producer());
+    auto self     = rstd::boxed::Box<Producer>::make();
     self->width_  = width;
     self->height_ = height;
+    self->enabled_inst_exts_.push_back(VK_KHR_EXTERNAL_MEMORY_CAPABILITIES_EXTENSION_NAME);
+    self->enabled_inst_exts_.push_back(VK_KHR_EXTERNAL_SEMAPHORE_CAPABILITIES_EXTENSION_NAME);
+    self->enabled_inst_exts_.push_back(VK_KHR_EXTERNAL_FENCE_CAPABILITIES_EXTENSION_NAME);
+    self->enabled_inst_exts_.push_back(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
 
-    /* API 1.3 is the minimum FFmpeg's AV_HWDEVICE_TYPE_VULKAN requires
-     * (see hwcontext_vulkan.h: "Must be at least version 1.3"). */
-    self->enabled_inst_exts_ = {
-        VK_KHR_EXTERNAL_MEMORY_CAPABILITIES_EXTENSION_NAME,
-        VK_KHR_EXTERNAL_SEMAPHORE_CAPABILITIES_EXTENSION_NAME,
-        VK_KHR_EXTERNAL_FENCE_CAPABILITIES_EXTENSION_NAME,
-        VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME,
-    };
+    if (! vvk::Load(self->instance_dispatch_)) {
+        fail(err, "Producer: failed to load Vulkan instance entry points");
+        return None();
+    }
+
     VkApplicationInfo app {};
     app.sType                   = VK_STRUCTURE_TYPE_APPLICATION_INFO;
     app.pApplicationName        = "wavsen-video";
     app.apiVersion              = VK_API_VERSION_1_3;
     self->instance_api_version_ = VK_API_VERSION_1_3;
-
-    VkInstanceCreateInfo ici {};
-    ici.sType                   = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
-    ici.pApplicationInfo        = &app;
-    ici.enabledExtensionCount   = static_cast<uint32_t>(self->enabled_inst_exts_.size());
-    ici.ppEnabledExtensionNames = self->enabled_inst_exts_.data();
-    if (VkResult r = vkCreateInstance(&ici, nullptr, &self->instance_); r != VK_SUCCESS) {
-        fail(err, std::string("vkCreateInstance: ") + vk_result_str(r));
-        return nullptr;
+    if (VkResult result = vvk::Instance::Create(self->instance_,
+                                                app,
+                                                {},
+                                                self->enabled_inst_exts_.as_slice(),
+                                                self->instance_dispatch_);
+        result != VK_SUCCESS) {
+        fail(err, vk_error("vkCreateInstance", result));
+        return None();
+    }
+    if (! vvk::Load(*self->instance_, self->instance_dispatch_)) {
+        fail(err, "Producer: failed to load Vulkan instance dispatch");
+        return None();
     }
 
-    uint32_t pd_count = 0;
-    vkEnumeratePhysicalDevices(self->instance_, &pd_count, nullptr);
-    if (pd_count == 0) {
+    auto physical_devices = self->instance_.EnumeratePhysicalDevices();
+    if (physical_devices.is_empty()) {
         fail(err, "no Vulkan physical devices found");
-        return nullptr;
+        return None();
     }
-    std::vector<VkPhysicalDevice> pds(pd_count);
-    vkEnumeratePhysicalDevices(self->instance_, &pd_count, pds.data());
 
-    const char* req_dev_exts[] = {
+    const char* required_extensions[] = {
         VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
         VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME,
         VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME,
         VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME,
         VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME,
     };
-    static constexpr const char* DRM_EXT = "VK_EXT_physical_device_drm";
+    const ref<str> drm_extension = "VK_EXT_physical_device_drm";
 
-    /* Iter 4: when `render_node` is set, only the device whose DRM
-     * render major:minor matches the requested path is acceptable. */
-    bool                   pinning   = ! render_node.empty();
-    rstd::sys::libc::dev_t want_rdev = 0;
+    auto                   pinning = render_node.is_some();
+    rstd::sys::libc::dev_t wanted_device {};
     if (pinning) {
-        rstd::sys::libc::stat_t st {};
-        if (rstd::sys::libc::stat(render_node.c_str(), &st) != 0) {
+        auto render_node_string = rstd::string::String::make(render_node.unwrap());
+        auto render_node_c      = rstd::ffi::CString::make(rstd::move(render_node_string)).unwrap();
+        auto render_node_path   = reinterpret_cast<const char*>(render_node_c.as_ref().p);
+        rstd::sys::libc::stat_t status {};
+        if (rstd::sys::libc::stat(render_node_path, &status) != 0) {
             fail(err,
-                 std::string("Producer: stat(") + render_node +
-                     ") failed: " + std::strerror(rstd::sys::libc::errno()));
-            return nullptr;
+                 rstd::format("Producer: stat({}) failed with errno {}",
+                              render_node.unwrap(),
+                              rstd::sys::libc::errno()));
+            return None();
         }
-        want_rdev = st.st_rdev;
+        wanted_device = status.st_rdev;
     }
 
-    auto vkGetPhysicalDeviceProperties2_ = reinterpret_cast<PFN_vkGetPhysicalDeviceProperties2>(
-        vkGetInstanceProcAddr(self->instance_, "vkGetPhysicalDeviceProperties2"));
-
-    bool have_drm_ext = false;
-    for (auto pd : pds) {
-        bool ok = true;
-        for (const char* e : req_dev_exts) {
-            if (! device_has_ext(pd, e)) {
-                ok = false;
+    bool have_drm_extension = false;
+    for (auto& physical_device : physical_devices) {
+        bool supported = true;
+        for (const char* extension : required_extensions) {
+            if (! device_has_ext(physical_device, extension)) {
+                supported = false;
                 break;
             }
         }
-        if (! ok) continue;
+        if (! supported) continue;
 
-        bool pd_has_drm = device_has_ext(pd, DRM_EXT);
+        bool device_has_drm = device_has_ext(physical_device, drm_extension);
         if (pinning) {
-            if (! pd_has_drm || ! vkGetPhysicalDeviceProperties2_) continue;
+            if (! device_has_drm) continue;
             VkPhysicalDeviceDrmPropertiesEXT drm {};
             drm.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRM_PROPERTIES_EXT;
-            VkPhysicalDeviceProperties2 props {};
-            props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
-            props.pNext = &drm;
-            vkGetPhysicalDeviceProperties2_(pd, &props);
+            VkPhysicalDeviceProperties2 properties {};
+            properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+            properties.pNext = &drm;
+            physical_device.GetProperties2KHR(properties);
             if (! drm.hasRender) continue;
-            const rstd::sys::libc::dev_t pd_rdev = rstd::sys::libc::makedev(
-                static_cast<unsigned>(drm.renderMajor), static_cast<unsigned>(drm.renderMinor));
-            if (pd_rdev != want_rdev) continue;
+            auto physical_rdev = rstd::sys::libc::makedev(static_cast<unsigned>(drm.renderMajor),
+                                                          static_cast<unsigned>(drm.renderMinor));
+            if (physical_rdev != wanted_device) continue;
         }
 
-        self->phys_  = pd;
-        have_drm_ext = pd_has_drm;
+        self->phys_        = rstd::move(physical_device);
+        have_drm_extension = device_has_drm;
         break;
     }
-    if (self->phys_ == VK_NULL_HANDLE) {
-        fail(err,
-             pinning ? std::string("Producer: no Vulkan device matches render_node ") + render_node
-                     : std::string("no physical device supports the DMA-BUF export extension set"));
-        return nullptr;
+    if (! self->phys_) {
+        if (pinning) {
+            fail(err,
+                 rstd::format("Producer: no Vulkan device matches render_node {}",
+                              render_node.unwrap()));
+        } else {
+            fail(err, "no physical device supports the DMA-BUF export extension set");
+        }
+        return None();
     }
 
-    /* Enumerate ALL queue families on the device. We create one queue
-     * from each family so FFmpeg's AV_HWDEVICE_TYPE_VULKAN can pick
-     * whichever family suits its needs (graphics / compute / transfer /
-     * video decode/encode). The single queue we use ourselves comes from
-     * the first family with GRAPHICS|COMPUTE|TRANSFER capability. */
-    {
-        uint32_t n = 0;
-        vkGetPhysicalDeviceQueueFamilyProperties(self->phys_, &n, nullptr);
-        if (n == 0) {
-            fail(err, "no queue families");
-            return nullptr;
-        }
-        std::vector<VkQueueFamilyProperties> qprops(n);
-        vkGetPhysicalDeviceQueueFamilyProperties(self->phys_, &n, qprops.data());
-
-        self->queue_families_.reserve(n);
-        bool picked_self = false;
-        for (uint32_t i = 0; i < n; ++i) {
-            QueueFamily q {};
-            q.index      = i;
-            q.flags      = qprops[i].queueFlags;
-            q.video_caps = 0; /* video_caps probing requires VK_KHR_video_queue
-                               * — left at 0; FFmpeg falls back to flag-based
-                               * discovery when this is unset. */
-            self->queue_families_.push_back(q);
-            if (! picked_self && (q.flags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT |
-                                             VK_QUEUE_TRANSFER_BIT))) {
-                self->queue_family_ = i;
-                picked_self         = true;
-            }
-        }
-        if (! picked_self) {
-            fail(err, "no graphics/compute/transfer queue family");
-            return nullptr;
+    auto queue_properties = self->phys_.GetQueueFamilyProperties();
+    if (queue_properties.is_empty()) {
+        fail(err, "no queue families");
+        return None();
+    }
+    self->queue_families_.reserve(queue_properties.len());
+    bool picked_queue = false;
+    for (usize i = 0; i < queue_properties.len(); ++i) {
+        QueueFamily queue_family {
+            .index      = static_cast<u32>(i),
+            .flags      = queue_properties[i].queueFlags,
+            .video_caps = 0,
+        };
+        self->queue_families_.push(rstd::move(queue_family));
+        if (! picked_queue &&
+            (queue_properties[i].queueFlags &
+             (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT))) {
+            self->queue_family_ = static_cast<u32>(i);
+            picked_queue        = true;
         }
     }
-
-    /* One queue per family. */
-    std::vector<float>                   prios(self->queue_families_.size(), 1.0f);
-    std::vector<VkDeviceQueueCreateInfo> qcis;
-    qcis.reserve(self->queue_families_.size());
-    for (const auto& q : self->queue_families_) {
-        VkDeviceQueueCreateInfo qci {};
-        qci.sType            = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-        qci.queueFamilyIndex = q.index;
-        qci.queueCount       = 1;
-        qci.pQueuePriorities = &prios[0];
-        qcis.push_back(qci);
+    if (! picked_queue) {
+        fail(err, "no graphics/compute/transfer queue family");
+        return None();
     }
 
-    /* Required device extensions. */
-    self->enabled_dev_exts_.assign(std::begin(req_dev_exts), std::end(req_dev_exts));
-    if (have_drm_ext) self->enabled_dev_exts_.push_back(DRM_EXT);
+    float default_priority = 1.0f;
+    auto  queue_infos =
+        rstd::vec::Vec<VkDeviceQueueCreateInfo>::with_capacity(self->queue_families_.len());
+    for (const auto& queue_family : self->queue_families_) {
+        VkDeviceQueueCreateInfo queue_info {};
+        queue_info.sType            = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+        queue_info.queueFamilyIndex = queue_family.index;
+        queue_info.queueCount       = 1;
+        queue_info.pQueuePriorities = &default_priority;
+        queue_infos.push(rstd::move(queue_info));
+    }
 
-    /* Best-effort optional extensions FFmpeg's vulkan path likes. We
-     * only add the ones the device advertises so vkCreateDevice doesn't
-     * fail on a missing-but-requested extension. */
-    static constexpr const char* opt_dev_exts[] = {
+    for (const char* extension : required_extensions) self->enabled_dev_exts_.push_back(extension);
+    if (have_drm_extension) self->enabled_dev_exts_.push_back("VK_EXT_physical_device_drm");
+    const char* optional_extensions[] = {
         "VK_KHR_video_queue",       "VK_KHR_video_decode_queue", "VK_KHR_video_decode_h264",
         "VK_KHR_video_decode_h265", "VK_KHR_video_decode_av1",   "VK_EXT_external_memory_host",
         "VK_KHR_push_descriptor",   "VK_KHR_synchronization2",   "VK_KHR_timeline_semaphore",
         "VK_EXT_descriptor_buffer", "VK_EXT_shader_object",
     };
-    for (const char* e : opt_dev_exts) {
-        if (device_has_ext(self->phys_, e)) self->enabled_dev_exts_.push_back(e);
+    for (const char* extension : optional_extensions) {
+        if (device_has_ext(self->phys_, extension)) self->enabled_dev_exts_.push_back(extension);
     }
 
-    /* Enable the 1.2/1.3 features FFmpeg's vulkan decode path expects.
-     * Querying first lets us OR in only the bits the device supports;
-     * vkCreateDevice rejects features the device doesn't advertise. */
-    VkPhysicalDeviceVulkan12Features f12 {};
-    f12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
-    VkPhysicalDeviceVulkan13Features f13 {};
-    f13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
-    f12.pNext = &f13;
-    VkPhysicalDeviceFeatures2 feats2 {};
-    feats2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-    feats2.pNext = &f12;
-    if (vkGetPhysicalDeviceProperties2_) {
-        auto vkGetPhysicalDeviceFeatures2_ = reinterpret_cast<PFN_vkGetPhysicalDeviceFeatures2>(
-            vkGetInstanceProcAddr(self->instance_, "vkGetPhysicalDeviceFeatures2"));
-        if (vkGetPhysicalDeviceFeatures2_) vkGetPhysicalDeviceFeatures2_(self->phys_, &feats2);
-    }
-    /* Drop features the device doesn't have, then keep the ones we
-     * actually want enabled. timelineSemaphore + synchronization2 are
-     * the load-bearing ones for FFmpeg + AVVkFrame. */
-    VkPhysicalDeviceVulkan12Features want12 {};
-    want12.sType               = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
-    want12.timelineSemaphore   = f12.timelineSemaphore;
-    want12.bufferDeviceAddress = f12.bufferDeviceAddress;
-    VkPhysicalDeviceVulkan13Features want13 {};
-    want13.sType            = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
-    want13.synchronization2 = f13.synchronization2;
-    want13.maintenance4     = f13.maintenance4;
-    want12.pNext            = &want13;
-    VkPhysicalDeviceFeatures2 want_feats2 {};
-    want_feats2.sType                      = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-    want_feats2.pNext                      = &want12;
-    want_feats2.features.samplerAnisotropy = feats2.features.samplerAnisotropy;
+    VkPhysicalDeviceVulkan12Features features12 {};
+    features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+    VkPhysicalDeviceVulkan13Features features13 {};
+    features13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+    features12.pNext = &features13;
+    VkPhysicalDeviceFeatures2 features {};
+    features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    features.pNext = &features12;
+    self->phys_.GetFeatures2KHR(features);
 
-    VkDeviceCreateInfo dci {};
-    dci.sType                   = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-    dci.pNext                   = &want_feats2;
-    dci.queueCreateInfoCount    = static_cast<uint32_t>(qcis.size());
-    dci.pQueueCreateInfos       = qcis.data();
-    dci.enabledExtensionCount   = static_cast<uint32_t>(self->enabled_dev_exts_.size());
-    dci.ppEnabledExtensionNames = self->enabled_dev_exts_.data();
-    if (VkResult r = vkCreateDevice(self->phys_, &dci, nullptr, &self->device_); r != VK_SUCCESS) {
-        fail(err, std::string("vkCreateDevice: ") + vk_result_str(r));
-        return nullptr;
-    }
-    vkGetDeviceQueue(self->device_, self->queue_family_, 0, &self->queue_);
+    VkPhysicalDeviceVulkan12Features wanted12 {};
+    wanted12.sType               = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+    wanted12.timelineSemaphore   = features12.timelineSemaphore;
+    wanted12.bufferDeviceAddress = features12.bufferDeviceAddress;
+    VkPhysicalDeviceVulkan13Features wanted13 {};
+    wanted13.sType            = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+    wanted13.synchronization2 = features13.synchronization2;
+    wanted13.maintenance4     = features13.maintenance4;
+    wanted12.pNext            = &wanted13;
+    VkPhysicalDeviceFeatures2 wanted_features {};
+    wanted_features.sType                      = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    wanted_features.pNext                      = &wanted12;
+    wanted_features.features.samplerAnisotropy = features.features.samplerAnisotropy;
 
-    self->vkGetSemaphoreFdKHR_ = reinterpret_cast<PFN_vkGetSemaphoreFdKHR>(
-        vkGetDeviceProcAddr(self->device_, "vkGetSemaphoreFdKHR"));
-    if (! self->vkGetSemaphoreFdKHR_) {
-        fail(err, "vkGetSemaphoreFdKHR missing");
-        return nullptr;
+    self->device_dispatch_ = vvk::DeviceDispatch { self->instance_dispatch_ };
+    if (VkResult result = vvk::Device::Create(self->device_,
+                                              *self->phys_,
+                                              queue_infos.as_slice(),
+                                              self->enabled_dev_exts_.as_slice(),
+                                              &wanted_features,
+                                              self->device_dispatch_);
+        result != VK_SUCCESS) {
+        fail(err, vk_error("vkCreateDevice", result));
+        return None();
     }
+    if (! vvk::Load(*self->device_, self->device_dispatch_)) {
+        fail(err, "Producer: failed to load Vulkan device dispatch");
+        return None();
+    }
+    self->queue_ = self->device_.GetQueue(self->queue_family_);
 
-    /* The function pointer was loaded above for the device-pick pass;
-     * reuse it here for UUID + DRM property capture. */
-    if (vkGetPhysicalDeviceProperties2_) {
-        VkPhysicalDeviceIDProperties id_props {};
-        id_props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES;
-        VkPhysicalDeviceDrmPropertiesEXT drm {};
-        drm.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRM_PROPERTIES_EXT;
-        if (have_drm_ext) id_props.pNext = &drm;
-        VkPhysicalDeviceProperties2 props {};
-        props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
-        props.pNext = &id_props;
-        vkGetPhysicalDeviceProperties2_(self->phys_, &props);
-        std::memcpy(self->device_uuid_, id_props.deviceUUID, 16);
-        std::memcpy(self->driver_uuid_, id_props.driverUUID, 16);
-        self->have_uuid_ = true;
-        if (have_drm_ext && drm.hasRender) {
-            self->drm_render_major_ = static_cast<uint32_t>(drm.renderMajor);
-            self->drm_render_minor_ = static_cast<uint32_t>(drm.renderMinor);
-        }
+    VkPhysicalDeviceIDProperties id_properties {};
+    id_properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES;
+    VkPhysicalDeviceDrmPropertiesEXT drm_properties {};
+    drm_properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRM_PROPERTIES_EXT;
+    if (have_drm_extension) id_properties.pNext = &drm_properties;
+    VkPhysicalDeviceProperties2 properties {};
+    properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+    properties.pNext = &id_properties;
+    self->phys_.GetProperties2KHR(properties);
+    rstd::mem::memcpy(self->device_uuid_, id_properties.deviceUUID, 16);
+    rstd::mem::memcpy(self->driver_uuid_, id_properties.driverUUID, 16);
+    self->have_uuid_ = true;
+    if (have_drm_extension && drm_properties.hasRender) {
+        self->drm_render_major_ = static_cast<u32>(drm_properties.renderMajor);
+        self->drm_render_minor_ = static_cast<u32>(drm_properties.renderMinor);
     }
 
     if (self->drm_render_minor_ != 0) {
         for (int i = 128; i < 192; ++i) {
             char path[64];
-            std::snprintf(path, sizeof(path), "/dev/dri/renderD%d", i);
+            ::snprintf(path, sizeof(path), "/dev/dri/renderD%d", i);
             int fd =
                 rstd::sys::libc::open(path, rstd::sys::libc::O_RDWR | rstd::sys::libc::O_CLOEXEC);
             if (fd >= 0) {
@@ -374,112 +328,110 @@ std::unique_ptr<Producer> Producer::build_(uint32_t width, uint32_t height,
         }
     }
 
-    VkCommandPoolCreateInfo cpi {};
-    cpi.sType            = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-    cpi.flags            = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-    cpi.queueFamilyIndex = self->queue_family_;
-    if (VkResult r = vkCreateCommandPool(self->device_, &cpi, nullptr, &self->cmd_pool_);
-        r != VK_SUCCESS) {
-        fail(err, std::string("vkCreateCommandPool: ") + vk_result_str(r));
-        return nullptr;
+    VkCommandPoolCreateInfo pool_info {};
+    pool_info.sType            = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    pool_info.flags            = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+    pool_info.queueFamilyIndex = self->queue_family_;
+    if (VkResult result = self->device_.CreateCommandPool(pool_info, self->cmd_pool_);
+        result != VK_SUCCESS) {
+        fail(err, vk_error("vkCreateCommandPool", result));
+        return None();
     }
-    VkCommandBufferAllocateInfo cbi {};
-    cbi.sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    cbi.commandPool        = self->cmd_pool_;
-    cbi.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    cbi.commandBufferCount = 1;
-    if (VkResult r = vkAllocateCommandBuffers(self->device_, &cbi, &self->cmd_); r != VK_SUCCESS) {
-        fail(err, std::string("vkAllocateCommandBuffers: ") + vk_result_str(r));
-        return nullptr;
+    if (VkResult result =
+            self->cmd_pool_.Allocate(1, VK_COMMAND_BUFFER_LEVEL_PRIMARY, self->command_buffers_);
+        result != VK_SUCCESS) {
+        fail(err, vk_error("vkAllocateCommandBuffers", result));
+        return None();
     }
-    VkFenceCreateInfo fci {};
-    fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-    if (VkResult r = vkCreateFence(self->device_, &fci, nullptr, &self->done_fence_);
-        r != VK_SUCCESS) {
-        fail(err, std::string("vkCreateFence: ") + vk_result_str(r));
-        return nullptr;
+    self->cmd_ = vvk::CommandBuffer(self->command_buffers_[0], self->device_dispatch_);
+
+    VkFenceCreateInfo fence_info {};
+    fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    if (VkResult result = self->device_.CreateFence(fence_info, self->done_fence_);
+        result != VK_SUCCESS) {
+        fail(err, vk_error("vkCreateFence", result));
+        return None();
     }
 
-    VkExportSemaphoreCreateInfo exp_sem {};
-    exp_sem.sType       = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO;
-    exp_sem.handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
-    VkSemaphoreCreateInfo sem_ci {};
-    sem_ci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-    sem_ci.pNext = &exp_sem;
-    if (VkResult r = vkCreateSemaphore(self->device_, &sem_ci, nullptr, &self->signal_sem_);
-        r != VK_SUCCESS) {
-        fail(err, std::string("vkCreateSemaphore(acquire): ") + vk_result_str(r));
-        return nullptr;
+    VkExportSemaphoreCreateInfo export_semaphore {};
+    export_semaphore.sType       = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO;
+    export_semaphore.handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
+    VkSemaphoreCreateInfo semaphore_info {};
+    semaphore_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    semaphore_info.pNext = &export_semaphore;
+    if (VkResult result = self->device_.CreateSemaphore(semaphore_info, self->signal_sem_);
+        result != VK_SUCCESS) {
+        fail(err, vk_error("vkCreateSemaphore", result));
+        return None();
     }
 
-    const VkDeviceSize tight = VkDeviceSize(width) * height * 4;
-    self->staging_size_      = tight;
-    VkBufferCreateInfo bci {};
-    bci.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    bci.size        = tight;
-    bci.usage       = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-    bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    if (VkResult r = vkCreateBuffer(self->device_, &bci, nullptr, &self->staging_buf_);
-        r != VK_SUCCESS) {
-        fail(err, std::string("vkCreateBuffer(staging): ") + vk_result_str(r));
-        return nullptr;
+    self->staging_size_ = static_cast<VkDeviceSize>(width) * height * 4;
+    VkBufferCreateInfo buffer_info {};
+    buffer_info.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    buffer_info.size        = self->staging_size_;
+    buffer_info.usage       = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (VkResult result = self->device_.CreateBuffer(buffer_info, self->staging_buf_);
+        result != VK_SUCCESS) {
+        fail(err, vk_error("vkCreateBuffer(staging)", result));
+        return None();
     }
-    VkMemoryRequirements bmr {};
-    vkGetBufferMemoryRequirements(self->device_, self->staging_buf_, &bmr);
-    VkPhysicalDeviceMemoryProperties mprops {};
-    vkGetPhysicalDeviceMemoryProperties(self->phys_, &mprops);
-    uint32_t host_type = rstd::u32_::MAX;
-    for (uint32_t i = 0; i < mprops.memoryTypeCount; ++i) {
-        const auto pf = mprops.memoryTypes[i].propertyFlags;
-        if ((bmr.memoryTypeBits & (1u << i)) && (pf & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) &&
-            (pf & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+
+    auto memory_requirements = self->device_.GetBufferMemoryRequirements(*self->staging_buf_);
+    auto memory_properties   = self->phys_.GetMemoryProperties().memoryProperties;
+    u32  host_type           = rstd::u32_::MAX;
+    for (u32 i = 0; i < memory_properties.memoryTypeCount; ++i) {
+        auto flags = memory_properties.memoryTypes[i].propertyFlags;
+        if ((memory_requirements.memoryTypeBits & (1u << i)) &&
+            (flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) &&
+            (flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
             host_type = i;
             break;
         }
     }
     if (host_type == rstd::u32_::MAX) {
         fail(err, "no HOST_VISIBLE|COHERENT memory type for staging");
-        return nullptr;
-    }
-    VkMemoryAllocateInfo smai {};
-    smai.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    smai.allocationSize  = bmr.size;
-    smai.memoryTypeIndex = host_type;
-    if (VkResult r = vkAllocateMemory(self->device_, &smai, nullptr, &self->staging_mem_);
-        r != VK_SUCCESS) {
-        fail(err, std::string("vkAllocateMemory(staging): ") + vk_result_str(r));
-        return nullptr;
-    }
-    if (VkResult r = vkBindBufferMemory(self->device_, self->staging_buf_, self->staging_mem_, 0);
-        r != VK_SUCCESS) {
-        fail(err, std::string("vkBindBufferMemory(staging): ") + vk_result_str(r));
-        return nullptr;
-    }
-    if (VkResult r = vkMapMemory(
-            self->device_, self->staging_mem_, 0, VK_WHOLE_SIZE, 0, &self->staging_map_);
-        r != VK_SUCCESS) {
-        fail(err, std::string("vkMapMemory(staging): ") + vk_result_str(r));
-        return nullptr;
+        return None();
     }
 
-    return self;
+    VkMemoryAllocateInfo allocate_info {};
+    allocate_info.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocate_info.allocationSize  = memory_requirements.size;
+    allocate_info.memoryTypeIndex = host_type;
+    if (VkResult result = self->device_.AllocateMemory(allocate_info, self->staging_mem_);
+        result != VK_SUCCESS) {
+        fail(err, vk_error("vkAllocateMemory(staging)", result));
+        return None();
+    }
+    if (VkResult result = self->staging_buf_.BindMemory(*self->staging_mem_, 0);
+        result != VK_SUCCESS) {
+        fail(err, vk_error("vkBindBufferMemory(staging)", result));
+        return None();
+    }
+    if (VkResult result = self->staging_mem_.Map(0, VK_WHOLE_SIZE, &self->staging_map_);
+        result != VK_SUCCESS) {
+        fail(err, vk_error("vkMapMemory(staging)", result));
+        return None();
+    }
+
+    return Some(rstd::move(self));
 }
 
-auto Producer::upload_into(VkImage target, uint32_t target_w, uint32_t target_h,
-                           const uint8_t* data, std::size_t size) -> rstd::Result<int, Error> {
+auto Producer::upload_into(VkImage target, u32 target_width, u32 target_height, const u8* data,
+                           usize size) -> Result<int, Error> {
     Error err;
-    int   fd = upload_into_(target, target_w, target_h, data, size, &err);
-    if (fd < 0) return rstd::Err(std::move(err));
-    return rstd::Ok(fd);
+    int   fd = upload_into_(target, target_width, target_height, data, size, &err);
+    if (fd < 0) return Err(rstd::move(err));
+    return Ok(fd);
 }
 
-int Producer::upload_into_(VkImage target, uint32_t target_w, uint32_t target_h,
-                           const uint8_t* data, std::size_t size, Error* err) {
+int Producer::upload_into_(VkImage target, u32 target_width, u32 target_height, const u8* data,
+                           usize size, Error* err) {
     if (target == VK_NULL_HANDLE) {
         fail(err, "upload_into: target VkImage is null");
         return -1;
     }
-    if (staging_buf_ == VK_NULL_HANDLE) {
+    if (! owns_device_ || ! staging_buf_) {
         fail(err,
              "upload_into: Producer has no staging buffer "
              "(from_external Producers are decode-only)");
@@ -491,116 +443,88 @@ int Producer::upload_into_(VkImage target, uint32_t target_w, uint32_t target_h,
     }
 
     if (fence_pending_) {
-        if (VkResult r = vkWaitForFences(device_,
-                                         1,
-                                         &done_fence_,
-                                         VK_TRUE,
-                                         /* 1s */ 1'000'000'000ull);
-            r != VK_SUCCESS) {
-            fail(err, std::string("vkWaitForFences(prev upload): ") + vk_result_str(r));
+        if (VkResult result = done_fence_.Wait(1'000'000'000ull); result != VK_SUCCESS) {
+            fail(err, vk_error("vkWaitForFences(prev upload)", result));
             return -1;
         }
-        if (VkResult r = vkResetFences(device_, 1, &done_fence_); r != VK_SUCCESS) {
-            fail(err, std::string("vkResetFences: ") + vk_result_str(r));
+        if (VkResult result = done_fence_.Reset(); result != VK_SUCCESS) {
+            fail(err, vk_error("vkResetFences", result));
             return -1;
         }
         fence_pending_ = false;
     }
 
-    std::memcpy(staging_map_, data, size);
-
-    if (VkResult r = vkResetCommandBuffer(cmd_, 0); r != VK_SUCCESS) {
-        fail(err, std::string("vkResetCommandBuffer: ") + vk_result_str(r));
+    rstd::mem::memcpy(staging_map_, data, size);
+    if (VkResult result = cmd_.Reset(); result != VK_SUCCESS) {
+        fail(err, vk_error("vkResetCommandBuffer", result));
         return -1;
     }
 
-    VkCommandBufferBeginInfo bi {};
-    bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    if (VkResult r = vkBeginCommandBuffer(cmd_, &bi); r != VK_SUCCESS) {
-        fail(err, std::string("vkBeginCommandBuffer: ") + vk_result_str(r));
+    VkCommandBufferBeginInfo begin_info {};
+    begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    if (VkResult result = cmd_.Begin(begin_info); result != VK_SUCCESS) {
+        fail(err, vk_error("vkBeginCommandBuffer", result));
         return -1;
     }
 
-    VkImageMemoryBarrier to_dst {};
-    to_dst.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    to_dst.srcAccessMask       = 0;
-    to_dst.dstAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT;
-    to_dst.oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED;
-    to_dst.newLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    to_dst.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    to_dst.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    to_dst.image               = target;
-    to_dst.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-    vkCmdPipelineBarrier(cmd_,
-                         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                         VK_PIPELINE_STAGE_TRANSFER_BIT,
-                         0,
-                         0,
-                         nullptr,
-                         0,
-                         nullptr,
-                         1,
-                         &to_dst);
+    VkImageMemoryBarrier to_destination {};
+    to_destination.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    to_destination.srcAccessMask       = 0;
+    to_destination.dstAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT;
+    to_destination.oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED;
+    to_destination.newLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    to_destination.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    to_destination.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    to_destination.image               = target;
+    to_destination.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+    cmd_.PipelineBarrier(
+        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, to_destination);
 
-    VkBufferImageCopy region {};
-    region.bufferOffset                    = 0;
-    region.bufferRowLength                 = 0;
-    region.bufferImageHeight               = 0;
-    region.imageSubresource.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
-    region.imageSubresource.mipLevel       = 0;
-    region.imageSubresource.baseArrayLayer = 0;
-    region.imageSubresource.layerCount     = 1;
-    region.imageOffset                     = { 0, 0, 0 };
-    region.imageExtent                     = { target_w, target_h, 1 };
-    vkCmdCopyBufferToImage(
-        cmd_, staging_buf_, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    VkBufferImageCopy copy {};
+    copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    copy.imageSubresource.layerCount = 1;
+    copy.imageExtent                 = { target_width, target_height, 1 };
+    cmd_.CopyBufferToImage(*staging_buf_, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, copy);
 
     VkImageMemoryBarrier to_foreign {};
     to_foreign.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     to_foreign.srcAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT;
-    to_foreign.dstAccessMask       = 0;
     to_foreign.oldLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     to_foreign.newLayout           = VK_IMAGE_LAYOUT_GENERAL;
     to_foreign.srcQueueFamilyIndex = queue_family_;
     to_foreign.dstQueueFamilyIndex = VK_QUEUE_FAMILY_FOREIGN_EXT;
     to_foreign.image               = target;
     to_foreign.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-    vkCmdPipelineBarrier(cmd_,
-                         VK_PIPELINE_STAGE_TRANSFER_BIT,
-                         VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-                         0,
-                         0,
-                         nullptr,
-                         0,
-                         nullptr,
-                         1,
-                         &to_foreign);
+    cmd_.PipelineBarrier(
+        VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, to_foreign);
 
-    if (VkResult r = vkEndCommandBuffer(cmd_); r != VK_SUCCESS) {
-        fail(err, std::string("vkEndCommandBuffer: ") + vk_result_str(r));
+    if (VkResult result = cmd_.End(); result != VK_SUCCESS) {
+        fail(err, vk_error("vkEndCommandBuffer", result));
         return -1;
     }
 
-    VkSubmitInfo si {};
-    si.sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    si.commandBufferCount   = 1;
-    si.pCommandBuffers      = &cmd_;
-    si.signalSemaphoreCount = 1;
-    si.pSignalSemaphores    = &signal_sem_;
-    if (VkResult r = vkQueueSubmit(queue_, 1, &si, done_fence_); r != VK_SUCCESS) {
-        fail(err, std::string("vkQueueSubmit: ") + vk_result_str(r));
+    VkCommandBuffer raw_command_buffer = *cmd_;
+    VkSemaphore     raw_semaphore      = *signal_sem_;
+    VkSubmitInfo    submit_info {};
+    submit_info.sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit_info.commandBufferCount   = 1;
+    submit_info.pCommandBuffers      = &raw_command_buffer;
+    submit_info.signalSemaphoreCount = 1;
+    submit_info.pSignalSemaphores    = &raw_semaphore;
+    if (VkResult result = queue_.Submit(submit_info, *done_fence_); result != VK_SUCCESS) {
+        fail(err, vk_error("vkQueueSubmit", result));
         return -1;
     }
     fence_pending_ = true;
 
-    VkSemaphoreGetFdInfoKHR sgfi {};
-    sgfi.sType      = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR;
-    sgfi.semaphore  = signal_sem_;
-    sgfi.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
-    int sync_fd     = -1;
-    if (VkResult r = vkGetSemaphoreFdKHR_(device_, &sgfi, &sync_fd); r != VK_SUCCESS) {
-        fail(err, std::string("vkGetSemaphoreFdKHR: ") + vk_result_str(r));
+    VkSemaphoreGetFdInfoKHR fd_info {};
+    fd_info.sType      = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR;
+    fd_info.semaphore  = *signal_sem_;
+    fd_info.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
+    int sync_fd        = -1;
+    if (VkResult result = device_.GetSemaphoreFdKHR(fd_info, &sync_fd); result != VK_SUCCESS) {
+        fail(err, vk_error("vkGetSemaphoreFdKHR", result));
         return -1;
     }
     return sync_fd;

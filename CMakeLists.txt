@@ -44,13 +44,37 @@ else()
 endif()
 
 
+add_library(wavsen_vvk STATIC
+    src/vvk/vvk.cpp
+)
+add_library(wavsen::vvk ALIAS wavsen_vvk)
+
+target_compile_features(wavsen_vvk PUBLIC cxx_std_20)
+target_sources(wavsen_vvk
+    PUBLIC FILE_SET CXX_MODULES FILES
+        src/vvk/vvk.cppm
+        src/vvk/handle.cppm
+        src/vvk/dispatch.cppm
+        src/vvk/objects.cppm
+        src/vvk/completion.cppm
+        src/vvk/descriptor.cppm
+)
+target_include_directories(wavsen_vvk PUBLIC src/vvk/include)
+target_link_libraries(wavsen_vvk
+    PUBLIC
+        rstd::rstd
+        wavsen::ffi::vulkan
+    PRIVATE
+        rstd.log
+)
+set_property(TARGET wavsen_vvk PROPERTY POSITION_INDEPENDENT_CODE ON)
+set_target_properties(wavsen_vvk PROPERTIES CXX_SCAN_FOR_MODULES ON)
+
+
 add_library(wavsen_decode STATIC)
 add_library(wavsen::decode ALIAS wavsen_decode)
 
 target_compile_features(wavsen_decode PUBLIC cxx_std_20)
-target_compile_options(wavsen_decode PRIVATE
-    -Wall -Wextra -Wpedantic -Wno-missing-field-initializers
-)
 
 target_sources(wavsen_decode
     PUBLIC FILE_SET CXX_MODULES FILES
@@ -97,9 +121,6 @@ add_library(wavsen_video STATIC
 add_library(wavsen::video ALIAS wavsen_video)
 
 target_compile_features(wavsen_video PUBLIC cxx_std_20)
-target_compile_options(wavsen_video PRIVATE
-    -Wall -Wextra -Wpedantic -Wno-missing-field-initializers
-)
 target_include_directories(wavsen_video
     PRIVATE
         ${CMAKE_CURRENT_BINARY_DIR}/generated
@@ -120,9 +141,8 @@ target_sources(wavsen_video PRIVATE
 target_link_libraries(wavsen_video
     PUBLIC
         rstd::rstd
-        rstd.cppstd
         wavsen::ffi::ffmpeg
-        wavsen::ffi::vulkan
+        wavsen::vvk
     PRIVATE
         rstd.log
 )
@@ -139,9 +159,6 @@ add_library(wavsen_audio STATIC)
 add_library(wavsen::audio ALIAS wavsen_audio)
 
 target_compile_features(wavsen_audio PUBLIC cxx_std_20)
-target_compile_options(wavsen_audio PRIVATE
-    -Wall -Wextra -Wpedantic -Wno-missing-field-initializers
-)
 
 target_sources(wavsen_audio
     PUBLIC FILE_SET CXX_MODULES FILES
@@ -193,9 +210,6 @@ if(WAVSEN_BUILD_TESTS)
         tests/audio_capture_dsp_tests.cpp
     )
     target_compile_features(wavsen_audio_capture_dsp_tests PRIVATE cxx_std_20)
-    target_compile_options(wavsen_audio_capture_dsp_tests PRIVATE
-        -Wall -Wextra -Wpedantic -Wno-missing-field-initializers
-    )
     target_include_directories(wavsen_audio_capture_dsp_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/audio
     )
