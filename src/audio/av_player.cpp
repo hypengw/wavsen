@@ -58,10 +58,16 @@ private:
 
 class AvPlayer::Impl {
 public:
-    AudioDevice    device;
-    StreamDecoder* decoder_ptr = nullptr; // owned by AvPullChannel via decoder_storage
-    // The decoder must outlive the audio stream (which calls into it).
-    // Owned via unique_ptr so the AvPullChannel can hold a stable pointer.
+    ~Impl() {
+        // The audio callback borrows decoder_ptr, so it must stop before the decoder is destroyed.
+        device.uninit();
+        device.unmount_all();
+        decoder_ptr = nullptr;
+        decoder_storage.reset();
+    }
+
+    AudioDevice                    device;
+    StreamDecoder*                 decoder_ptr = nullptr;
     std::unique_ptr<StreamDecoder> decoder_storage;
 
     std::atomic<double>        pts_at_anchor { 0.0 };
