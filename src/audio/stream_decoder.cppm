@@ -1,15 +1,15 @@
 export module wavsen.audio:file;
 
 import rstd.cppstd;
-import :byte_stream; // IByteStream
-import :core;        // DeviceDesc
-import :mixer;       // SoundStream (for make_stream factory)
+import :byte_stream;
+import :core;  // DeviceDesc
+import :mixer; // SoundStream (for make_stream factory)
 
 export namespace wavsen::audio
 {
 
-// libav*-backed audio decoder + resampler. Reads bytes from `IByteStream`
-// (via a custom AVIOContext), decodes via libavformat/libavcodec, and
+// libav*-backed audio decoder + resampler. Reads bytes from an rstd
+// ReadSeekHandle via a custom AVIOContext, decodes via libavformat/libavcodec, and
 // resamples through libswresample to the device's negotiated f32 LE
 // interleaved format.
 class StreamDecoder {
@@ -23,7 +23,7 @@ public:
 
     // Open the source. Returns false on parser/codec error; details logged
     // via rstd::log.
-    auto open(std::shared_ptr<IByteStream> src, const DeviceDesc& target) -> bool;
+    auto open(ByteStream src, const DeviceDesc& target) -> bool;
 
     // Update target descriptor (channels / sample rate). Caller invokes
     // this after the audio device negotiates a different format than what
@@ -58,7 +58,6 @@ private:
 
 // Construct a libav*-backed SoundStream from a byte source. Decodes any
 // container/codec libavformat understands and resamples to `desc`.
-auto make_stream(std::shared_ptr<IByteStream> source, const SoundStream::Desc& desc)
-    -> std::unique_ptr<SoundStream>;
+auto make_stream(ByteStream source, const SoundStream::Desc& desc) -> std::unique_ptr<SoundStream>;
 
 } // namespace wavsen::audio

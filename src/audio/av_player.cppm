@@ -2,7 +2,7 @@ export module wavsen.audio:av_sync;
 
 import rstd.cppstd;
 import rstd;
-import :byte_stream; // IByteStream
+import :byte_stream;
 
 export namespace wavsen::audio
 {
@@ -22,9 +22,8 @@ struct AvPlayerError {
 // safe to call from any thread (e.g. from inside a Presenter callback).
 class AvPlayer {
 public:
-    static auto open(std::shared_ptr<IByteStream> src)
-        -> rstd::Result<std::unique_ptr<AvPlayer>, AvPlayerError>;
-    static auto open(std::shared_ptr<IByteStream> src, bool open_device)
+    static auto open(ByteStream src) -> rstd::Result<std::unique_ptr<AvPlayer>, AvPlayerError>;
+    static auto open(ByteStream src, bool open_device)
         -> rstd::Result<std::unique_ptr<AvPlayer>, AvPlayerError>;
 
     ~AvPlayer();

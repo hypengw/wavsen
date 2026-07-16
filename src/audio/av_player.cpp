@@ -80,12 +80,11 @@ public:
 AvPlayer::AvPlayer(): impl_(std::make_unique<Impl>()) {}
 AvPlayer::~AvPlayer() = default;
 
-auto AvPlayer::open(std::shared_ptr<IByteStream> src)
-    -> rstd::Result<std::unique_ptr<AvPlayer>, AvPlayerError> {
+auto AvPlayer::open(ByteStream src) -> rstd::Result<std::unique_ptr<AvPlayer>, AvPlayerError> {
     return open(std::move(src), true);
 }
 
-auto AvPlayer::open(std::shared_ptr<IByteStream> src, bool open_device)
+auto AvPlayer::open(ByteStream src, bool open_device)
     -> rstd::Result<std::unique_ptr<AvPlayer>, AvPlayerError> {
     auto p = std::unique_ptr<AvPlayer>(new AvPlayer());
 

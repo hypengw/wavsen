@@ -1,7 +1,6 @@
 export module wavsen.audio:mixer;
 
 import rstd.cppstd;
-import :byte_stream; // IByteStream
 
 export namespace wavsen::audio
 {

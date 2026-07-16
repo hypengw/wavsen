@@ -180,7 +180,6 @@ target_sources(wavsen_audio
         src/audio/audio.cppm
 )
 target_sources(wavsen_audio PRIVATE
-    src/audio/byte_stream.cpp
     src/audio/stream_decoder.cpp
     src/audio/sound_manager.cpp
     src/audio/av_player.cpp

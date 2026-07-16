@@ -3,9 +3,9 @@ module wavsen.audio;
 import rstd.cppstd;
 import rstd;
 import rstd.log;
-import :byte_stream; // IByteStream
-import :core;        // DeviceDesc
-import :mixer;       // SoundStream
+import :byte_stream;
+import :core;  // DeviceDesc
+import :mixer; // SoundStream
 import :file;
 import avutil;
 import avcodec;
@@ -21,8 +21,8 @@ namespace
 constexpr std::size_t kAvioBuf = 32 * 1024;
 
 int avio_read_cb(void* opaque, std::uint8_t* buf, int sz) {
-    auto* s = static_cast<IByteStream*>(opaque);
-    auto  r = s->read(reinterpret_cast<rstd::u8*>(buf), static_cast<rstd::usize>(sz));
+    auto* source = static_cast<ByteStream*>(opaque);
+    auto  r      = (*source)->read(reinterpret_cast<rstd::u8*>(buf), static_cast<rstd::usize>(sz));
     if (r.is_err()) return AVERROR_EOF;
     auto n = std::move(r).unwrap();
     if (n == 0) return AVERROR_EOF;
@@ -30,14 +30,14 @@ int avio_read_cb(void* opaque, std::uint8_t* buf, int sz) {
 }
 
 std::int64_t avio_seek_cb(void* opaque, std::int64_t off, int whence) {
-    auto* s = static_cast<IByteStream*>(opaque);
+    auto* source = static_cast<ByteStream*>(opaque);
     if (whence == AVSEEK_SIZE) return -1;
     rstd::io::SeekFrom from =
         (whence == rstd::sys::libc::SEEK_SET)
             ? rstd::io::SeekFrom::from_start(static_cast<rstd::u64>(off))
             : (whence == rstd::sys::libc::SEEK_CUR ? rstd::io::SeekFrom::from_current(off)
                                                    : rstd::io::SeekFrom::from_end(off));
-    auto r = s->seek(from);
+    auto r = (*source)->seek(from);
     if (r.is_err()) return -1;
     return static_cast<std::int64_t>(std::move(r).unwrap());
 }
@@ -48,9 +48,9 @@ class StreamDecoder::Impl {
 public:
     ~Impl() { teardown(); }
 
-    bool open(std::shared_ptr<IByteStream> src, const DeviceDesc& target) {
+    bool open(ByteStream src, const DeviceDesc& target) {
         teardown();
-        src_    = std::move(src);
+        src_.insert(rstd::move(src));
         target_ = target;
 
         avio_buf_ = static_cast<std::uint8_t*>(av_malloc(kAvioBuf));
@@ -62,7 +62,7 @@ public:
         avio_ = avio_alloc_context(avio_buf_,
                                    kAvioBuf,
                                    /*write_flag=*/0,
-                                   /*opaque=*/src_.get(),
+                                   /*opaque=*/rstd::addressof(*src_),
                                    &avio_read_cb,
                                    /*write_packet=*/nullptr,
                                    &avio_seek_cb);
@@ -310,15 +310,15 @@ private:
             avio_context_free(&avio_);
         }
         avio_buf_ = nullptr;
-        src_.reset();
+        (void)src_.take();
         pending_offset_   = 0;
         pending_frames_   = 0;
         eof_              = false;
         last_pts_seconds_ = 0.0;
     }
 
-    std::shared_ptr<IByteStream> src_;
-    DeviceDesc                   target_ {};
+    rstd::Option<ByteStream> src_;
+    DeviceDesc               target_ {};
 
     std::uint8_t*    avio_buf_   = nullptr;
     AVIOContext*     avio_       = nullptr;
@@ -341,7 +341,7 @@ StreamDecoder::~StreamDecoder()                                   = default;
 StreamDecoder::StreamDecoder(StreamDecoder&&) noexcept            = default;
 StreamDecoder& StreamDecoder::operator=(StreamDecoder&&) noexcept = default;
 
-bool StreamDecoder::open(std::shared_ptr<IByteStream> src, const DeviceDesc& target) {
+bool StreamDecoder::open(ByteStream src, const DeviceDesc& target) {
     return impl_->open(std::move(src), target);
 }
 
@@ -377,8 +377,7 @@ private:
 
 } // namespace
 
-auto make_stream(std::shared_ptr<IByteStream> source, const SoundStream::Desc& desc)
-    -> std::unique_ptr<SoundStream> {
+auto make_stream(ByteStream source, const SoundStream::Desc& desc) -> std::unique_ptr<SoundStream> {
     StreamDecoder dec;
     if (! dec.open(std::move(source), { desc.channels, desc.sample_rate })) {
         return nullptr;
