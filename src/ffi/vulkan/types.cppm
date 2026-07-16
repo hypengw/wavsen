@@ -78,9 +78,9 @@ export {
     using ::VkFence;
     using ::VkFenceCreateInfo;
     using ::VkFilter;
+    using ::VkFlags;
     using ::VkFormat;
     using ::VkFormatProperties;
-    using ::VkFlags;
     using ::VkFramebuffer;
     using ::VkFramebufferCreateInfo;
     using ::VkGraphicsPipelineCreateInfo;
@@ -233,6 +233,7 @@ export {
     using ::VK_BLEND_OP_ADD;
     using ::VK_BORDER_COLOR_INT_OPAQUE_BLACK;
     using ::VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+    using ::VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
     using ::VK_BUFFER_USAGE_TRANSFER_DST_BIT;
     using ::VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
     using ::VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
@@ -313,9 +314,9 @@ export {
     using ::VK_IMAGE_TILING_OPTIMAL;
     using ::VK_IMAGE_TYPE_2D;
     using ::VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-    using ::VK_IMAGE_USAGE_STORAGE_BIT;
     using ::VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
     using ::VK_IMAGE_USAGE_SAMPLED_BIT;
+    using ::VK_IMAGE_USAGE_STORAGE_BIT;
     using ::VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     using ::VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     using ::VK_IMAGE_VIEW_TYPE_2D;
