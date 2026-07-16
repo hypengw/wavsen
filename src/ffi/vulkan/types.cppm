@@ -80,6 +80,7 @@ export {
     using ::VkFilter;
     using ::VkFormat;
     using ::VkFormatProperties;
+    using ::VkFlags;
     using ::VkFramebuffer;
     using ::VkFramebufferCreateInfo;
     using ::VkGraphicsPipelineCreateInfo;
@@ -133,12 +134,16 @@ export {
     using ::VkPhysicalDeviceProperties;
     using ::VkPhysicalDeviceProperties2;
     using ::VkPhysicalDeviceProperties2KHR;
+    using ::VkPhysicalDeviceSynchronization2FeaturesKHR;
+    using ::VkPhysicalDeviceTimelineSemaphoreFeaturesKHR;
     using ::VkPhysicalDeviceVulkan12Features;
     using ::VkPhysicalDeviceVulkan13Features;
     using ::VkPipeline;
     using ::VkPipelineBindPoint;
     using ::VkPipelineColorBlendAttachmentState;
+    using ::VkPipelineColorBlendStateCreateFlags;
     using ::VkPipelineColorBlendStateCreateInfo;
+    using ::VkPipelineCreateFlags;
     using ::VkPipelineDepthStencilStateCreateInfo;
     using ::VkPipelineDynamicStateCreateInfo;
     using ::VkPipelineInputAssemblyStateCreateInfo;
@@ -207,6 +212,7 @@ export {
     using ::VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
     using ::VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
     using ::VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    using ::VK_ACCESS_INDEX_READ_BIT;
     using ::VK_ACCESS_MEMORY_READ_BIT;
     using ::VK_ACCESS_MEMORY_WRITE_BIT;
     using ::VK_ACCESS_SHADER_READ_BIT;
@@ -307,6 +313,7 @@ export {
     using ::VK_IMAGE_TILING_OPTIMAL;
     using ::VK_IMAGE_TYPE_2D;
     using ::VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    using ::VK_IMAGE_USAGE_STORAGE_BIT;
     using ::VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
     using ::VK_IMAGE_USAGE_SAMPLED_BIT;
     using ::VK_IMAGE_USAGE_TRANSFER_DST_BIT;
@@ -381,11 +388,14 @@ export {
     using ::VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR;
     using ::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRM_PROPERTIES_EXT;
     using ::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    using ::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2_KHR;
     using ::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES;
     using ::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES_KHR;
     using ::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2;
     using ::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
     using ::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2_KHR;
+    using ::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES_KHR;
+    using ::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES_KHR;
     using ::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
     using ::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
     using ::VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;

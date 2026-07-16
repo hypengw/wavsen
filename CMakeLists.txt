@@ -29,14 +29,19 @@ endif()
 
 find_package(Vulkan REQUIRED)
 
+if(NOT TARGET GPUOpen::VulkanMemoryAllocator)
+    message(FATAL_ERROR
+        "wavsen requires the host project to provide GPUOpen::VulkanMemoryAllocator")
+endif()
 
 # ---------------------------------------------------------------------------
-# wavsen::ffi::ffmpeg / wavsen::ffi::vulkan — C++20 module wrappers around
+# wavsen::ffi::{ffmpeg,vulkan,vma} — C++20 module wrappers around
 # the libav* + swscale (+ optional swresample) and Vulkan headers. Each
 # is its own STATIC library so external consumers can pick & link them.
 # ---------------------------------------------------------------------------
 add_subdirectory(src/ffi/ffmpeg)
 add_subdirectory(src/ffi/vulkan)
+add_subdirectory(src/ffi/vma)
 if(WAVSEN_AUDIO_BACKEND STREQUAL "pulse")
     add_subdirectory(src/ffi/pulse)
 else()
@@ -54,6 +59,7 @@ target_sources(wavsen_vvk
     PUBLIC FILE_SET CXX_MODULES FILES
         src/vvk/vvk.cppm
         src/vvk/handle.cppm
+        src/vvk/vma.cppm
         src/vvk/dispatch.cppm
         src/vvk/objects.cppm
         src/vvk/completion.cppm
@@ -63,7 +69,9 @@ target_include_directories(wavsen_vvk PUBLIC src/vvk/include)
 target_link_libraries(wavsen_vvk
     PUBLIC
         rstd::rstd
+        rstd.cppstd
         wavsen::ffi::vulkan
+        wavsen::ffi::vma
     PRIVATE
         rstd.log
 )

@@ -69,6 +69,10 @@ inline constexpr const char* k_VK_KHR_IMAGE_FORMAT_LIST_EXTENSION_NAME =
 inline constexpr const char* k_VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME =
     VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME;
 inline constexpr const char* k_VK_KHR_SWAPCHAIN_EXTENSION_NAME = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
+inline constexpr const char* k_VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME =
+    VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME;
+inline constexpr const char* k_VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME =
+    VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME;
 } // namespace _wv_vk_ext
 
 #undef VK_KHR_EXTERNAL_FENCE_CAPABILITIES_EXTENSION_NAME
@@ -88,6 +92,8 @@ inline constexpr const char* k_VK_KHR_SWAPCHAIN_EXTENSION_NAME = VK_KHR_SWAPCHAI
 #undef VK_KHR_IMAGE_FORMAT_LIST_EXTENSION_NAME
 #undef VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME
 #undef VK_KHR_SWAPCHAIN_EXTENSION_NAME
+#undef VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME
+#undef VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME
 
 // VK_NULL_HANDLE is `#define VK_NULL_HANDLE 0` — wrap with conversion ops
 // so it compares cleanly against both dispatchable (pointer) and non-
@@ -157,6 +163,10 @@ export {
         _wv_vk_ext::k_VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME;
     inline constexpr const char* VK_KHR_SWAPCHAIN_EXTENSION_NAME =
         _wv_vk_ext::k_VK_KHR_SWAPCHAIN_EXTENSION_NAME;
+    inline constexpr const char* VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME =
+        _wv_vk_ext::k_VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME;
+    inline constexpr const char* VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME =
+        _wv_vk_ext::k_VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME;
 
     inline constexpr _wv_vk::NullHandle VK_NULL_HANDLE {};
 
