@@ -1,7 +1,7 @@
 module wavsen.audio;
 
-import rstd.cppstd;
 import rstd;
+import rstd.cppstd;
 import rstd.log;
 import :byte_stream;
 import :core;  // DeviceDesc
@@ -22,24 +22,25 @@ constexpr std::size_t kAvioBuf = 32 * 1024;
 
 int avio_read_cb(void* opaque, std::uint8_t* buf, int sz) {
     auto* source = static_cast<ByteStream*>(opaque);
-    auto  r      = (*source)->read(reinterpret_cast<rstd::u8*>(buf), static_cast<rstd::usize>(sz));
+    auto  bytes  = rstd::mut_ref<rstd::byte[]>::from_raw_parts(buf, rstd::usize(sz));
+    auto  r      = (*source)->read(bytes);
     if (r.is_err()) return AVERROR_EOF;
     auto n = std::move(r).unwrap();
-    if (n == 0) return AVERROR_EOF;
-    return static_cast<int>(n);
+    if (n == rstd::usize()) return AVERROR_EOF;
+    return static_cast<int>(n.to_primitive());
 }
 
 std::int64_t avio_seek_cb(void* opaque, std::int64_t off, int whence) {
     auto* source = static_cast<ByteStream*>(opaque);
     if (whence == AVSEEK_SIZE) return -1;
-    rstd::io::SeekFrom from =
-        (whence == rstd::sys::libc::SEEK_SET)
-            ? rstd::io::SeekFrom::from_start(static_cast<rstd::u64>(off))
-            : (whence == rstd::sys::libc::SEEK_CUR ? rstd::io::SeekFrom::from_current(off)
-                                                   : rstd::io::SeekFrom::from_end(off));
-    auto r = (*source)->seek(from);
+    rstd::io::SeekFrom from = (whence == rstd::cppstd::SEEK_FROM_START)
+                                  ? rstd::io::SeekFrom::from_start(rstd::as_cast<rstd::u64>(off))
+                                  : (whence == rstd::cppstd::SEEK_FROM_CURRENT
+                                         ? rstd::io::SeekFrom::from_current(rstd::i64(off))
+                                         : rstd::io::SeekFrom::from_end(rstd::i64(off)));
+    auto               r    = (*source)->seek(from);
     if (r.is_err()) return -1;
-    return static_cast<std::int64_t>(std::move(r).unwrap());
+    return static_cast<std::int64_t>(std::move(r).unwrap().to_primitive());
 }
 
 } // namespace

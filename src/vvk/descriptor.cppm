@@ -5,6 +5,13 @@ import vulkan;
 
 using namespace rstd::prelude;
 
+namespace
+{
+constexpr auto vk_count(usize value) noexcept -> rstd::uint32_t {
+    return rstd::as_cast<rstd::uint32_t>(value);
+}
+} // namespace
+
 export namespace vvk
 {
 
@@ -77,9 +84,10 @@ public:
     }
 
     static DescriptorArenaCreateResult
-    Create(VkDevice device, u32 max_sets, slice<VkDescriptorPoolSize> sizes,
+    Create(VkDevice device, rstd::uint32_t max_sets, slice<VkDescriptorPoolSize> sizes,
            DescriptorDeviceDispatch dispatch = DescriptorDeviceDispatch::Vulkan()) {
-        if (device == VK_NULL_HANDLE || max_sets == 0 || sizes.len() == 0 || ! dispatch.valid()) {
+        if (device == VK_NULL_HANDLE || max_sets == 0 || sizes.len() == usize() ||
+            ! dispatch.valid()) {
             return { .api_result = VK_ERROR_INITIALIZATION_FAILED };
         }
 
@@ -88,7 +96,7 @@ public:
             .pNext         = nullptr,
             .flags         = 0,
             .maxSets       = max_sets,
-            .poolSizeCount = static_cast<u32>(sizes.len()),
+            .poolSizeCount = vk_count(sizes.len()),
             .pPoolSizes    = sizes.as_raw_ptr(),
         };
         VkDescriptorPool pool   = VK_NULL_HANDLE;
@@ -156,7 +164,7 @@ enum class DescriptorUpdateStatus
 
 struct DescriptorUpdateResult {
     DescriptorUpdateStatus status { DescriptorUpdateStatus::Invalid };
-    u32                    write_count { 0 };
+    rstd::uint32_t         write_count {};
 
     bool committed() const noexcept {
         return status == DescriptorUpdateStatus::Committed ||
@@ -166,9 +174,10 @@ struct DescriptorUpdateResult {
 
 class DescriptorUpdateBatch {
 public:
-    bool WriteImage(DescriptorSetLease lease, u32 binding, VkDescriptorType descriptor_type,
-                    slice<VkDescriptorImageInfo> image_infos, u32 array_element = 0) {
-        if (m_committed || ! lease.valid() || image_infos.len() == 0) return false;
+    bool WriteImage(DescriptorSetLease lease, rstd::uint32_t binding,
+                    VkDescriptorType descriptor_type, slice<VkDescriptorImageInfo> image_infos,
+                    rstd::uint32_t array_element = 0) {
+        if (m_committed || ! lease.valid() || image_infos.len() == usize()) return false;
         auto infos = rstd::vec::Vec<VkDescriptorImageInfo>::with_capacity(image_infos.len());
         infos.extend_from_slice(image_infos.as_raw_ptr(), image_infos.len());
         m_image_writes.push(ImageWrite {
@@ -181,9 +190,10 @@ public:
         return true;
     }
 
-    bool WriteBuffer(DescriptorSetLease lease, u32 binding, VkDescriptorType descriptor_type,
-                     slice<VkDescriptorBufferInfo> buffer_infos, u32 array_element = 0) {
-        if (m_committed || ! lease.valid() || buffer_infos.len() == 0) return false;
+    bool WriteBuffer(DescriptorSetLease lease, rstd::uint32_t binding,
+                     VkDescriptorType descriptor_type, slice<VkDescriptorBufferInfo> buffer_infos,
+                     rstd::uint32_t array_element = 0) {
+        if (m_committed || ! lease.valid() || buffer_infos.len() == usize()) return false;
         auto infos = rstd::vec::Vec<VkDescriptorBufferInfo>::with_capacity(buffer_infos.len());
         infos.extend_from_slice(buffer_infos.as_raw_ptr(), buffer_infos.len());
         m_buffer_writes.push(BufferWrite {
@@ -218,7 +228,7 @@ public:
                 .dstSet           = write.lease.handle,
                 .dstBinding       = write.binding,
                 .dstArrayElement  = write.array_element,
-                .descriptorCount  = static_cast<u32>(write.infos.len()),
+                .descriptorCount  = vk_count(write.infos.len()),
                 .descriptorType   = write.type,
                 .pImageInfo       = write.infos.data(),
                 .pBufferInfo      = nullptr,
@@ -233,7 +243,7 @@ public:
                 .dstSet           = write.lease.handle,
                 .dstBinding       = write.binding,
                 .dstArrayElement  = write.array_element,
-                .descriptorCount  = static_cast<u32>(write.infos.len()),
+                .descriptorCount  = vk_count(write.infos.len()),
                 .descriptorType   = write.type,
                 .pImageInfo       = nullptr,
                 .pBufferInfo      = write.infos.data(),
@@ -242,37 +252,37 @@ public:
             writes.push(rstd::move(descriptor_write));
         }
         owner->dispatch().update_sets(
-            owner->device(), static_cast<u32>(writes.len()), writes.data(), 0, nullptr);
+            owner->device(), vk_count(writes.len()), writes.data(), 0, nullptr);
         m_committed = true;
         return DescriptorUpdateResult {
             .status      = DescriptorUpdateStatus::Committed,
-            .write_count = static_cast<u32>(writes.len()),
+            .write_count = vk_count(writes.len()),
         };
     }
 
 private:
     struct ImageWrite {
         DescriptorSetLease                    lease;
-        u32                                   binding { 0 };
-        u32                                   array_element { 0 };
+        rstd::uint32_t                        binding {};
+        rstd::uint32_t                        array_element {};
         VkDescriptorType                      type { VK_DESCRIPTOR_TYPE_MAX_ENUM };
         rstd::vec::Vec<VkDescriptorImageInfo> infos;
     };
 
     struct BufferWrite {
         DescriptorSetLease                     lease;
-        u32                                    binding { 0 };
-        u32                                    array_element { 0 };
+        rstd::uint32_t                         binding {};
+        rstd::uint32_t                         array_element {};
         VkDescriptorType                       type { VK_DESCRIPTOR_TYPE_MAX_ENUM };
         rstd::vec::Vec<VkDescriptorBufferInfo> infos;
     };
 
     const DescriptorArenaGeneration* FirstOwner() const noexcept {
         if (! m_image_writes.is_empty()) {
-            return m_image_writes[0].lease.owner->as_ptr().as_raw_ptr();
+            return m_image_writes[usize()].lease.owner->as_ptr().as_raw_ptr();
         }
         if (! m_buffer_writes.is_empty()) {
-            return m_buffer_writes[0].lease.owner->as_ptr().as_raw_ptr();
+            return m_buffer_writes[usize()].lease.owner->as_ptr().as_raw_ptr();
         }
         return nullptr;
     }

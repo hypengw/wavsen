@@ -22,13 +22,13 @@ using namespace rstd::prelude;
 /* Push-constant struct mirroring `PC` in shaders/nv12_to_rgba.comp.
  * std140-friendly: padded to 16-byte boundaries. */
 struct alignas(16) ShaderPushConstants {
-    u32   dst_w;
-    u32   dst_h;
-    u32   _pad0[2];
-    float m_r[4];
-    float m_g[4];
-    float m_b[4];
-    float offset[4];
+    rstd::uint32_t dst_w;
+    rstd::uint32_t dst_h;
+    rstd::uint32_t _pad0[2];
+    float          m_r[4];
+    float          m_g[4];
+    float          m_b[4];
+    float          offset[4];
 };
 static_assert(sizeof(ShaderPushConstants) == 80, "PC size mismatch with shader");
 
@@ -152,9 +152,10 @@ auto vk_error(ref<str> operation, VkResult result) -> rstd::string::String {
     return rstd::format("{}: {}", operation, vk_result_str(result));
 }
 
-u32 pick_memory_type(const vvk::PhysicalDevice& phys, u32 mask, VkMemoryPropertyFlags want) {
+rstd::uint32_t pick_memory_type(const vvk::PhysicalDevice& phys, rstd::uint32_t mask,
+                                VkMemoryPropertyFlags want) {
     const auto mp = phys.GetMemoryProperties().memoryProperties;
-    for (u32 i = 0; i < mp.memoryTypeCount; ++i) {
+    for (rstd::uint32_t i = 0; i < mp.memoryTypeCount; ++i) {
         if ((mask & (1u << i)) && (mp.memoryTypes[i].propertyFlags & want) == want) {
             return i;
         }
@@ -163,8 +164,8 @@ u32 pick_memory_type(const vvk::PhysicalDevice& phys, u32 mask, VkMemoryProperty
 }
 
 bool create_image_2d(const vvk::Device& device, const vvk::PhysicalDevice& phys, VkFormat fmt,
-                     u32 w, u32 h, VkImageUsageFlags usage, vvk::Image& out_img,
-                     vvk::DeviceMemory& out_mem, Error* err) {
+                     rstd::uint32_t w, rstd::uint32_t h, VkImageUsageFlags usage,
+                     vvk::Image& out_img, vvk::DeviceMemory& out_mem, Error* err) {
     VkImageCreateInfo ici {};
     ici.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     ici.imageType     = VK_IMAGE_TYPE_2D;
@@ -181,8 +182,9 @@ bool create_image_2d(const vvk::Device& device, const vvk::PhysicalDevice& phys,
         fail(err, vk_error("vkCreateImage", r));
         return false;
     }
-    const auto mr = device.GetImageMemoryRequirements(*out_img);
-    u32 type      = pick_memory_type(phys, mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    const auto     mr = device.GetImageMemoryRequirements(*out_img);
+    rstd::uint32_t type =
+        pick_memory_type(phys, mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     if (type == UINT32_MAX) {
         fail(err, "no DEVICE_LOCAL memory type for plane image");
         return false;
@@ -224,7 +226,8 @@ bool create_image_view(const vvk::Device& device, VkImage img, VkFormat fmt, vvk
 void barrier_image(const vvk::CommandBuffer& cmd, VkImage img, VkAccessFlags src_a,
                    VkAccessFlags dst_a, VkImageLayout old_l, VkImageLayout new_l,
                    VkPipelineStageFlags src_s, VkPipelineStageFlags dst_s,
-                   u32 src_qf = VK_QUEUE_FAMILY_IGNORED, u32 dst_qf = VK_QUEUE_FAMILY_IGNORED) {
+                   rstd::uint32_t src_qf = VK_QUEUE_FAMILY_IGNORED,
+                   rstd::uint32_t dst_qf = VK_QUEUE_FAMILY_IGNORED) {
     VkImageMemoryBarrier b {};
     b.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     b.srcAccessMask       = src_a;
@@ -242,8 +245,9 @@ void barrier_image(const vvk::CommandBuffer& cmd, VkImage img, VkAccessFlags src
 // for the cross-queue hazard tracker after vkCmdDecodeVideoKHR.
 void barrier_image2(const vvk::CommandBuffer& cmd, VkImage img, VkPipelineStageFlags2 src_s,
                     VkAccessFlags2 src_a, VkPipelineStageFlags2 dst_s, VkAccessFlags2 dst_a,
-                    VkImageLayout old_l, VkImageLayout new_l, u32 src_qf = VK_QUEUE_FAMILY_IGNORED,
-                    u32 dst_qf = VK_QUEUE_FAMILY_IGNORED) {
+                    VkImageLayout old_l, VkImageLayout new_l,
+                    rstd::uint32_t src_qf = VK_QUEUE_FAMILY_IGNORED,
+                    rstd::uint32_t dst_qf = VK_QUEUE_FAMILY_IGNORED) {
     VkImageMemoryBarrier2 b {};
     b.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
     b.srcStageMask        = src_s;
@@ -266,16 +270,16 @@ void barrier_image2(const vvk::CommandBuffer& cmd, VkImage img, VkPipelineStageF
 bool target_exports_sync_fd(ConvertTarget target) { return target == ConvertTarget::BridgeForeign; }
 
 u64 next_completion_generation() {
-    static rstd::sync::atomic::Atomic<u64> next { 1 };
-    auto value = next.fetch_add(1, rstd::sync::atomic::Ordering::Relaxed);
-    if (value == 0) value = next.fetch_add(1, rstd::sync::atomic::Ordering::Relaxed);
+    static rstd::sync::atomic::Atomic<u64> next { u64(1) };
+    auto value = next.fetch_add(u64(1), rstd::sync::atomic::Ordering::Relaxed);
+    if (value == u64()) value = next.fetch_add(u64(1), rstd::sync::atomic::Ordering::Relaxed);
     return value;
 }
 
 u64 next_content_revision() {
-    static rstd::sync::atomic::Atomic<u64> next { 1 };
-    auto value = next.fetch_add(1, rstd::sync::atomic::Ordering::Relaxed);
-    if (value == 0) value = next.fetch_add(1, rstd::sync::atomic::Ordering::Relaxed);
+    static rstd::sync::atomic::Atomic<u64> next { u64(1) };
+    auto value = next.fetch_add(u64(1), rstd::sync::atomic::Ordering::Relaxed);
+    if (value == u64()) value = next.fetch_add(u64(1), rstd::sync::atomic::Ordering::Relaxed);
     return value;
 }
 
@@ -302,7 +306,7 @@ void barrier_dst_to_storage(const vvk::CommandBuffer& cmd, VkImage dst, ConvertT
 }
 
 void barrier_dst_from_storage(const vvk::CommandBuffer& cmd, VkImage dst, ConvertTarget target,
-                              u32 queue_family) {
+                              rstd::uint32_t queue_family) {
     if (target == ConvertTarget::SampledLocal) {
         barrier_image(cmd,
                       dst,
@@ -335,8 +339,8 @@ YuvToRgba::~YuvToRgba() {
 }
 
 auto YuvToRgba::create(VkInstance instance, VkPhysicalDevice phys, VkDevice device,
-                       u32 queue_family, VkQueue queue, u32 max_w, u32 max_h)
-    -> Result<rstd::boxed::Box<YuvToRgba>, Error> {
+                       rstd::uint32_t queue_family, VkQueue queue, rstd::uint32_t max_w,
+                       rstd::uint32_t max_h) -> Result<rstd::boxed::Box<YuvToRgba>, Error> {
     if (max_w == 0 || max_h == 0) {
         return Err(Error { "YuvToRgba: max_w/max_h must be non-zero" });
     }
@@ -351,8 +355,9 @@ auto YuvToRgba::create(VkInstance instance, VkPhysicalDevice phys, VkDevice devi
     return Ok(rstd::move(self));
 }
 
-bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device, u32 queue_family,
-                     VkQueue queue, u32 max_w, u32 max_h, Error* err) {
+bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device,
+                     rstd::uint32_t queue_family, VkQueue queue, rstd::uint32_t max_w,
+                     rstd::uint32_t max_h, Error* err) {
     if (! vvk::Load(instance_dispatch_) || ! vvk::Load(instance, instance_dispatch_)) {
         return fail(err, "YuvToRgba: failed to load instance dispatch");
     }
@@ -425,11 +430,11 @@ bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device
         bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         if (VkResult r = device_.CreateBuffer(bci, staging_buf_); r != VK_SUCCESS)
             return fail(err, vk_error("vkCreateBuffer(stage)", r));
-        const auto mr   = device_.GetBufferMemoryRequirements(*staging_buf_);
-        u32        type = pick_memory_type(phys_,
-                                           mr.memoryTypeBits,
-                                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        const auto     mr   = device_.GetBufferMemoryRequirements(*staging_buf_);
+        rstd::uint32_t type = pick_memory_type(phys_,
+                                               mr.memoryTypeBits,
+                                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                                   VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         if (type == UINT32_MAX)
             return fail(err, "no HOST_VISIBLE|COHERENT memory type for staging");
         VkMemoryAllocateInfo mai {};
@@ -449,7 +454,7 @@ bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device
         VkShaderModuleCreateInfo smi {};
         smi.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
         smi.codeSize = sizeof(nv12_to_rgba_spv);
-        smi.pCode    = reinterpret_cast<const u32*>(nv12_to_rgba_spv);
+        smi.pCode    = reinterpret_cast<const rstd::uint32_t*>(nv12_to_rgba_spv);
         if (VkResult r = device_.CreateShaderModule(smi, shader_); r != VK_SUCCESS)
             return fail(err, vk_error("vkCreateShaderModule", r));
     }
@@ -524,7 +529,7 @@ bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device
             .update_sets   = device_dispatch_.vkUpdateDescriptorSets,
         };
         auto arena = vvk::DescriptorArenaGeneration::Create(
-            *device_, 1, slice<VkDescriptorPoolSize>::from_raw_parts(ps, 2), dispatch);
+            *device_, 1, slice<VkDescriptorPoolSize>::from_raw_parts(ps, usize(2)), dispatch);
         if (! arena.created())
             return fail(err, vk_error("vkCreateDescriptorPool", arena.api_result));
         descriptor_arena_ = rstd::move(arena.arena);
@@ -542,10 +547,11 @@ bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device
         cpi.queueFamilyIndex = queue_family_;
         if (VkResult r = device_.CreateCommandPool(cpi, cmd_pool_); r != VK_SUCCESS)
             return fail(err, vk_error("vkCreateCommandPool", r));
-        if (VkResult r = cmd_pool_.Allocate(1, VK_COMMAND_BUFFER_LEVEL_PRIMARY, command_buffers_);
+        if (VkResult r =
+                cmd_pool_.Allocate(usize(1), VK_COMMAND_BUFFER_LEVEL_PRIMARY, command_buffers_);
             r != VK_SUCCESS)
             return fail(err, vk_error("vkAllocateCommandBuffers", r));
-        cmd_ = vvk::CommandBuffer(command_buffers_[0], device_dispatch_);
+        cmd_ = vvk::CommandBuffer(command_buffers_[usize()], device_dispatch_);
 
         VkFenceCreateInfo fci {};
         fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
@@ -564,7 +570,7 @@ bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device
         const auto generation = next_completion_generation();
         auto       timeline   = vvk::TimelineSemaphoreGeneration::Create(
             *device_,
-            vvk::MakeQueueDomain(*device_, *queue_, queue_family_, 0u, generation),
+            vvk::MakeQueueDomain(*device_, *queue_, u32(queue_family_), u32(), generation),
             generation);
         if (! timeline.created()) {
             return fail(err,
@@ -596,11 +602,11 @@ bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device
         if (! batch.WriteImage(descriptor_set_.clone(),
                                0,
                                VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                               slice<VkDescriptorImageInfo>::from_raw_parts(&dii_y, 1)) ||
+                               slice<VkDescriptorImageInfo>::from_raw_parts(&dii_y, usize(1))) ||
             ! batch.WriteImage(descriptor_set_.clone(),
                                1,
                                VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                               slice<VkDescriptorImageInfo>::from_raw_parts(&dii_uv, 1)) ||
+                               slice<VkDescriptorImageInfo>::from_raw_parts(&dii_uv, usize(1))) ||
             ! batch.Commit().committed())
             return fail(err, "failed to update static YUV descriptors");
     }
@@ -608,8 +614,9 @@ bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device
     return true;
 }
 
-int YuvToRgba::convert_nv12_(VkImage dst, u32 dst_w, u32 dst_h, const u8* nv12, usize nv12_size,
-                             const ColorMatrix& cm, ConvertTarget target, Error* err) {
+int YuvToRgba::convert_nv12_(VkImage dst, rstd::uint32_t dst_w, rstd::uint32_t dst_h,
+                             const rstd::uint8_t* nv12, usize nv12_size, const ColorMatrix& cm,
+                             ConvertTarget target, Error* err) {
     if (dst == VK_NULL_HANDLE) {
         fail(err, "convert_nv12: dst VkImage null");
         return -1;
@@ -626,7 +633,7 @@ int YuvToRgba::convert_nv12_(VkImage dst, u32 dst_w, u32 dst_h, const u8* nv12, 
         fail(err, "convert_nv12: dst exceeds configured max extent");
         return -1;
     }
-    const usize want = usize(dst_w) * dst_h * 3 / 2;
+    const usize want = usize(dst_w) * usize(dst_h) * usize(3) / usize(2);
     if (nv12_size != want) {
         fail(err, "convert_nv12: nv12_size mismatch (expected NV12 layout)");
         return -1;
@@ -678,7 +685,7 @@ int YuvToRgba::convert_nv12_(VkImage dst, u32 dst_w, u32 dst_h, const u8* nv12, 
         if (! batch.WriteImage(descriptor_set_.clone(),
                                2,
                                VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                               slice<VkDescriptorImageInfo>::from_raw_parts(&dii, 1)) ||
+                               slice<VkDescriptorImageInfo>::from_raw_parts(&dii, usize(1))) ||
             ! batch.Commit().committed()) {
             fail(err, "failed to update destination descriptor");
             return -1;
@@ -769,7 +776,7 @@ int YuvToRgba::convert_nv12_(VkImage dst, u32 dst_w, u32 dst_h, const u8* nv12, 
     cmd_.BindDescriptorSets(VK_PIPELINE_BIND_POINT_COMPUTE,
                             *pipeline_layout_,
                             0,
-                            slice<VkDescriptorSet>::from_raw_parts(&descriptor_set, 1),
+                            slice<VkDescriptorSet>::from_raw_parts(&descriptor_set, usize(1)),
                             {});
     ShaderPushConstants pc {};
     pc.dst_w = dst_w;
@@ -781,8 +788,8 @@ int YuvToRgba::convert_nv12_(VkImage dst, u32 dst_w, u32 dst_h, const u8* nv12, 
         pc.offset[i] = cm.offset[i];
     }
     cmd_.PushConstants(*pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT, pc);
-    const u32 gx = (dst_w + 7) / 8;
-    const u32 gy = (dst_h + 7) / 8;
+    const rstd::uint32_t gx = (dst_w + 7) / 8;
+    const rstd::uint32_t gy = (dst_h + 7) / 8;
     cmd_.Dispatch(gx, gy, 1);
 
     barrier_dst_from_storage(cmd_, dst, target, queue_family_);
@@ -792,11 +799,11 @@ int YuvToRgba::convert_nv12_(VkImage dst, u32 dst_w, u32 dst_h, const u8* nv12, 
         return -1;
     }
 
-    auto next_completion_value = completion_value_ + 1;
-    if (next_completion_value == 0) ++next_completion_value;
-    VkSemaphore signal_sems[2] = { (*completion_timeline_)->handle(), *signal_sem_ };
-    u64         signal_vals[2] = { next_completion_value, 0 };
-    const auto  signal_count   = target_exports_sync_fd(target) ? 2u : 1u;
+    auto next_completion_value = completion_value_ + u64(1);
+    if (next_completion_value == u64()) ++next_completion_value;
+    VkSemaphore    signal_sems[2] = { (*completion_timeline_)->handle(), *signal_sem_ };
+    rstd::uint64_t signal_vals[2] = { next_completion_value.to_primitive(), 0 };
+    const auto     signal_count   = target_exports_sync_fd(target) ? 2u : 1u;
     VkTimelineSemaphoreSubmitInfo timeline_info {};
     timeline_info.sType                     = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
     timeline_info.signalSemaphoreValueCount = signal_count;
@@ -831,8 +838,9 @@ int YuvToRgba::convert_nv12_(VkImage dst, u32 dst_w, u32 dst_h, const u8* nv12, 
     return sync_fd;
 }
 
-int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im, VkImage dst, u32 dst_w, u32 dst_h,
-                                    const ColorMatrix& cm, ConvertTarget target, Error* err) {
+int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im, VkImage dst, rstd::uint32_t dst_w,
+                                    rstd::uint32_t dst_h, const ColorMatrix& cm,
+                                    ConvertTarget target, Error* err) {
     if (dst == VK_NULL_HANDLE) {
         fail(err, "convert_av_vk_frame: dst null");
         return -1;
@@ -958,15 +966,15 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im, VkImage dst, u32 d
         if (! batch.WriteImage(descriptor_set_.clone(),
                                0,
                                VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                               slice<VkDescriptorImageInfo>::from_raw_parts(&dii_y, 1)) ||
+                               slice<VkDescriptorImageInfo>::from_raw_parts(&dii_y, usize(1))) ||
             ! batch.WriteImage(descriptor_set_.clone(),
                                1,
                                VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                               slice<VkDescriptorImageInfo>::from_raw_parts(&dii_uv, 1)) ||
+                               slice<VkDescriptorImageInfo>::from_raw_parts(&dii_uv, usize(1))) ||
             ! batch.WriteImage(descriptor_set_.clone(),
                                2,
                                VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                               slice<VkDescriptorImageInfo>::from_raw_parts(&dii_d, 1)) ||
+                               slice<VkDescriptorImageInfo>::from_raw_parts(&dii_d, usize(1))) ||
             ! batch.Commit().committed()) {
             fail(err, "failed to update AVVkFrame descriptors");
             return -1;
@@ -996,13 +1004,13 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im, VkImage dst, u32 d
      * barrier's srcStageMask to VIDEO_DECODE so the validation layer's
      * per-resource hazard tracker can relate them. Single-image path
      * emits ONE barrier on the shared VkImage (covers all planes). */
-    const u32 y_avvk_qf  = *im.y_qf_in_out;
-    const u32 uv_avvk_qf = *im.uv_qf_in_out;
+    const rstd::uint32_t y_avvk_qf  = *im.y_qf_in_out;
+    const rstd::uint32_t uv_avvk_qf = *im.uv_qf_in_out;
     struct QueueTransfer {
-        u32 source;
-        u32 destination;
+        rstd::uint32_t source;
+        rstd::uint32_t destination;
     };
-    auto qfot_pair = [this](u32 avvk_qf) -> QueueTransfer {
+    auto qfot_pair = [this](rstd::uint32_t avvk_qf) -> QueueTransfer {
         if (avvk_qf == VK_QUEUE_FAMILY_IGNORED || avvk_qf == queue_family_) {
             return { VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED };
         }
@@ -1046,7 +1054,7 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im, VkImage dst, u32 d
     cmd_.BindDescriptorSets(VK_PIPELINE_BIND_POINT_COMPUTE,
                             *pipeline_layout_,
                             0,
-                            slice<VkDescriptorSet>::from_raw_parts(&descriptor_set, 1),
+                            slice<VkDescriptorSet>::from_raw_parts(&descriptor_set, usize(1)),
                             {});
     ShaderPushConstants pc {};
     pc.dst_w = dst_w;
@@ -1058,8 +1066,8 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im, VkImage dst, u32 d
         pc.offset[i] = cm.offset[i];
     }
     cmd_.PushConstants(*pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT, pc);
-    const u32 gx = (dst_w + 7) / 8;
-    const u32 gy = (dst_h + 7) / 8;
+    const rstd::uint32_t gx = (dst_w + 7) / 8;
+    const rstd::uint32_t gy = (dst_h + 7) / 8;
     cmd_.Dispatch(gx, gy, 1);
 
     /* Release Y/UV back in GENERAL layout (FFmpeg's next decode submit
@@ -1115,29 +1123,29 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im, VkImage dst, u32 d
      * timeline; main.cpp aliases y/uv to the same sem/value pointer
      * so we deduplicate here to avoid waiting on the same semaphore
      * twice (Vulkan UB). */
-    const bool sem_shared    = (im.y_sem == im.uv_sem);
-    const u64  y_wait_val    = *im.y_sem_val_in_out;
-    const u64  uv_wait_val   = *im.uv_sem_val_in_out;
-    const u64  y_signal_val  = y_wait_val + 1;
-    const u64  uv_signal_val = uv_wait_val + 1;
+    const bool           sem_shared    = (im.y_sem == im.uv_sem);
+    const rstd::uint64_t y_wait_val    = *im.y_sem_val_in_out;
+    const rstd::uint64_t uv_wait_val   = *im.uv_sem_val_in_out;
+    const rstd::uint64_t y_signal_val  = y_wait_val + 1;
+    const rstd::uint64_t uv_signal_val = uv_wait_val + 1;
 
     VkSemaphore          wait_sems[2]   = { im.y_sem, im.uv_sem };
-    u64                  wait_vals[2]   = { y_wait_val, uv_wait_val };
+    rstd::uint64_t       wait_vals[2]   = { y_wait_val, uv_wait_val };
     VkPipelineStageFlags wait_stages[2] = {
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
     };
-    const u32 wait_count = sem_shared ? 1u : 2u;
+    const rstd::uint32_t wait_count = sem_shared ? 1u : 2u;
 
     /* Signal FFmpeg timeline semaphore(s), the converter completion
      * timeline, and the bridge binary semaphore when requested. */
-    auto next_completion_value = completion_value_ + 1;
-    if (next_completion_value == 0) ++next_completion_value;
-    VkSemaphore signal_sems[4] {};
-    u64         signal_vals[4] {};
-    u32         signal_count  = 0;
-    signal_sems[signal_count] = im.y_sem;
-    signal_vals[signal_count] = y_signal_val;
+    auto next_completion_value = completion_value_ + u64(1);
+    if (next_completion_value == u64()) ++next_completion_value;
+    VkSemaphore    signal_sems[4] {};
+    rstd::uint64_t signal_vals[4] {};
+    rstd::uint32_t signal_count = 0;
+    signal_sems[signal_count]   = im.y_sem;
+    signal_vals[signal_count]   = y_signal_val;
     ++signal_count;
     if (! sem_shared) {
         signal_sems[signal_count] = im.uv_sem;
@@ -1150,7 +1158,7 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im, VkImage dst, u32 d
         ++signal_count;
     }
     signal_sems[signal_count] = (*completion_timeline_)->handle();
-    signal_vals[signal_count] = next_completion_value;
+    signal_vals[signal_count] = next_completion_value.to_primitive();
     ++signal_count;
 
     VkTimelineSemaphoreSubmitInfo tsi {};
@@ -1213,8 +1221,9 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im, VkImage dst, u32 d
  * imported VkImage and its memory objects are deferred-destroyed at the
  * *next* convert_drm_prime call (after the wait on done_fence_) so the
  * GPU has fully consumed them. fds are dup'd for Vulkan to own. */
-int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm, VkImage dst, u32 dst_w, u32 dst_h,
-                                  const ColorMatrix& cm, ConvertTarget target, Error* err) {
+int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm, VkImage dst, rstd::uint32_t dst_w,
+                                  rstd::uint32_t dst_h, const ColorMatrix& cm, ConvertTarget target,
+                                  Error* err) {
     if (dst == VK_NULL_HANDLE) {
         fail(err, "convert_drm_prime: dst null");
         return -1;
@@ -1259,15 +1268,15 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm, VkImage dst, u32 dst_
      *   B) 2 layers, 1 plane each (Y=layers[0].planes[0], UV=layers[1].planes[0])
      * We collapse both to a flat planes[0]=Y, planes[1]=UV. */
     struct FlatPlane {
-        u32 object_index;
-        u64 offset;
-        u64 pitch;
+        rstd::uint32_t object_index;
+        rstd::uint64_t offset;
+        rstd::uint64_t pitch;
     };
     FlatPlane flat[2] {};
     int       flat_n = 0;
-    for (u32 li = 0; li < drm.layer_count && flat_n < 2; ++li) {
+    for (rstd::uint32_t li = 0; li < drm.layer_count && flat_n < 2; ++li) {
         const auto& la = drm.layers[li];
-        for (u32 pi = 0; pi < la.plane_count && flat_n < 2; ++pi) {
+        for (rstd::uint32_t pi = 0; pi < la.plane_count && flat_n < 2; ++pi) {
             flat[flat_n].object_index = la.planes[pi].object_index;
             flat[flat_n].offset       = la.planes[pi].offset;
             flat[flat_n].pitch        = la.planes[pi].pitch;
@@ -1279,7 +1288,7 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm, VkImage dst, u32 dst_
         return -1;
     }
 
-    const u64 modifier = drm.objects[0].format_modifier;
+    const rstd::uint64_t modifier = drm.objects[0].format_modifier;
 
     /* Build the multi-plane VkImage with explicit modifier + per-plane
      * layout. DISJOINT lets us bind a separate VkDeviceMemory per plane
@@ -1289,14 +1298,7 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm, VkImage dst, u32 dst_
     vvk::ImageView    y_view;
     vvk::ImageView    uv_view;
     vvk::ImageView    dst_view;
-    int               dup_fds[2] = { -1, -1 };
-    bool              disjoint   = (flat[0].object_index != flat[1].object_index);
-
-    auto cleanup_on_fail = [&]() {
-        for (int i = 0; i < 2; ++i) {
-            if (dup_fds[i] >= 0) rstd::sys::libc::close(dup_fds[i]);
-        }
-    };
+    bool              disjoint = (flat[0].object_index != flat[1].object_index);
 
     {
         VkSubresourceLayout pl[2] {};
@@ -1342,26 +1344,29 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm, VkImage dst, u32 dst_
             fail(err,
                  rstd::format(
                      "vkCreateImage(DRM_PRIME, modifier={}): {}", modifier, vk_result_str(r)));
-            cleanup_on_fail();
             return -1;
         }
     }
 
     /* Per-plane memory import. Vulkan takes ownership of imported fds —
      * dup so the AVFrame can keep its own copy alive for the next pull. */
-    auto import_plane = [&](int plane_idx, u32 obj_idx, VkImageAspectFlagBits aspect) -> bool {
-        const int src_fd = drm.objects[obj_idx].fd;
-        const int dfd    = rstd::sys::libc::dup(src_fd);
-        if (dfd < 0) {
-            fail(err, rstd::format("dup(dma_buf) failed with errno {}", rstd::sys::libc::errno()));
+    auto import_plane =
+        [&](int plane_idx, rstd::uint32_t obj_idx, VkImageAspectFlagBits aspect) -> bool {
+        const int src_fd    = drm.objects[obj_idx].fd;
+        auto      duplicate = rstd::os::fd::BorrowedFd::borrow_raw(src_fd).try_clone_to_owned();
+        if (duplicate.is_err()) {
+            fail(err,
+                 rstd::format("dup(dma_buf) failed: {}",
+                              rstd::move(duplicate).unwrap_err_unchecked()));
             return false;
         }
-        dup_fds[plane_idx] = dfd;
+        auto duplicate_fd = rstd::move(duplicate).unwrap_unchecked();
+        auto raw_fd       = duplicate_fd.as_raw_fd();
 
         VkMemoryFdPropertiesKHR fdp {};
         fdp.sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR;
         if (VkResult r = device_.GetMemoryFdPropertiesKHR(
-                VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, dfd, fdp);
+                VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, raw_fd, fdp);
             r != VK_SUCCESS) {
             fail(err, vk_error("vkGetMemoryFdPropertiesKHR", r));
             return false;
@@ -1376,8 +1381,9 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm, VkImage dst, u32 dst_
         if (disjoint) req_info.pNext = &plane_req;
         const auto req2 = device_.GetImageMemoryRequirements2(req_info);
 
-        const u32 type_bits = req2.memoryRequirements.memoryTypeBits & fdp.memoryTypeBits;
-        const u32 mtype     = pick_memory_type(phys_, type_bits, 0);
+        const rstd::uint32_t type_bits =
+            req2.memoryRequirements.memoryTypeBits & fdp.memoryTypeBits;
+        const rstd::uint32_t mtype = pick_memory_type(phys_, type_bits, 0);
         if (mtype == UINT32_MAX) {
             fail(err, "convert_drm_prime: no compatible memory type for imported DMA-BUF");
             return false;
@@ -1386,7 +1392,7 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm, VkImage dst, u32 dst_
         VkImportMemoryFdInfoKHR ifi {};
         ifi.sType      = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR;
         ifi.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
-        ifi.fd         = dfd;
+        ifi.fd         = raw_fd;
         VkMemoryDedicatedAllocateInfo dai {};
         dai.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO;
         dai.image = *drm_image;
@@ -1400,15 +1406,14 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm, VkImage dst, u32 dst_
             fail(err, vk_error("vkAllocateMemory(import DMA-BUF)", r));
             return false;
         }
-        /* fd is consumed by Vulkan on success — drop our tracked copy. */
-        dup_fds[plane_idx] = -1;
+        /* fd ownership transfers to Vulkan only after a successful import. */
+        (void)rstd::move(duplicate_fd).into_raw_fd();
         return true;
     };
 
     if (disjoint) {
         if (! import_plane(0, flat[0].object_index, VK_IMAGE_ASPECT_PLANE_0_BIT) ||
             ! import_plane(1, flat[1].object_index, VK_IMAGE_ASPECT_PLANE_1_BIT)) {
-            cleanup_on_fail();
             return -1;
         }
         VkBindImagePlaneMemoryInfo bp0 {};
@@ -1428,22 +1433,19 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm, VkImage dst, u32 dst_
         binds[1].image        = *drm_image;
         binds[1].memory       = *plane_mem[1];
         binds[1].memoryOffset = 0;
-        if (VkResult r =
-                device_.BindImageMemory2(slice<VkBindImageMemoryInfo>::from_raw_parts(binds, 2));
+        if (VkResult r = device_.BindImageMemory2(
+                slice<VkBindImageMemoryInfo>::from_raw_parts(binds, usize(2)));
             r != VK_SUCCESS) {
             fail(err, vk_error("vkBindImageMemory2(disjoint)", r));
-            cleanup_on_fail();
             return -1;
         }
     } else {
         /* Both planes share one fd → one allocation, single bind. */
         if (! import_plane(0, flat[0].object_index, VK_IMAGE_ASPECT_COLOR_BIT)) {
-            cleanup_on_fail();
             return -1;
         }
         if (VkResult r = drm_image.BindMemory(*plane_mem[0], 0); r != VK_SUCCESS) {
             fail(err, vk_error("vkBindImageMemory(joint)", r));
-            cleanup_on_fail();
             return -1;
         }
     }
@@ -1462,14 +1464,12 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm, VkImage dst, u32 dst_
         vci.format           = VK_FORMAT_R8_UNORM;
         if (VkResult r = device_.CreateImageView(vci, y_view); r != VK_SUCCESS) {
             fail(err, vk_error("vkCreateImageView(DRM Y)", r));
-            cleanup_on_fail();
             return -1;
         }
         vci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_PLANE_1_BIT;
         vci.format                      = VK_FORMAT_R8G8_UNORM;
         if (VkResult r = device_.CreateImageView(vci, uv_view); r != VK_SUCCESS) {
             fail(err, vk_error("vkCreateImageView(DRM UV)", r));
-            cleanup_on_fail();
             return -1;
         }
         vci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -1477,7 +1477,6 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm, VkImage dst, u32 dst_
         vci.format                      = VK_FORMAT_R8G8B8A8_UNORM;
         if (VkResult r = device_.CreateImageView(vci, dst_view); r != VK_SUCCESS) {
             fail(err, vk_error("vkCreateImageView(DRM dst)", r));
-            cleanup_on_fail();
             return -1;
         }
     }
@@ -1495,15 +1494,15 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm, VkImage dst, u32 dst_
         if (! batch.WriteImage(descriptor_set_.clone(),
                                0,
                                VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                               slice<VkDescriptorImageInfo>::from_raw_parts(&dii_y, 1)) ||
+                               slice<VkDescriptorImageInfo>::from_raw_parts(&dii_y, usize(1))) ||
             ! batch.WriteImage(descriptor_set_.clone(),
                                1,
                                VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                               slice<VkDescriptorImageInfo>::from_raw_parts(&dii_uv, 1)) ||
+                               slice<VkDescriptorImageInfo>::from_raw_parts(&dii_uv, usize(1))) ||
             ! batch.WriteImage(descriptor_set_.clone(),
                                2,
                                VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                               slice<VkDescriptorImageInfo>::from_raw_parts(&dii_d, 1)) ||
+                               slice<VkDescriptorImageInfo>::from_raw_parts(&dii_d, usize(1))) ||
             ! batch.Commit().committed()) {
             fail(err, "failed to update DRM PRIME descriptors");
             return -1;
@@ -1544,7 +1543,7 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm, VkImage dst, u32 dst_
     cmd_.BindDescriptorSets(VK_PIPELINE_BIND_POINT_COMPUTE,
                             *pipeline_layout_,
                             0,
-                            slice<VkDescriptorSet>::from_raw_parts(&descriptor_set, 1),
+                            slice<VkDescriptorSet>::from_raw_parts(&descriptor_set, usize(1)),
                             {});
     ShaderPushConstants pc {};
     pc.dst_w = dst_w;
@@ -1556,8 +1555,8 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm, VkImage dst, u32 dst_
         pc.offset[i] = cm.offset[i];
     }
     cmd_.PushConstants(*pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT, pc);
-    const u32 gx = (dst_w + 7) / 8;
-    const u32 gy = (dst_h + 7) / 8;
+    const rstd::uint32_t gx = (dst_w + 7) / 8;
+    const rstd::uint32_t gy = (dst_h + 7) / 8;
     cmd_.Dispatch(gx, gy, 1);
 
     /* Release dst to FOREIGN queue family for the bridge consumer. The
@@ -1585,11 +1584,11 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm, VkImage dst, u32 dst_
      * wait semaphore: VAAPI submits its own decode work synchronously
      * to the dma-buf via implicit sync; the foreign-queue acquire
      * barrier above is the cross-API sync point. */
-    auto next_completion_value = completion_value_ + 1;
-    if (next_completion_value == 0) ++next_completion_value;
-    VkSemaphore signal_sems[2] = { (*completion_timeline_)->handle(), *signal_sem_ };
-    u64         signal_vals[2] = { next_completion_value, 0 };
-    const auto  signal_count   = target_exports_sync_fd(target) ? 2u : 1u;
+    auto next_completion_value = completion_value_ + u64(1);
+    if (next_completion_value == u64()) ++next_completion_value;
+    VkSemaphore    signal_sems[2] = { (*completion_timeline_)->handle(), *signal_sem_ };
+    rstd::uint64_t signal_vals[2] = { next_completion_value.to_primitive(), 0 };
+    const auto     signal_count   = target_exports_sync_fd(target) ? 2u : 1u;
     VkTimelineSemaphoreSubmitInfo timeline_info {};
     timeline_info.sType                     = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
     timeline_info.signalSemaphoreValueCount = signal_count;
@@ -1630,8 +1629,8 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm, VkImage dst, u32 dst_
     return sync_fd;
 }
 
-void YuvToRgba::publish_submission(VkImage dst, u32 dst_w, u32 dst_h, ConvertTarget target,
-                                   u64 completion_value) {
+void YuvToRgba::publish_submission(VkImage dst, rstd::uint32_t dst_w, rstd::uint32_t dst_h,
+                                   ConvertTarget target, u64 completion_value) {
     completion_value_           = completion_value;
     const auto content_revision = next_content_revision();
     last_submission_            = Some(ConversionSubmission {
@@ -1676,21 +1675,23 @@ vvk::CompletionObservation YuvToRgba::wait_completion(const vvk::SubmissionToken
 // Public Result wrappers around the legacy out-param helpers above.
 // ---------------------------------------------------------------------------
 
-auto YuvToRgba::convert_nv12(VkImage dst, u32 dst_w, u32 dst_h, const u8* nv12, usize nv12_size,
-                             const ColorMatrix& cm) -> Result<int, Error> {
+auto YuvToRgba::convert_nv12(VkImage dst, rstd::uint32_t dst_w, rstd::uint32_t dst_h,
+                             const rstd::uint8_t* nv12, usize nv12_size, const ColorMatrix& cm)
+    -> Result<int, Error> {
     return convert_nv12(dst, dst_w, dst_h, nv12, nv12_size, cm, ConvertTarget::BridgeForeign);
 }
 
-auto YuvToRgba::convert_nv12(VkImage dst, u32 dst_w, u32 dst_h, const u8* nv12, usize nv12_size,
-                             const ColorMatrix& cm, ConvertTarget target) -> Result<int, Error> {
+auto YuvToRgba::convert_nv12(VkImage dst, rstd::uint32_t dst_w, rstd::uint32_t dst_h,
+                             const rstd::uint8_t* nv12, usize nv12_size, const ColorMatrix& cm,
+                             ConvertTarget target) -> Result<int, Error> {
     auto submitted = submit_nv12(dst, dst_w, dst_h, nv12, nv12_size, cm, target);
     if (submitted.is_err()) return Err(rstd::move(submitted).unwrap_err());
     return Ok(rstd::move(submitted).unwrap().sync_fd);
 }
 
-auto YuvToRgba::submit_nv12(VkImage dst, u32 dst_w, u32 dst_h, const u8* nv12, usize nv12_size,
-                            const ColorMatrix& cm, ConvertTarget target)
-    -> Result<ConversionSubmission, Error> {
+auto YuvToRgba::submit_nv12(VkImage dst, rstd::uint32_t dst_w, rstd::uint32_t dst_h,
+                            const rstd::uint8_t* nv12, usize nv12_size, const ColorMatrix& cm,
+                            ConvertTarget target) -> Result<ConversionSubmission, Error> {
     (void)last_submission_.take();
     Error err;
     int   fd = convert_nv12_(dst, dst_w, dst_h, nv12, nv12_size, cm, target, &err);
@@ -1703,22 +1704,24 @@ auto YuvToRgba::submit_nv12(VkImage dst, u32 dst_w, u32 dst_h, const u8* nv12, u
     return Ok(rstd::move(submission));
 }
 
-auto YuvToRgba::convert_av_vk_frame(const VkFrameImports& imports, VkImage dst, u32 dst_w,
-                                    u32 dst_h, const ColorMatrix& cm) -> Result<int, Error> {
+auto YuvToRgba::convert_av_vk_frame(const VkFrameImports& imports, VkImage dst,
+                                    rstd::uint32_t dst_w, rstd::uint32_t dst_h,
+                                    const ColorMatrix& cm) -> Result<int, Error> {
     return convert_av_vk_frame(imports, dst, dst_w, dst_h, cm, ConvertTarget::BridgeForeign);
 }
 
-auto YuvToRgba::convert_av_vk_frame(const VkFrameImports& imports, VkImage dst, u32 dst_w,
-                                    u32 dst_h, const ColorMatrix& cm, ConvertTarget target)
+auto YuvToRgba::convert_av_vk_frame(const VkFrameImports& imports, VkImage dst,
+                                    rstd::uint32_t dst_w, rstd::uint32_t dst_h,
+                                    const ColorMatrix& cm, ConvertTarget target)
     -> Result<int, Error> {
     auto submitted = submit_av_vk_frame(imports, dst, dst_w, dst_h, cm, target);
     if (submitted.is_err()) return Err(rstd::move(submitted).unwrap_err());
     return Ok(rstd::move(submitted).unwrap().sync_fd);
 }
 
-auto YuvToRgba::submit_av_vk_frame(const VkFrameImports& imports, VkImage dst, u32 dst_w, u32 dst_h,
-                                   const ColorMatrix& cm, ConvertTarget target)
-    -> Result<ConversionSubmission, Error> {
+auto YuvToRgba::submit_av_vk_frame(const VkFrameImports& imports, VkImage dst, rstd::uint32_t dst_w,
+                                   rstd::uint32_t dst_h, const ColorMatrix& cm,
+                                   ConvertTarget target) -> Result<ConversionSubmission, Error> {
     (void)last_submission_.take();
     Error err;
     int   fd = convert_av_vk_frame_(imports, dst, dst_w, dst_h, cm, target, &err);
@@ -1731,21 +1734,22 @@ auto YuvToRgba::submit_av_vk_frame(const VkFrameImports& imports, VkImage dst, u
     return Ok(rstd::move(submission));
 }
 
-auto YuvToRgba::convert_drm_prime(const DrmFrameView& drm, VkImage dst, u32 dst_w, u32 dst_h,
-                                  const ColorMatrix& cm) -> Result<int, Error> {
+auto YuvToRgba::convert_drm_prime(const DrmFrameView& drm, VkImage dst, rstd::uint32_t dst_w,
+                                  rstd::uint32_t dst_h, const ColorMatrix& cm)
+    -> Result<int, Error> {
     return convert_drm_prime(drm, dst, dst_w, dst_h, cm, ConvertTarget::BridgeForeign);
 }
 
-auto YuvToRgba::convert_drm_prime(const DrmFrameView& drm, VkImage dst, u32 dst_w, u32 dst_h,
-                                  const ColorMatrix& cm, ConvertTarget target)
+auto YuvToRgba::convert_drm_prime(const DrmFrameView& drm, VkImage dst, rstd::uint32_t dst_w,
+                                  rstd::uint32_t dst_h, const ColorMatrix& cm, ConvertTarget target)
     -> Result<int, Error> {
     auto submitted = submit_drm_prime(drm, dst, dst_w, dst_h, cm, target);
     if (submitted.is_err()) return Err(rstd::move(submitted).unwrap_err());
     return Ok(rstd::move(submitted).unwrap().sync_fd);
 }
 
-auto YuvToRgba::submit_drm_prime(const DrmFrameView& drm, VkImage dst, u32 dst_w, u32 dst_h,
-                                 const ColorMatrix& cm, ConvertTarget target)
+auto YuvToRgba::submit_drm_prime(const DrmFrameView& drm, VkImage dst, rstd::uint32_t dst_w,
+                                 rstd::uint32_t dst_h, const ColorMatrix& cm, ConvertTarget target)
     -> Result<ConversionSubmission, Error> {
     (void)last_submission_.take();
     Error err;

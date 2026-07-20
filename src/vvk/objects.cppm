@@ -11,6 +11,13 @@ import :dispatch;
 
 using namespace rstd::prelude;
 
+namespace
+{
+constexpr auto vk_count(usize value) noexcept -> rstd::uint32_t {
+    return rstd::as_cast<rstd::uint32_t>(value);
+}
+} // namespace
+
 export namespace vvk
 {
 
@@ -56,12 +63,12 @@ public:
     VkResult Submit(slice<VkSubmitInfo> submit_infos,
                     VkFence             fence = VK_NULL_HANDLE) const noexcept {
         return dld->vkQueueSubmit(
-            handle, static_cast<u32>(submit_infos.len()), submit_infos.as_raw_ptr(), fence);
+            handle, vk_count(submit_infos.len()), submit_infos.as_raw_ptr(), fence);
     }
 
     VkResult Submit(const VkSubmitInfo& submit_info,
                     VkFence             fence = VK_NULL_HANDLE) const noexcept {
-        return Submit(slice<VkSubmitInfo>::from_raw_parts(&submit_info, 1), fence);
+        return Submit(slice<VkSubmitInfo>::from_raw_parts(&submit_info, usize(1)), fence);
     }
 
     VkResult Present(const VkPresentInfoKHR& present_info) const noexcept {
@@ -94,7 +101,7 @@ public:
 
     rstd::vec::Vec<VkQueueFamilyProperties> GetQueueFamilyProperties() const;
 
-    VkResult GetSurfaceSupportKHR(u32 queue_family_index, VkSurfaceKHR, bool&) const;
+    VkResult GetSurfaceSupportKHR(rstd::uint32_t queue_family_index, VkSurfaceKHR, bool&) const;
 
     VkResult GetSurfaceCapabilitiesKHR(VkSurfaceKHR, VkSurfaceCapabilitiesKHR&) const noexcept;
 
@@ -120,7 +127,7 @@ class DeviceMemory : public Handle<VkDeviceMemory, VkDevice, DeviceDispatch> {
 public:
     VkResult GetMemoryFdKHR(int*) const;
 
-    VkResult Map(VkDeviceSize offset, VkDeviceSize size, u8** data) const {
+    VkResult Map(VkDeviceSize offset, VkDeviceSize size, rstd::uint8_t** data) const {
         return (dld->vkMapMemory(owner, handle, offset, size, 0, (void**)data));
     }
 
@@ -139,7 +146,7 @@ class Fence : public Handle<VkFence, VkDevice, DeviceDispatch> {
     using Handle<VkFence, VkDevice, DeviceDispatch>::Handle;
 
 public:
-    VkResult Wait(u64 timeout = rstd::numeric_limits<u64>::max()) const noexcept {
+    VkResult Wait(rstd::uint64_t timeout = ~rstd::uint64_t(0)) const noexcept {
         return dld->vkWaitForFences(owner, 1, &handle, true, timeout);
     }
 
@@ -152,11 +159,11 @@ class Semaphore : public Handle<VkSemaphore, VkDevice, DeviceDispatch> {
     using Handle<VkSemaphore, VkDevice, DeviceDispatch>::Handle;
 
 public:
-    VkResult GetCounter(u64* value) const {
+    VkResult GetCounter(rstd::uint64_t* value) const {
         return dld->vkGetSemaphoreCounterValueKHR(owner, handle, value);
     }
 
-    VkResult Wait(u64 value, u64 timeout = rstd::numeric_limits<u64>::max()) const {
+    VkResult Wait(rstd::uint64_t value, rstd::uint64_t timeout = ~rstd::uint64_t(0)) const {
         const VkSemaphoreWaitInfoKHR wait_info {
             .sType          = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO_KHR,
             .pNext          = nullptr,
@@ -179,7 +186,7 @@ public:
                            DeviceDispatch&                 dispatch,
                            const VkPhysicalDeviceFeatures* enabled_features = nullptr);
 
-    Queue GetQueue(u32 family_index) const noexcept;
+    Queue GetQueue(rstd::uint32_t family_index) const noexcept;
 
     VkMemoryRequirements GetImageMemoryRequirements(VkImage image) const noexcept;
     VkMemoryRequirements2
@@ -230,8 +237,9 @@ public:
 
     VkResult WaitIdle() const noexcept { return dld->vkDeviceWaitIdle(handle); }
 
-    VkResult AcquireNextImageKHR(VkSwapchainKHR swapchain, u64 timeout, VkSemaphore semaphore,
-                                 VkFence fence, u32* image_index) const noexcept {
+    VkResult AcquireNextImageKHR(VkSwapchainKHR swapchain, rstd::uint64_t timeout,
+                                 VkSemaphore semaphore, VkFence fence,
+                                 rstd::uint32_t* image_index) const noexcept {
         return dld->vkAcquireNextImageKHR(
             handle, swapchain, timeout, semaphore, fence, image_index);
     }
@@ -260,42 +268,44 @@ public:
 
     void EndRenderPass() const noexcept { dld->vkCmdEndRenderPass(handle); }
 
-    void BeginQuery(VkQueryPool query_pool, u32 query, VkQueryControlFlags flags) const noexcept {
+    void BeginQuery(VkQueryPool query_pool, rstd::uint32_t query,
+                    VkQueryControlFlags flags) const noexcept {
         dld->vkCmdBeginQuery(handle, query_pool, query, flags);
     }
 
-    void EndQuery(VkQueryPool query_pool, u32 query) const noexcept {
+    void EndQuery(VkQueryPool query_pool, rstd::uint32_t query) const noexcept {
         dld->vkCmdEndQuery(handle, query_pool, query);
     }
 
-    void BindDescriptorSets(VkPipelineBindPoint bind_point, VkPipelineLayout layout, u32 first,
-                            slice<VkDescriptorSet> sets,
-                            slice<u32>             dynamic_offsets) const noexcept {
+    void BindDescriptorSets(VkPipelineBindPoint bind_point, VkPipelineLayout layout,
+                            rstd::uint32_t first, slice<VkDescriptorSet> sets,
+                            slice<rstd::uint32_t> dynamic_offsets) const noexcept {
         dld->vkCmdBindDescriptorSets(handle,
                                      bind_point,
                                      layout,
                                      first,
-                                     static_cast<u32>(sets.len()),
+                                     vk_count(sets.len()),
                                      sets.as_raw_ptr(),
-                                     static_cast<u32>(dynamic_offsets.len()),
+                                     vk_count(dynamic_offsets.len()),
                                      dynamic_offsets.as_raw_ptr());
     }
 
-    void PushDescriptorSetKHR(VkPipelineBindPoint bind_point, VkPipelineLayout layout, u32 set,
+    void PushDescriptorSetKHR(VkPipelineBindPoint bind_point, VkPipelineLayout layout,
+                              rstd::uint32_t              set,
                               slice<VkWriteDescriptorSet> wsets) const noexcept {
-        rstd_assert(wsets[0].sType == VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET);
+        rstd_assert(wsets[usize()].sType == VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET);
         dld->vkCmdPushDescriptorSetKHR(
-            handle, bind_point, layout, set, static_cast<u32>(wsets.len()), wsets.as_raw_ptr());
+            handle, bind_point, layout, set, vk_count(wsets.len()), wsets.as_raw_ptr());
     }
 
-    void PushDescriptorSetKHR(VkPipelineBindPoint bind_point, VkPipelineLayout layout, u32 set,
-                              const VkWriteDescriptorSet& wset) const noexcept {
+    void PushDescriptorSetKHR(VkPipelineBindPoint bind_point, VkPipelineLayout layout,
+                              rstd::uint32_t set, const VkWriteDescriptorSet& wset) const noexcept {
         PushDescriptorSetKHR(
-            bind_point, layout, set, slice<VkWriteDescriptorSet>::from_raw_parts(&wset, 1));
+            bind_point, layout, set, slice<VkWriteDescriptorSet>::from_raw_parts(&wset, usize(1)));
     }
 
     void PushDescriptorSetWithTemplateKHR(VkDescriptorUpdateTemplateKHR update_template,
-                                          VkPipelineLayout layout, u32 set,
+                                          VkPipelineLayout layout, rstd::uint32_t set,
                                           const void* data) const noexcept {
         dld->vkCmdPushDescriptorSetWithTemplateKHR(handle, update_template, layout, set, data);
     }
@@ -309,48 +319,48 @@ public:
         dld->vkCmdBindIndexBuffer(handle, buffer, offset, index_type);
     }
 
-    void BindVertexBuffers(u32 first, u32 count, const VkBuffer* buffers,
+    void BindVertexBuffers(rstd::uint32_t first, rstd::uint32_t count, const VkBuffer* buffers,
                            const VkDeviceSize* offsets) const noexcept {
         dld->vkCmdBindVertexBuffers(handle, first, count, buffers, offsets);
     }
 
-    void BindVertexBuffer(u32 binding, VkBuffer buffer, VkDeviceSize offset) const noexcept {
+    void BindVertexBuffer(rstd::uint32_t binding, VkBuffer buffer,
+                          VkDeviceSize offset) const noexcept {
         BindVertexBuffers(binding, 1, &buffer, &offset);
     }
 
-    void Draw(u32 vertex_count, u32 instance_count, u32 first_vertex,
-              u32 first_instance) const noexcept {
+    void Draw(rstd::uint32_t vertex_count, rstd::uint32_t instance_count,
+              rstd::uint32_t first_vertex, rstd::uint32_t first_instance) const noexcept {
         dld->vkCmdDraw(handle, vertex_count, instance_count, first_vertex, first_instance);
     }
 
-    void DrawIndexed(u32 index_count, u32 instance_count, u32 first_index, i32 vertex_offset,
-                     u32 first_instance) const noexcept {
+    void DrawIndexed(rstd::uint32_t index_count, rstd::uint32_t instance_count,
+                     rstd::uint32_t first_index, rstd::int32_t vertex_offset,
+                     rstd::uint32_t first_instance) const noexcept {
         dld->vkCmdDrawIndexed(
             handle, index_count, instance_count, first_index, vertex_offset, first_instance);
     }
 
     void ClearColorImage(VkImage image, VkImageLayout imageLayout, const VkClearColorValue* pColor,
                          slice<VkImageSubresourceRange> ranges) const noexcept {
-        return dld->vkCmdClearColorImage(handle,
-                                         image,
-                                         imageLayout,
-                                         pColor,
-                                         static_cast<u32>(ranges.len()),
-                                         ranges.as_raw_ptr());
+        return dld->vkCmdClearColorImage(
+            handle, image, imageLayout, pColor, vk_count(ranges.len()), ranges.as_raw_ptr());
     }
 
     void ClearColorImage(VkImage image, VkImageLayout image_layout, const VkClearColorValue* color,
                          const VkImageSubresourceRange& range) const noexcept {
-        ClearColorImage(
-            image, image_layout, color, slice<VkImageSubresourceRange>::from_raw_parts(&range, 1));
+        ClearColorImage(image,
+                        image_layout,
+                        color,
+                        slice<VkImageSubresourceRange>::from_raw_parts(&range, usize(1)));
     }
 
     void ClearAttachments(slice<VkClearAttachment> attachments,
                           slice<VkClearRect>       rects) const noexcept {
         dld->vkCmdClearAttachments(handle,
-                                   static_cast<u32>(attachments.len()),
+                                   vk_count(attachments.len()),
                                    attachments.as_raw_ptr(),
-                                   static_cast<u32>(rects.len()),
+                                   vk_count(rects.len()),
                                    rects.as_raw_ptr());
     }
 
@@ -362,7 +372,7 @@ public:
                             src_layout,
                             dst_image,
                             dst_layout,
-                            static_cast<u32>(regions.len()),
+                            vk_count(regions.len()),
                             regions.as_raw_ptr(),
                             filter);
     }
@@ -374,7 +384,7 @@ public:
                   src_layout,
                   dst_image,
                   dst_layout,
-                  slice<VkImageBlit>::from_raw_parts(&region, 1),
+                  slice<VkImageBlit>::from_raw_parts(&region, usize(1)),
                   filter);
     }
 
@@ -385,7 +395,7 @@ public:
                                src_layout,
                                dst_image,
                                dst_layout,
-                               static_cast<u32>(regions.len()),
+                               vk_count(regions.len()),
                                regions.as_raw_ptr());
     }
 
@@ -395,10 +405,12 @@ public:
                      src_layout,
                      dst_image,
                      dst_layout,
-                     slice<VkImageResolve>::from_raw_parts(&region, 1));
+                     slice<VkImageResolve>::from_raw_parts(&region, usize(1)));
     }
 
-    void Dispatch(u32 x, u32 y, u32 z) const noexcept { dld->vkCmdDispatch(handle, x, y, z); }
+    void Dispatch(rstd::uint32_t x, rstd::uint32_t y, rstd::uint32_t z) const noexcept {
+        dld->vkCmdDispatch(handle, x, y, z);
+    }
 
     void PipelineBarrier(VkPipelineStageFlags src_stage_mask, VkPipelineStageFlags dst_stage_mask,
                          VkDependencyFlags dependency_flags, slice<VkMemoryBarrier> memory_barriers,
@@ -408,11 +420,11 @@ public:
                                   src_stage_mask,
                                   dst_stage_mask,
                                   dependency_flags,
-                                  static_cast<u32>(memory_barriers.len()),
+                                  vk_count(memory_barriers.len()),
                                   memory_barriers.as_raw_ptr(),
-                                  static_cast<u32>(buffer_barriers.len()),
+                                  vk_count(buffer_barriers.len()),
                                   buffer_barriers.as_raw_ptr(),
-                                  static_cast<u32>(image_barriers.len()),
+                                  vk_count(image_barriers.len()),
                                   image_barriers.as_raw_ptr());
     }
 
@@ -431,7 +443,7 @@ public:
         PipelineBarrier(src_stage_mask,
                         dst_stage_mask,
                         dependency_flags,
-                        slice<VkMemoryBarrier>::from_raw_parts(&memory_barrier, 1),
+                        slice<VkMemoryBarrier>::from_raw_parts(&memory_barrier, usize(1)),
                         {},
                         {});
     }
@@ -443,7 +455,7 @@ public:
                         dst_stage_mask,
                         dependency_flags,
                         {},
-                        slice<VkBufferMemoryBarrier>::from_raw_parts(&buffer_barrier, 1),
+                        slice<VkBufferMemoryBarrier>::from_raw_parts(&buffer_barrier, usize(1)),
                         {});
     }
 
@@ -455,7 +467,7 @@ public:
                         dependency_flags,
                         {},
                         {},
-                        slice<VkImageMemoryBarrier>::from_raw_parts(&image_barrier, 1));
+                        slice<VkImageMemoryBarrier>::from_raw_parts(&image_barrier, usize(1)));
     }
 
     void CopyBufferToImage(VkBuffer src_buffer, VkImage dst_image, VkImageLayout dst_image_layout,
@@ -464,7 +476,7 @@ public:
                                     src_buffer,
                                     dst_image,
                                     dst_image_layout,
-                                    static_cast<u32>(regions.len()),
+                                    vk_count(regions.len()),
                                     regions.as_raw_ptr());
     }
 
@@ -473,18 +485,18 @@ public:
         CopyBufferToImage(src_buffer,
                           dst_image,
                           dst_image_layout,
-                          slice<VkBufferImageCopy>::from_raw_parts(&region, 1));
+                          slice<VkBufferImageCopy>::from_raw_parts(&region, usize(1)));
     }
 
     void CopyBuffer(VkBuffer src_buffer, VkBuffer dst_buffer,
                     slice<VkBufferCopy> regions) const noexcept {
         dld->vkCmdCopyBuffer(
-            handle, src_buffer, dst_buffer, static_cast<u32>(regions.len()), regions.as_raw_ptr());
+            handle, src_buffer, dst_buffer, vk_count(regions.len()), regions.as_raw_ptr());
     }
 
     void CopyBuffer(VkBuffer src_buffer, VkBuffer dst_buffer,
                     const VkBufferCopy& region) const noexcept {
-        CopyBuffer(src_buffer, dst_buffer, slice<VkBufferCopy>::from_raw_parts(&region, 1));
+        CopyBuffer(src_buffer, dst_buffer, slice<VkBufferCopy>::from_raw_parts(&region, usize(1)));
     }
 
     void CopyImage(VkImage src_image, VkImageLayout src_layout, VkImage dst_image,
@@ -494,7 +506,7 @@ public:
                             src_layout,
                             dst_image,
                             dst_layout,
-                            static_cast<u32>(regions.len()),
+                            vk_count(regions.len()),
                             regions.as_raw_ptr());
     }
 
@@ -504,7 +516,7 @@ public:
                   src_layout,
                   dst_image,
                   dst_layout,
-                  slice<VkImageCopy>::from_raw_parts(&region, 1));
+                  slice<VkImageCopy>::from_raw_parts(&region, usize(1)));
     }
 
     void CopyImageToBuffer(VkImage src_image, VkImageLayout src_layout, VkBuffer dst_buffer,
@@ -513,7 +525,7 @@ public:
                                     src_image,
                                     src_layout,
                                     dst_buffer,
-                                    static_cast<u32>(regions.len()),
+                                    vk_count(regions.len()),
                                     regions.as_raw_ptr());
     }
 
@@ -522,16 +534,16 @@ public:
         CopyImageToBuffer(src_image,
                           src_layout,
                           dst_buffer,
-                          slice<VkBufferImageCopy>::from_raw_parts(&region, 1));
+                          slice<VkBufferImageCopy>::from_raw_parts(&region, usize(1)));
     }
 
     void FillBuffer(VkBuffer dst_buffer, VkDeviceSize dst_offset, VkDeviceSize size,
-                    u32 data) const noexcept {
+                    rstd::uint32_t data) const noexcept {
         dld->vkCmdFillBuffer(handle, dst_buffer, dst_offset, size, data);
     }
 
-    void PushConstants(VkPipelineLayout layout, VkShaderStageFlags flags, u32 offset, u32 size,
-                       const void* values) const noexcept {
+    void PushConstants(VkPipelineLayout layout, VkShaderStageFlags flags, rstd::uint32_t offset,
+                       rstd::uint32_t size, const void* values) const noexcept {
         dld->vkCmdPushConstants(handle, layout, flags, offset, size, values);
     }
 
@@ -539,40 +551,42 @@ public:
     void PushConstants(VkPipelineLayout layout, VkShaderStageFlags flags,
                        const T& data) const noexcept {
         static_assert(rstd::mtp::triv_copy<T>, "<data> is not trivially copyable");
-        dld->vkCmdPushConstants(handle, layout, flags, 0, static_cast<u32>(sizeof(T)), &data);
+        dld->vkCmdPushConstants(
+            handle, layout, flags, 0, static_cast<rstd::uint32_t>(sizeof(T)), &data);
     }
 
-    void SetViewport(u32 first, slice<VkViewport> viewports) const noexcept {
-        dld->vkCmdSetViewport(
-            handle, first, static_cast<u32>(viewports.len()), viewports.as_raw_ptr());
+    void SetViewport(rstd::uint32_t first, slice<VkViewport> viewports) const noexcept {
+        dld->vkCmdSetViewport(handle, first, vk_count(viewports.len()), viewports.as_raw_ptr());
     }
 
-    void SetViewport(u32 first, const VkViewport& viewport) const noexcept {
-        SetViewport(first, slice<VkViewport>::from_raw_parts(&viewport, 1));
+    void SetViewport(rstd::uint32_t first, const VkViewport& viewport) const noexcept {
+        SetViewport(first, slice<VkViewport>::from_raw_parts(&viewport, usize(1)));
     }
 
-    void SetScissor(u32 first, slice<VkRect2D> scissors) const noexcept {
-        dld->vkCmdSetScissor(
-            handle, first, static_cast<u32>(scissors.len()), scissors.as_raw_ptr());
+    void SetScissor(rstd::uint32_t first, slice<VkRect2D> scissors) const noexcept {
+        dld->vkCmdSetScissor(handle, first, vk_count(scissors.len()), scissors.as_raw_ptr());
     }
 
-    void SetScissor(u32 first, const VkRect2D& scissor) const noexcept {
-        SetScissor(first, slice<VkRect2D>::from_raw_parts(&scissor, 1));
+    void SetScissor(rstd::uint32_t first, const VkRect2D& scissor) const noexcept {
+        SetScissor(first, slice<VkRect2D>::from_raw_parts(&scissor, usize(1)));
     }
 
     void SetBlendConstants(const float blend_constants[4]) const noexcept {
         dld->vkCmdSetBlendConstants(handle, blend_constants);
     }
 
-    void SetStencilCompareMask(VkStencilFaceFlags face_mask, u32 compare_mask) const noexcept {
+    void SetStencilCompareMask(VkStencilFaceFlags face_mask,
+                               rstd::uint32_t     compare_mask) const noexcept {
         dld->vkCmdSetStencilCompareMask(handle, face_mask, compare_mask);
     }
 
-    void SetStencilReference(VkStencilFaceFlags face_mask, u32 reference) const noexcept {
+    void SetStencilReference(VkStencilFaceFlags face_mask,
+                             rstd::uint32_t     reference) const noexcept {
         dld->vkCmdSetStencilReference(handle, face_mask, reference);
     }
 
-    void SetStencilWriteMask(VkStencilFaceFlags face_mask, u32 write_mask) const noexcept {
+    void SetStencilWriteMask(VkStencilFaceFlags face_mask,
+                             rstd::uint32_t     write_mask) const noexcept {
         dld->vkCmdSetStencilWriteMask(handle, face_mask, write_mask);
     }
 
@@ -593,25 +607,25 @@ public:
                     slice<VkBufferMemoryBarrier> buffer_barriers,
                     slice<VkImageMemoryBarrier>  image_barriers) const noexcept {
         dld->vkCmdWaitEvents(handle,
-                             static_cast<u32>(events.len()),
+                             vk_count(events.len()),
                              events.as_raw_ptr(),
                              src_stage_mask,
                              dst_stage_mask,
-                             static_cast<u32>(memory_barriers.len()),
+                             vk_count(memory_barriers.len()),
                              memory_barriers.as_raw_ptr(),
-                             static_cast<u32>(buffer_barriers.len()),
+                             vk_count(buffer_barriers.len()),
                              buffer_barriers.as_raw_ptr(),
-                             static_cast<u32>(image_barriers.len()),
+                             vk_count(image_barriers.len()),
                              image_barriers.as_raw_ptr());
     }
 
     void BeginDebugUtilsLabelEXT(const char* label, slice<float> color) const noexcept {
-        rstd_assert(color.len() == 4);
+        rstd_assert(color.len() == usize(4));
         const VkDebugUtilsLabelEXT label_info {
             .sType      = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT,
             .pNext      = nullptr,
             .pLabelName = label,
-            .color { color[0], color[1], color[2], color[3] },
+            .color { color[usize()], color[usize(1)], color[usize(2)], color[usize(3)] },
         };
         dld->vkCmdBeginDebugUtilsLabelEXT(handle, &label_info);
     }

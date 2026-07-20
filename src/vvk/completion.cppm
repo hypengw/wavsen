@@ -8,7 +8,7 @@ using namespace rstd::prelude;
 export namespace vvk
 {
 
-using HandleIdentity = usizeptr;
+using HandleIdentity = rstd::uintptr_t;
 
 template<typename Handle>
 HandleIdentity OpaqueHandleIdentity(Handle handle) noexcept {
@@ -29,13 +29,13 @@ Handle HandleFromIdentity(HandleIdentity identity) noexcept {
 }
 
 struct QueueDomain {
-    HandleIdentity device { 0 };
-    HandleIdentity queue { 0 };
-    u64            generation { 0 };
-    u32            family { VK_QUEUE_FAMILY_IGNORED };
-    u32            index { 0 };
+    HandleIdentity device {};
+    HandleIdentity queue {};
+    u64            generation {};
+    u32            family { u32(VK_QUEUE_FAMILY_IGNORED) };
+    u32            index {};
 
-    bool valid() const noexcept { return device != 0 && queue != 0 && generation != 0; }
+    bool valid() const noexcept { return device != 0 && queue != 0 && generation != u64(); }
 
     friend bool operator==(const QueueDomain&, const QueueDomain&) = default;
 };
@@ -60,10 +60,10 @@ enum class CompletionPrimitive
 struct CompletionSource {
     QueueDomain         queue;
     CompletionPrimitive primitive { CompletionPrimitive::TimelineSemaphore };
-    HandleIdentity      handle { 0 };
-    u64                 generation { 0 };
+    HandleIdentity      handle {};
+    u64                 generation {};
 
-    bool valid() const noexcept { return queue.valid() && handle != 0 && generation != 0; }
+    bool valid() const noexcept { return queue.valid() && handle != 0 && generation != u64(); }
 
     friend bool operator==(const CompletionSource&, const CompletionSource&) = default;
 };
@@ -90,9 +90,9 @@ inline CompletionSource MakeFenceCompletionSource(QueueDomain queue, VkFence fen
 
 struct SubmissionToken {
     CompletionSource source;
-    u64              value { 0 };
+    u64              value {};
 
-    bool valid() const noexcept { return source.valid() && value != 0; }
+    bool valid() const noexcept { return source.valid() && value != u64(); }
 
     friend bool operator==(const SubmissionToken&, const SubmissionToken&) = default;
 };
@@ -135,10 +135,10 @@ public:
     }
 
     static TimelineSemaphoreCreateResult
-    Create(VkDevice device, QueueDomain queue, u64 source_generation, u64 initial_value = 0,
+    Create(VkDevice device, QueueDomain queue, u64 source_generation, u64 initial_value = u64(),
            TimelineSemaphoreDeviceDispatch dispatch = TimelineSemaphoreDeviceDispatch::Vulkan()) {
         if (device == VK_NULL_HANDLE || ! queue.valid() ||
-            queue.device != OpaqueHandleIdentity(device) || source_generation == 0 ||
+            queue.device != OpaqueHandleIdentity(device) || source_generation == u64() ||
             ! dispatch.valid()) {
             return { .api_result = VK_ERROR_INITIALIZATION_FAILED };
         }
@@ -147,7 +147,7 @@ public:
             .sType         = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
             .pNext         = nullptr,
             .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE,
-            .initialValue  = initial_value,
+            .initialValue  = initial_value.to_primitive(),
         };
         VkSemaphoreCreateInfo create_info {
             .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
@@ -201,7 +201,7 @@ struct TimelineExecutionDependency {
     VkSemaphore wait_semaphore() const noexcept {
         return valid() ? (*timeline)->handle() : VK_NULL_HANDLE;
     }
-    u64         wait_value() const noexcept { return valid() ? completion.value : 0; }
+    u64         wait_value() const noexcept { return valid() ? completion.value : u64(); }
     QueueDomain signal_queue() const noexcept {
         return valid() ? completion.source.queue : QueueDomain {};
     }
@@ -323,8 +323,8 @@ private:
 
 class TimelineCompletionObserver {
 public:
-    using QueryCallback = VkResult (*)(VkDevice, VkSemaphore, u64*);
-    using WaitCallback  = VkResult (*)(VkDevice, VkSemaphore, u64, u64);
+    using QueryCallback = VkResult (*)(VkDevice, VkSemaphore, rstd::uint64_t*);
+    using WaitCallback  = VkResult (*)(VkDevice, VkSemaphore, rstd::uint64_t, rstd::uint64_t);
 
     TimelineCompletionObserver(VkDevice device, QueryCallback get_counter,
                                WaitCallback wait) noexcept
@@ -348,15 +348,15 @@ public:
     CompletionObservation Poll(const CompletionSource& source) const noexcept {
         if (! Matches(source) || m_get_counter == nullptr) return InvalidObservation();
 
-        u64        value = 0;
-        const auto result =
+        rstd::uint64_t value = 0;
+        const auto     result =
             m_get_counter(m_device, HandleFromIdentity<VkSemaphore>(source.handle), &value);
         if (result == VK_ERROR_DEVICE_LOST) return DeviceLostObservation(result);
         if (result != VK_SUCCESS) return ApiErrorObservation(result);
         return CompletionObservation {
             .status     = CompletionObservationStatus::Observed,
             .api_result = result,
-            .completed  = value == 0 ? SubmissionToken {} : SubmissionToken { source, value },
+            .completed  = value == 0 ? SubmissionToken {} : SubmissionToken { source, u64(value) },
         };
     }
 
@@ -369,17 +369,19 @@ public:
         const auto semaphore = HandleFromIdentity<VkSemaphore>(required.source.handle);
         VkResult   result    = VK_ERROR_INITIALIZATION_FAILED;
         if (m_wait != nullptr) {
-            result = m_wait(m_device, semaphore, required.value, timeout_ns);
+            result = m_wait(
+                m_device, semaphore, required.value.to_primitive(), timeout_ns.to_primitive());
         } else {
+            const auto                   required_value = required.value.to_primitive();
             const VkSemaphoreWaitInfoKHR wait_info {
                 .sType          = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO_KHR,
                 .pNext          = nullptr,
                 .flags          = 0,
                 .semaphoreCount = 1,
                 .pSemaphores    = &semaphore,
-                .pValues        = &required.value,
+                .pValues        = &required_value,
             };
-            result = m_vk_wait(m_device, &wait_info, timeout_ns);
+            result = m_vk_wait(m_device, &wait_info, timeout_ns.to_primitive());
         }
         if (result == VK_TIMEOUT) {
             return CompletionObservation {

@@ -32,8 +32,8 @@ public:
     using Duration  = rstd::time::Duration;
     using TimePoint = rstd::time::Instant;
 
-    explicit Presenter(Duration max_lag   = Duration::from_millis(250),
-                       Duration max_sleep = Duration::from_secs(1))
+    explicit Presenter(Duration max_lag   = Duration::from_millis(u64(250)),
+                       Duration max_sleep = Duration::from_secs(u64(1)))
         : max_lag_(max_lag), max_sleep_(max_sleep) {}
 
     // Force the next call to re-prime the baseline. Useful when the
@@ -41,7 +41,7 @@ public:
     void reset() {
         primed_               = false;
         t0_pts_               = -1.0;
-        external_drop_streak_ = 0;
+        external_drop_streak_ = u32();
     }
 
     template<typename F>
@@ -73,12 +73,12 @@ public:
                     // frame through to break the infinite-drop loop and
                     // re-converge on a closer PTS over the next frames.
                     if (++external_drop_streak_ >= kExternalDropStreakReset) {
-                        external_drop_streak_ = 0;
+                        external_drop_streak_ = u32();
                         return true;
                     }
                     return false;
                 }
-                external_drop_streak_ = 0;
+                external_drop_streak_ = u32();
                 if (skew > max_sleep_s) return true;
                 if (skew > 0.0) {
                     rstd::thread::sleep(Duration::from_secs_f64(skew));
@@ -124,14 +124,14 @@ private:
     // External-clock drop streak before forcing one present-through.
     // 30 ≈ 1 s @ 30 fps — long enough to ride out a real backpressure
     // burst, short enough that A/V doesn't drift past noticeable.
-    static constexpr u32 kExternalDropStreakReset = 30;
+    static constexpr u32 kExternalDropStreakReset { 30 };
 
     Duration                                       max_lag_;
     Duration                                       max_sleep_;
     TimePoint                                      t0_wall_ {};
     double                                         t0_pts_ { -1.0 };
     bool                                           primed_ { false };
-    u32                                            external_drop_streak_ { 0 };
+    u32                                            external_drop_streak_ {};
     Option<rstd::boxed::Box<dyn<FnMut<double()>>>> clock_fn_;
 };
 

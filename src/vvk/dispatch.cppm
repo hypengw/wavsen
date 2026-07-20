@@ -173,7 +173,7 @@ struct DeviceDispatch : InstanceDispatch {
 template<typename THandle, typename Type = typename THandle::handle_type>
 auto ToVector(slice<THandle> handles) -> rstd::vec::Vec<Type> {
     auto res = rstd::vec::Vec<Type>::with_capacity(handles.len());
-    for (usize i = 0; i < handles.len(); ++i) {
+    for (usize i {}; i < handles.len(); ++i) {
         auto value = *handles[i];
         res.push(rstd::move(value));
     }

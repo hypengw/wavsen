@@ -1,6 +1,7 @@
 module wavsen.video;
 
 import rstd;
+import rstd.cppstd;
 import rstd.log;
 import vulkan;
 import :vk_device;
@@ -86,7 +87,7 @@ auto av_err_str(int rc) -> rstd::string::String;
 /* Translate FFmpeg's colorspace/range enums into our ColorSpace /
  * ColorRange ints (which the public Nv12Frame / VkFrameView carry).
  * Unknowns default to BT.709 limited — the most common case. */
-u32 map_colorspace(int cs) {
+rstd::uint32_t map_colorspace(int cs) {
     switch (cs) {
     case AVCOL_SPC_BT709: return 0;
     case AVCOL_SPC_BT470BG: // PAL / BT.601 625
@@ -96,7 +97,7 @@ u32 map_colorspace(int cs) {
     default: return 0;
     }
 }
-u32 map_range(int r) { return (r == AVCOL_RANGE_JPEG) ? 1u : 0u; }
+rstd::uint32_t map_range(int r) { return (r == AVCOL_RANGE_JPEG) ? 1u : 0u; }
 
 /* `get_format` callback: prefer AV_PIX_FMT_VULKAN whenever the codec
  * offers it; fall back to whatever FFmpeg picks by default otherwise.
@@ -211,14 +212,14 @@ AVBufferRef* make_shared_vulkan_hwdevice(const Producer& vk, Error* err) {
 
     auto iexts                       = vk.enabled_instance_extensions();
     auto dexts                       = vk.enabled_device_extensions();
-    vctx->enabled_inst_extensions    = iexts.len() == 0 ? nullptr : iexts.as_raw_ptr();
-    vctx->nb_enabled_inst_extensions = static_cast<int>(iexts.len());
-    vctx->enabled_dev_extensions     = dexts.len() == 0 ? nullptr : dexts.as_raw_ptr();
-    vctx->nb_enabled_dev_extensions  = static_cast<int>(dexts.len());
+    vctx->enabled_inst_extensions    = iexts.is_empty() ? nullptr : iexts.as_raw_ptr();
+    vctx->nb_enabled_inst_extensions = static_cast<int>(iexts.len().to_primitive());
+    vctx->enabled_dev_extensions     = dexts.is_empty() ? nullptr : dexts.as_raw_ptr();
+    vctx->nb_enabled_dev_extensions  = static_cast<int>(dexts.len().to_primitive());
 
     auto qfs    = vk.queue_families();
     vctx->nb_qf = 0;
-    for (usize i = 0; i < qfs.len(); ++i) {
+    for (usize i {}; i < qfs.len(); ++i) {
         const auto& q = qfs[i];
         if (vctx->nb_qf >= static_cast<int>(sizeof(vctx->qf) / sizeof(vctx->qf[0]))) break;
         AVVulkanDeviceQueueFamily entry {};
@@ -292,7 +293,7 @@ struct VideoDecoder::State {
          * here in case avformat_close_input touches pb. */
         fmt.reset();
         if (avio_ctx) {
-            u8* buf = avio_ctx->buffer;
+            rstd::uint8_t* buf = avio_ctx->buffer;
             avio_context_free(&avio_ctx);
             if (buf) av_free(buf);
         }
@@ -306,8 +307,8 @@ VideoDecoder::StateOwner::~StateOwner() {
 namespace
 {
 
-bool ensure_sws(VideoDecoder::State& st, int src_w, int src_h, AVPixelFormat src_fmt, u32 target_w,
-                u32 target_h) {
+bool ensure_sws(VideoDecoder::State& st, int src_w, int src_h, AVPixelFormat src_fmt,
+                rstd::uint32_t target_w, rstd::uint32_t target_h) {
     if (st.sws && st.sws_src_w == src_w && st.sws_src_h == src_h && st.sws_src_fmt == src_fmt) {
         return true;
     }
@@ -341,7 +342,8 @@ bool seek_to_start(VideoDecoder::State& st) {
 
 namespace
 {
-bool probe_native_impl(ref<str> path, u32* native_width, u32* native_height, Error* err) {
+bool probe_native_impl(ref<str> path, rstd::uint32_t* native_width, rstd::uint32_t* native_height,
+                       Error* err) {
     *native_width             = 0;
     *native_height            = 0;
     AVFormatContext* raw_fmt  = nullptr;
@@ -366,8 +368,8 @@ bool probe_native_impl(ref<str> path, u32* native_width, u32* native_height, Err
         fail(err, "video stream has invalid native dimensions");
         return false;
     }
-    *native_width  = static_cast<u32>(par->width);
-    *native_height = static_cast<u32>(par->height);
+    *native_width  = static_cast<rstd::uint32_t>(par->width);
+    *native_height = static_cast<rstd::uint32_t>(par->height);
     return true;
 }
 } // namespace
@@ -375,14 +377,14 @@ bool probe_native_impl(ref<str> path, u32* native_width, u32* native_height, Err
 /* AVIOContext shims that bounce libavformat IO into an IInputStream. */
 namespace
 {
-int avio_read_shim(void* opaque, u8* buf, int buf_size) {
+int avio_read_shim(void* opaque, rstd::uint8_t* buf, int buf_size) {
     auto* state = static_cast<VideoDecoder::State*>(opaque);
     int   n     = state->input_stream->as_mut_ptr()->read(buf, buf_size);
     if (n == 0) return AVERROR_EOF;
-    if (n < 0) return AVERROR(rstd::sys::libc::EIO);
+    if (n < 0) return AVERROR(rstd::cppstd::IO_ERROR);
     return n;
 }
-i64 avio_seek_shim(void* opaque, i64 offset, int whence) {
+rstd::int64_t avio_seek_shim(void* opaque, rstd::int64_t offset, int whence) {
     auto* state = static_cast<VideoDecoder::State*>(opaque);
     return state->input_stream->as_mut_ptr()->seek(offset, whence);
 }
@@ -391,15 +393,15 @@ i64 avio_seek_shim(void* opaque, i64 offset, int whence) {
 VideoDecoder::~VideoDecoder() = default;
 
 auto VideoDecoder::probe_native(ref<str> path) -> Result<ProbeResult, Error> {
-    Error err;
-    u32   width  = 0;
-    u32   height = 0;
+    Error          err;
+    rstd::uint32_t width  = 0;
+    rstd::uint32_t height = 0;
     if (! probe_native_impl(path, &width, &height, &err)) return Err(rstd::move(err));
     return Ok(ProbeResult { width, height });
 }
 
-auto VideoDecoder::open(ref<str> path, u32 target_width, u32 target_height, bool loop)
-    -> Result<rstd::boxed::Box<VideoDecoder>, Error> {
+auto VideoDecoder::open(ref<str> path, rstd::uint32_t target_width, rstd::uint32_t target_height,
+                        bool loop) -> Result<rstd::boxed::Box<VideoDecoder>, Error> {
     Error err;
     auto  decoder = build_internal(InputSpec { rstd::string::String::make(path), None() },
                                    target_width,
@@ -412,8 +414,9 @@ auto VideoDecoder::open(ref<str> path, u32 target_width, u32 target_height, bool
     return Ok(rstd::move(decoder).unwrap());
 }
 
-auto VideoDecoder::open_with_vk(ref<str> path, u32 target_width, u32 target_height, bool loop,
-                                const Producer& producer, const OpenOpts& opts)
+auto VideoDecoder::open_with_vk(ref<str> path, rstd::uint32_t target_width,
+                                rstd::uint32_t target_height, bool loop, const Producer& producer,
+                                const OpenOpts& opts)
     -> Result<rstd::boxed::Box<VideoDecoder>, Error> {
     /* Resolve trial order. Auto = Vulkan first, then VAAPI; explicit
      * single-mode skips the others; None goes straight to sw. */
@@ -485,9 +488,9 @@ auto VideoDecoder::open_with_vk(ref<str> path, u32 target_width, u32 target_heig
     return Ok(rstd::move(decoder).unwrap());
 }
 
-auto VideoDecoder::open_from_stream(InputStreamFactory make_stream, u32 target_width,
-                                    u32 target_height, bool loop, const Producer* producer,
-                                    const OpenOpts& opts)
+auto VideoDecoder::open_from_stream(InputStreamFactory make_stream, rstd::uint32_t target_width,
+                                    rstd::uint32_t target_height, bool loop,
+                                    const Producer* producer, const OpenOpts& opts)
     -> Result<rstd::boxed::Box<VideoDecoder>, Error> {
     auto fresh_stream = [&] {
         return make_stream.as_mut_ptr()->operator()();
@@ -578,7 +581,8 @@ auto VideoDecoder::open_from_stream(InputStreamFactory make_stream, u32 target_w
     return Ok(rstd::move(decoder).unwrap());
 }
 
-auto VideoDecoder::build_internal(InputSpec input, u32 target_width, u32 target_height, bool loop,
+auto VideoDecoder::build_internal(InputSpec input, rstd::uint32_t target_width,
+                                  rstd::uint32_t target_height, bool loop,
                                   void* prebuilt_hwdevice_value, FrameKind requested_kind,
                                   Error* err) -> Option<rstd::boxed::Box<VideoDecoder>> {
     AVBufferRef* prebuilt_hwdevice = static_cast<AVBufferRef*>(prebuilt_hwdevice_value);
@@ -825,8 +829,8 @@ int VideoDecoder::next_vk_frame_(VkFrameView& out, Error* err) {
             out.sem_value    = vkf->sem_value;
             out.queue_family = vkf->queue_family;
             out.plane_count  = (vkf->img[1] != VK_NULL_HANDLE) ? 2u : 1u;
-            out.width        = static_cast<u32>(st.src_frame->width);
-            out.height       = static_cast<u32>(st.src_frame->height);
+            out.width        = static_cast<rstd::uint32_t>(st.src_frame->width);
+            out.height       = static_cast<rstd::uint32_t>(st.src_frame->height);
             out.colorspace   = map_colorspace(st.src_frame->colorspace);
             out.color_range  = map_range(st.src_frame->color_range);
             /* Look up the AVHWFramesContext's sw_format to know whether
@@ -840,12 +844,12 @@ int VideoDecoder::next_vk_frame_(VkFrameView& out, Error* err) {
                     out.bit_depth = 16;
                 }
             }
-            const i64 pts   = (st.src_frame->best_effort_timestamp != AV_NOPTS_VALUE)
-                                  ? st.src_frame->best_effort_timestamp
-                                  : st.src_frame->pts;
-            out.pts_seconds = (pts == AV_NOPTS_VALUE)
-                                  ? -1.0
-                                  : static_cast<double>(pts) * ffi::av_q2d(st.stream_tb);
+            const rstd::int64_t pts = (st.src_frame->best_effort_timestamp != AV_NOPTS_VALUE)
+                                          ? st.src_frame->best_effort_timestamp
+                                          : st.src_frame->pts;
+            out.pts_seconds         = (pts == AV_NOPTS_VALUE)
+                                          ? -1.0
+                                          : static_cast<double>(pts) * ffi::av_q2d(st.stream_tb);
             return looped ? 2 : 0;
         }
         if (rc == AVERROR_EOF) {
@@ -859,7 +863,7 @@ int VideoDecoder::next_vk_frame_(VkFrameView& out, Error* err) {
             }
             return 1;
         }
-        if (rc != AVERROR(rstd::sys::libc::EAGAIN)) {
+        if (rc != AVERROR(EAGAIN)) {
             fail(err, rstd::format("avcodec_receive_frame: {}", av_err_str(rc).as_str()));
             return -1;
         }
@@ -881,7 +885,7 @@ int VideoDecoder::next_vk_frame_(VkFrameView& out, Error* err) {
         }
         rc = avcodec_send_packet(st.cctx.get(), st.pkt.get());
         av_packet_unref(st.pkt.get());
-        if (rc < 0 && rc != AVERROR(rstd::sys::libc::EAGAIN)) {
+        if (rc < 0 && rc != AVERROR(EAGAIN)) {
             fail(err, rstd::format("avcodec_send_packet: {}", av_err_str(rc).as_str()));
             return -1;
         }
@@ -933,38 +937,38 @@ int VideoDecoder::next_drm_frame_(DrmFrameView& out, Error* err) {
             }
             const int n_obj  = desc->nb_objects < 4 ? desc->nb_objects : 4;
             const int n_lay  = desc->nb_layers < 4 ? desc->nb_layers : 4;
-            out.object_count = static_cast<u32>(n_obj);
+            out.object_count = static_cast<rstd::uint32_t>(n_obj);
             for (int i = 0; i < n_obj; ++i) {
                 out.objects[i].fd              = desc->objects[i].fd;
                 out.objects[i].size            = desc->objects[i].size;
                 out.objects[i].format_modifier = desc->objects[i].format_modifier;
             }
-            out.layer_count = static_cast<u32>(n_lay);
+            out.layer_count = static_cast<rstd::uint32_t>(n_lay);
             for (int li = 0; li < n_lay; ++li) {
                 const auto& la             = desc->layers[li];
                 out.layers[li].fourcc      = la.format;
                 const int np               = la.nb_planes < 4 ? la.nb_planes : 4;
-                out.layers[li].plane_count = static_cast<u32>(np);
+                out.layers[li].plane_count = static_cast<rstd::uint32_t>(np);
                 for (int p = 0; p < np; ++p) {
                     out.layers[li].planes[p].object_index =
-                        static_cast<u32>(la.planes[p].object_index);
+                        static_cast<rstd::uint32_t>(la.planes[p].object_index);
                     out.layers[li].planes[p].offset = la.planes[p].offset;
                     out.layers[li].planes[p].pitch  = la.planes[p].pitch;
                 }
             }
-            out.width       = static_cast<u32>(st.src_frame->width);
-            out.height      = static_cast<u32>(st.src_frame->height);
+            out.width       = static_cast<rstd::uint32_t>(st.src_frame->width);
+            out.height      = static_cast<rstd::uint32_t>(st.src_frame->height);
             out.colorspace  = map_colorspace(st.src_frame->colorspace);
             out.color_range = map_range(st.src_frame->color_range);
             /* VAAPI 8-bit profiles land as NV12; 10-bit as P010. We only
              * support 8-bit on the DRM_PRIME zero-copy path for now. */
-            out.bit_depth   = 8;
-            const i64 pts   = (st.src_frame->best_effort_timestamp != AV_NOPTS_VALUE)
-                                  ? st.src_frame->best_effort_timestamp
-                                  : st.src_frame->pts;
-            out.pts_seconds = (pts == AV_NOPTS_VALUE)
-                                  ? -1.0
-                                  : static_cast<double>(pts) * ffi::av_q2d(st.stream_tb);
+            out.bit_depth           = 8;
+            const rstd::int64_t pts = (st.src_frame->best_effort_timestamp != AV_NOPTS_VALUE)
+                                          ? st.src_frame->best_effort_timestamp
+                                          : st.src_frame->pts;
+            out.pts_seconds         = (pts == AV_NOPTS_VALUE)
+                                          ? -1.0
+                                          : static_cast<double>(pts) * ffi::av_q2d(st.stream_tb);
             return looped ? 2 : 0;
         }
         if (rc == AVERROR_EOF) {
@@ -978,7 +982,7 @@ int VideoDecoder::next_drm_frame_(DrmFrameView& out, Error* err) {
             }
             return 1;
         }
-        if (rc != AVERROR(rstd::sys::libc::EAGAIN)) {
+        if (rc != AVERROR(EAGAIN)) {
             fail(err, rstd::format("avcodec_receive_frame: {}", av_err_str(rc).as_str()));
             return -1;
         }
@@ -1000,7 +1004,7 @@ int VideoDecoder::next_drm_frame_(DrmFrameView& out, Error* err) {
         }
         rc = avcodec_send_packet(st.cctx.get(), st.pkt.get());
         av_packet_unref(st.pkt.get());
-        if (rc < 0 && rc != AVERROR(rstd::sys::libc::EAGAIN)) {
+        if (rc < 0 && rc != AVERROR(EAGAIN)) {
             fail(err, rstd::format("avcodec_send_packet: {}", av_err_str(rc).as_str()));
             return -1;
         }
@@ -1013,11 +1017,11 @@ int VideoDecoder::next_frame_(Nv12Frame& out, Error* err) {
 
     /* Resize output buffer to NV12 size on first call (and on extent
      * change, but the extent is fixed for VideoDecoder lifetime). */
-    const usize want = usize(target_width_) * target_height_ * 3 / 2;
+    const usize want = usize(target_width_) * usize(target_height_) * usize(3) / usize(2);
     if (out.width != target_width_ || out.height != target_height_ || out.data.len() != want) {
-        out.width     = target_width_;
-        out.height    = target_height_;
-        const u8 zero = 0;
+        out.width                = target_width_;
+        out.height               = target_height_;
+        const rstd::uint8_t zero = 0;
         out.data.resize(want, zero);
     }
 
@@ -1062,9 +1066,10 @@ int VideoDecoder::next_frame_(Nv12Frame& out, Error* err) {
                      rstd::format("sws_getContext failed (src={})", av_get_pix_fmt_name(src_fmt)));
                 return -1;
             }
-            u8* y_dst          = out.data.data();
-            u8* uv_dst         = out.data.data() + usize(target_width_) * target_height_;
-            u8* dst_planes[4]  = { y_dst, uv_dst, nullptr, nullptr };
+            rstd::uint8_t* y_dst = out.data.data();
+            rstd::uint8_t* uv_dst =
+                out.data.data() + (usize(target_width_) * usize(target_height_)).to_primitive();
+            rstd::uint8_t* dst_planes[4] = { y_dst, uv_dst, nullptr, nullptr };
             int dst_strides[4] = { static_cast<int>(target_width_),
                                    static_cast<int>(target_width_), /* NV12 UV pitch == width */
                                    0,
@@ -1075,14 +1080,14 @@ int VideoDecoder::next_frame_(Nv12Frame& out, Error* err) {
                 fail(err, "sws_scale produced no rows");
                 return -1;
             }
-            const i64 pts   = (feed->best_effort_timestamp != AV_NOPTS_VALUE)
-                                  ? feed->best_effort_timestamp
-                                  : feed->pts;
-            out.pts_seconds = (pts == AV_NOPTS_VALUE)
-                                  ? -1.0
-                                  : static_cast<double>(pts) * ffi::av_q2d(st.stream_tb);
-            out.colorspace  = map_colorspace(feed->colorspace);
-            out.color_range = map_range(feed->color_range);
+            const rstd::int64_t pts = (feed->best_effort_timestamp != AV_NOPTS_VALUE)
+                                          ? feed->best_effort_timestamp
+                                          : feed->pts;
+            out.pts_seconds         = (pts == AV_NOPTS_VALUE)
+                                          ? -1.0
+                                          : static_cast<double>(pts) * ffi::av_q2d(st.stream_tb);
+            out.colorspace          = map_colorspace(feed->colorspace);
+            out.color_range         = map_range(feed->color_range);
             av_frame_unref(st.src_frame.get());
             if (st.sw_frame) av_frame_unref(st.sw_frame.get());
             return looped ? 2 : 0;
@@ -1098,7 +1103,7 @@ int VideoDecoder::next_frame_(Nv12Frame& out, Error* err) {
             }
             return 1;
         }
-        if (rc != AVERROR(rstd::sys::libc::EAGAIN)) {
+        if (rc != AVERROR(EAGAIN)) {
             fail(err, rstd::format("avcodec_receive_frame: {}", av_err_str(rc).as_str()));
             return -1;
         }
@@ -1121,7 +1126,7 @@ int VideoDecoder::next_frame_(Nv12Frame& out, Error* err) {
         }
         rc = avcodec_send_packet(st.cctx.get(), st.pkt.get());
         av_packet_unref(st.pkt.get());
-        if (rc < 0 && rc != AVERROR(rstd::sys::libc::EAGAIN)) {
+        if (rc < 0 && rc != AVERROR(EAGAIN)) {
             fail(err, rstd::format("avcodec_send_packet: {}", av_err_str(rc).as_str()));
             return -1;
         }

@@ -1,8 +1,7 @@
-module;
-#include <cstdio>
 module wavsen.video;
 
 import rstd;
+import rstd.cppstd;
 import vulkan;
 import wavsen.vvk;
 import :vk_device;
@@ -43,20 +42,21 @@ auto vk_error(ref<str> operation, VkResult result) -> rstd::string::String {
 Producer::~Producer() {
     if (device_) (void)device_.WaitIdle();
     if (staging_map_ && staging_mem_) staging_mem_.Unmap();
-    if (drm_render_fd_ >= 0) rstd::sys::libc::close(drm_render_fd_);
 }
 
-auto Producer::create(u32 width, u32 height) -> Result<rstd::boxed::Box<Producer>, Error> {
+auto Producer::create(rstd::uint32_t width, rstd::uint32_t height)
+    -> Result<rstd::boxed::Box<Producer>, Error> {
     Error err;
     auto  producer = build_(width, height, None(), &err);
     if (producer.is_none()) return Err(rstd::move(err));
     return Ok(rstd::move(producer).unwrap());
 }
 
-auto Producer::create_with_render_node(u32 width, u32 height, ref<str> render_node)
+auto Producer::create_with_render_node(rstd::uint32_t width, rstd::uint32_t height,
+                                       ref<str> render_node)
     -> Result<rstd::boxed::Box<Producer>, Error> {
     Error            err;
-    Option<ref<str>> pinned_node = render_node.size() == 0 ? None() : Some(render_node);
+    Option<ref<str>> pinned_node = render_node.is_empty() ? None() : Some(render_node);
     auto             producer    = build_(width, height, pinned_node, &err);
     if (producer.is_none()) return Err(rstd::move(err));
     return Ok(rstd::move(producer).unwrap());
@@ -89,13 +89,15 @@ auto Producer::from_external(ExternalDeviceInfo info) -> Result<rstd::boxed::Box
     self->enabled_inst_exts_    = rstd::move(info.enabled_instance_extensions);
     self->enabled_dev_exts_     = rstd::move(info.enabled_device_extensions);
     self->queue_families_       = rstd::move(info.queue_families);
-    self->drm_render_fd_        = info.drm_render_fd;
-    self->drm_render_major_     = info.drm_render_major;
-    self->drm_render_minor_     = info.drm_render_minor;
+    if (info.drm_render_fd >= 0) {
+        self->drm_render_file_ = rstd::fs::File::from_raw_fd(info.drm_render_fd);
+    }
+    self->drm_render_major_ = info.drm_render_major;
+    self->drm_render_minor_ = info.drm_render_minor;
     return Ok(rstd::move(self));
 }
 
-Option<rstd::boxed::Box<Producer>> Producer::build_(u32 width, u32 height,
+Option<rstd::boxed::Box<Producer>> Producer::build_(rstd::uint32_t width, rstd::uint32_t height,
                                                     Option<ref<str>> render_node, Error* err) {
     if (width == 0 || height == 0) {
         fail(err, "Producer: width/height must be non-zero");
@@ -149,21 +151,22 @@ Option<rstd::boxed::Box<Producer>> Producer::build_(u32 width, u32 height,
     };
     const ref<str> drm_extension = "VK_EXT_physical_device_drm";
 
-    auto                   pinning = render_node.is_some();
-    rstd::sys::libc::dev_t wanted_device {};
+    auto      pinning = render_node.is_some();
+    rstd::u32 wanted_major {};
+    rstd::u32 wanted_minor {};
     if (pinning) {
-        auto render_node_string = rstd::string::String::make(render_node.unwrap());
-        auto render_node_c      = rstd::ffi::CString::make(rstd::move(render_node_string)).unwrap();
-        auto render_node_path   = reinterpret_cast<const char*>(render_node_c.as_ref().p);
-        rstd::sys::libc::stat_t status {};
-        if (rstd::sys::libc::stat(render_node_path, &status) != 0) {
+        auto render_node_path = rstd::path::PathBuf::from(render_node.unwrap());
+        auto metadata_result  = rstd::fs::metadata(render_node_path.as_path());
+        if (metadata_result.is_err()) {
             fail(err,
-                 rstd::format("Producer: stat({}) failed with errno {}",
+                 rstd::format("Producer: metadata({}) failed: {}",
                               render_node.unwrap(),
-                              rstd::sys::libc::errno()));
+                              rstd::move(metadata_result).unwrap_err_unchecked()));
             return None();
         }
-        wanted_device = status.st_rdev;
+        auto metadata = rstd::move(metadata_result).unwrap_unchecked();
+        wanted_major  = metadata.rdev_major();
+        wanted_minor  = metadata.rdev_minor();
     }
 
     bool have_drm_extension = false;
@@ -187,9 +190,10 @@ Option<rstd::boxed::Box<Producer>> Producer::build_(u32 width, u32 height,
             properties.pNext = &drm;
             physical_device.GetProperties2KHR(properties);
             if (! drm.hasRender) continue;
-            auto physical_rdev = rstd::sys::libc::makedev(static_cast<unsigned>(drm.renderMajor),
-                                                          static_cast<unsigned>(drm.renderMinor));
-            if (physical_rdev != wanted_device) continue;
+            if (drm.renderMajor != wanted_major.to_primitive() ||
+                drm.renderMinor != wanted_minor.to_primitive()) {
+                continue;
+            }
         }
 
         self->phys_        = rstd::move(physical_device);
@@ -214,9 +218,9 @@ Option<rstd::boxed::Box<Producer>> Producer::build_(u32 width, u32 height,
     }
     self->queue_families_.reserve(queue_properties.len());
     bool picked_queue = false;
-    for (usize i = 0; i < queue_properties.len(); ++i) {
+    for (usize i {}; i < queue_properties.len(); ++i) {
         QueueFamily queue_family {
-            .index      = static_cast<u32>(i),
+            .index      = rstd::as_cast<rstd::uint32_t>(i),
             .flags      = queue_properties[i].queueFlags,
             .video_caps = 0,
         };
@@ -224,7 +228,7 @@ Option<rstd::boxed::Box<Producer>> Producer::build_(u32 width, u32 height,
         if (! picked_queue &&
             (queue_properties[i].queueFlags &
              (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT))) {
-            self->queue_family_ = static_cast<u32>(i);
+            self->queue_family_ = rstd::as_cast<rstd::uint32_t>(i);
             picked_queue        = true;
         }
     }
@@ -307,22 +311,21 @@ Option<rstd::boxed::Box<Producer>> Producer::build_(u32 width, u32 height,
     properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
     properties.pNext = &id_properties;
     self->phys_.GetProperties2KHR(properties);
-    rstd::mem::memcpy(self->device_uuid_, id_properties.deviceUUID, 16);
-    rstd::mem::memcpy(self->driver_uuid_, id_properties.driverUUID, 16);
+    rstd::mem::memcpy(self->device_uuid_, id_properties.deviceUUID, usize(16));
+    rstd::mem::memcpy(self->driver_uuid_, id_properties.driverUUID, usize(16));
     self->have_uuid_ = true;
     if (have_drm_extension && drm_properties.hasRender) {
-        self->drm_render_major_ = static_cast<u32>(drm_properties.renderMajor);
-        self->drm_render_minor_ = static_cast<u32>(drm_properties.renderMinor);
+        self->drm_render_major_ = drm_properties.renderMajor;
+        self->drm_render_minor_ = drm_properties.renderMinor;
     }
 
     if (self->drm_render_minor_ != 0) {
         for (int i = 128; i < 192; ++i) {
-            char path[64];
-            ::snprintf(path, sizeof(path), "/dev/dri/renderD%d", i);
-            int fd =
-                rstd::sys::libc::open(path, rstd::sys::libc::O_RDWR | rstd::sys::libc::O_CLOEXEC);
-            if (fd >= 0) {
-                self->drm_render_fd_ = fd;
+            auto path    = rstd::path::PathBuf::from(rstd::format("/dev/dri/renderD{}", i));
+            auto options = rstd::fs::File::options();
+            auto file    = options.read(true).write(true).open(path.as_path());
+            if (file.is_ok()) {
+                self->drm_render_file_ = rstd::move(file).unwrap_unchecked();
                 break;
             }
         }
@@ -337,13 +340,13 @@ Option<rstd::boxed::Box<Producer>> Producer::build_(u32 width, u32 height,
         fail(err, vk_error("vkCreateCommandPool", result));
         return None();
     }
-    if (VkResult result =
-            self->cmd_pool_.Allocate(1, VK_COMMAND_BUFFER_LEVEL_PRIMARY, self->command_buffers_);
+    if (VkResult result = self->cmd_pool_.Allocate(
+            usize(1), VK_COMMAND_BUFFER_LEVEL_PRIMARY, self->command_buffers_);
         result != VK_SUCCESS) {
         fail(err, vk_error("vkAllocateCommandBuffers", result));
         return None();
     }
-    self->cmd_ = vvk::CommandBuffer(self->command_buffers_[0], self->device_dispatch_);
+    self->cmd_ = vvk::CommandBuffer(self->command_buffers_[usize()], self->device_dispatch_);
 
     VkFenceCreateInfo fence_info {};
     fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
@@ -379,8 +382,8 @@ Option<rstd::boxed::Box<Producer>> Producer::build_(u32 width, u32 height,
 
     auto memory_requirements = self->device_.GetBufferMemoryRequirements(*self->staging_buf_);
     auto memory_properties   = self->phys_.GetMemoryProperties().memoryProperties;
-    u32  host_type           = rstd::u32_::MAX;
-    for (u32 i = 0; i < memory_properties.memoryTypeCount; ++i) {
+    rstd::uint32_t host_type = std::numeric_limits<rstd::uint32_t>::max();
+    for (rstd::uint32_t i = 0; i < memory_properties.memoryTypeCount; ++i) {
         auto flags = memory_properties.memoryTypes[i].propertyFlags;
         if ((memory_requirements.memoryTypeBits & (1u << i)) &&
             (flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) &&
@@ -389,7 +392,7 @@ Option<rstd::boxed::Box<Producer>> Producer::build_(u32 width, u32 height,
             break;
         }
     }
-    if (host_type == rstd::u32_::MAX) {
+    if (host_type == std::numeric_limits<rstd::uint32_t>::max()) {
         fail(err, "no HOST_VISIBLE|COHERENT memory type for staging");
         return None();
     }
@@ -417,16 +420,18 @@ Option<rstd::boxed::Box<Producer>> Producer::build_(u32 width, u32 height,
     return Some(rstd::move(self));
 }
 
-auto Producer::upload_into(VkImage target, u32 target_width, u32 target_height, const u8* data,
-                           usize size) -> Result<int, Error> {
+auto Producer::upload_into(VkImage target, rstd::uint32_t target_width,
+                           rstd::uint32_t target_height, const rstd::uint8_t* data, usize size)
+    -> Result<int, Error> {
     Error err;
     int   fd = upload_into_(target, target_width, target_height, data, size, &err);
     if (fd < 0) return Err(rstd::move(err));
     return Ok(fd);
 }
 
-int Producer::upload_into_(VkImage target, u32 target_width, u32 target_height, const u8* data,
-                           usize size, Error* err) {
+int Producer::upload_into_(VkImage target, rstd::uint32_t target_width,
+                           rstd::uint32_t target_height, const rstd::uint8_t* data, usize size,
+                           Error* err) {
     if (target == VK_NULL_HANDLE) {
         fail(err, "upload_into: target VkImage is null");
         return -1;
@@ -437,7 +442,7 @@ int Producer::upload_into_(VkImage target, u32 target_width, u32 target_height, 
              "(from_external Producers are decode-only)");
         return -1;
     }
-    if (size != staging_size_) {
+    if (static_cast<VkDeviceSize>(size.to_primitive()) != staging_size_) {
         fail(err, "upload_into: size mismatch");
         return -1;
     }

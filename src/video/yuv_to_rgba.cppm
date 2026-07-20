@@ -24,20 +24,20 @@ struct ColorMatrix {
 // Mirrors FFmpeg's `enum AVColorSpace` for the cases we actually
 // branch on. Keeping our own enum avoids leaking <libavutil/pixfmt.h>
 // into the public surface.
-enum class ColorSpace : u32
+enum class ColorSpace : rstd::uint32_t
 {
     Bt709  = 0,
     Bt601  = 1,
     Bt2020 = 2,
 };
 
-enum class ColorRange : u32
+enum class ColorRange : rstd::uint32_t
 {
     Limited = 0,
     Full    = 1,
 };
 
-enum class ConvertTarget : u32
+enum class ConvertTarget : rstd::uint32_t
 {
     BridgeForeign = 0,
     SampledLocal  = 1,
@@ -45,18 +45,18 @@ enum class ConvertTarget : u32
 
 struct ConversionSubmission {
     VkImage                          target { VK_NULL_HANDLE };
-    u32                              width { 0 };
-    u32                              height { 0 };
+    rstd::uint32_t                   width { 0 };
+    rstd::uint32_t                   height { 0 };
     ConvertTarget                    target_kind { ConvertTarget::BridgeForeign };
     VkImageLayout                    final_layout { VK_IMAGE_LAYOUT_UNDEFINED };
-    u32                              final_queue_family { VK_QUEUE_FAMILY_IGNORED };
+    rstd::uint32_t                   final_queue_family { VK_QUEUE_FAMILY_IGNORED };
     u64                              content_revision { 0 };
     vvk::SubmissionToken             readiness;
     vvk::TimelineExecutionDependency execution_dependency;
     int                              sync_fd { -1 };
 
     bool submitted() const noexcept {
-        return target != VK_NULL_HANDLE && width != 0 && height != 0 && content_revision != 0 &&
+        return target != VK_NULL_HANDLE && width != 0 && height != 0 && content_revision != u64() &&
                readiness.valid() && execution_dependency.valid() &&
                execution_dependency.completion == readiness;
     }
@@ -89,40 +89,43 @@ public:
     YuvToRgba& operator=(const YuvToRgba&) = delete;
 
     static auto create(VkInstance instance, VkPhysicalDevice phys, VkDevice device,
-                       u32 queue_family, VkQueue queue, u32 max_w, u32 max_h)
-        -> Result<rstd::boxed::Box<YuvToRgba>, Error>;
+                       rstd::uint32_t queue_family, VkQueue queue, rstd::uint32_t max_w,
+                       rstd::uint32_t max_h) -> Result<rstd::boxed::Box<YuvToRgba>, Error>;
 
-    auto convert_nv12(VkImage dst, u32 dst_w, u32 dst_h, const u8* nv12, usize nv12_size,
-                      const ColorMatrix& cm) -> rstd::Result<int, Error>;
-    auto convert_nv12(VkImage dst, u32 dst_w, u32 dst_h, const u8* nv12, usize nv12_size,
-                      const ColorMatrix& cm, ConvertTarget target) -> rstd::Result<int, Error>;
-    auto submit_nv12(VkImage dst, u32 dst_w, u32 dst_h, const u8* nv12, usize nv12_size,
-                     const ColorMatrix& cm, ConvertTarget target)
-        -> rstd::Result<ConversionSubmission, Error>;
+    auto convert_nv12(VkImage dst, rstd::uint32_t dst_w, rstd::uint32_t dst_h,
+                      const rstd::uint8_t* nv12, usize nv12_size, const ColorMatrix& cm)
+        -> rstd::Result<int, Error>;
+    auto convert_nv12(VkImage dst, rstd::uint32_t dst_w, rstd::uint32_t dst_h,
+                      const rstd::uint8_t* nv12, usize nv12_size, const ColorMatrix& cm,
+                      ConvertTarget target) -> rstd::Result<int, Error>;
+    auto submit_nv12(VkImage dst, rstd::uint32_t dst_w, rstd::uint32_t dst_h,
+                     const rstd::uint8_t* nv12, usize nv12_size, const ColorMatrix& cm,
+                     ConvertTarget target) -> rstd::Result<ConversionSubmission, Error>;
 
     struct VkFrameImports {
-        VkImage        y_image;
-        VkImage        uv_image;
-        VkSemaphore    y_sem;
-        VkSemaphore    uv_sem;
-        u64*           y_sem_val_in_out;
-        u64*           uv_sem_val_in_out;
-        VkImageLayout* y_layout_in_out;
-        VkImageLayout* uv_layout_in_out;
-        u32*           y_qf_in_out;
-        u32*           uv_qf_in_out;
-        u32            src_w;
-        u32            src_h;
+        VkImage         y_image;
+        VkImage         uv_image;
+        VkSemaphore     y_sem;
+        VkSemaphore     uv_sem;
+        rstd::uint64_t* y_sem_val_in_out;
+        rstd::uint64_t* uv_sem_val_in_out;
+        VkImageLayout*  y_layout_in_out;
+        VkImageLayout*  uv_layout_in_out;
+        rstd::uint32_t* y_qf_in_out;
+        rstd::uint32_t* uv_qf_in_out;
+        rstd::uint32_t  src_w;
+        rstd::uint32_t  src_h;
         // 8 → R8 / R8G8 image views (NV12). 16 → R16 / R16G16 (P010 / P016).
-        u32 bit_depth;
+        rstd::uint32_t bit_depth;
     };
-    auto convert_av_vk_frame(const VkFrameImports& imports, VkImage dst, u32 dst_w, u32 dst_h,
-                             const ColorMatrix& cm) -> rstd::Result<int, Error>;
-    auto convert_av_vk_frame(const VkFrameImports& imports, VkImage dst, u32 dst_w, u32 dst_h,
-                             const ColorMatrix& cm, ConvertTarget target)
+    auto convert_av_vk_frame(const VkFrameImports& imports, VkImage dst, rstd::uint32_t dst_w,
+                             rstd::uint32_t dst_h, const ColorMatrix& cm)
         -> rstd::Result<int, Error>;
-    auto submit_av_vk_frame(const VkFrameImports& imports, VkImage dst, u32 dst_w, u32 dst_h,
-                            const ColorMatrix& cm, ConvertTarget target)
+    auto convert_av_vk_frame(const VkFrameImports& imports, VkImage dst, rstd::uint32_t dst_w,
+                             rstd::uint32_t dst_h, const ColorMatrix& cm, ConvertTarget target)
+        -> rstd::Result<int, Error>;
+    auto submit_av_vk_frame(const VkFrameImports& imports, VkImage dst, rstd::uint32_t dst_w,
+                            rstd::uint32_t dst_h, const ColorMatrix& cm, ConvertTarget target)
         -> rstd::Result<ConversionSubmission, Error>;
 
     /* Zero-copy VAAPI path: imports the DrmFrameView's dma-buf fds as
@@ -130,12 +133,13 @@ public:
      * runs the same nv12_to_rgba.comp into `dst`. The transient
      * VkImage / VkDeviceMemory / fd dups live until the *next*
      * convert_drm_prime call returns (cycled via last_drm_*). */
-    auto convert_drm_prime(const DrmFrameView& drm, VkImage dst, u32 dst_w, u32 dst_h,
-                           const ColorMatrix& cm) -> rstd::Result<int, Error>;
-    auto convert_drm_prime(const DrmFrameView& drm, VkImage dst, u32 dst_w, u32 dst_h,
-                           const ColorMatrix& cm, ConvertTarget target) -> rstd::Result<int, Error>;
-    auto submit_drm_prime(const DrmFrameView& drm, VkImage dst, u32 dst_w, u32 dst_h,
-                          const ColorMatrix& cm, ConvertTarget target)
+    auto convert_drm_prime(const DrmFrameView& drm, VkImage dst, rstd::uint32_t dst_w,
+                           rstd::uint32_t dst_h, const ColorMatrix& cm) -> rstd::Result<int, Error>;
+    auto convert_drm_prime(const DrmFrameView& drm, VkImage dst, rstd::uint32_t dst_w,
+                           rstd::uint32_t dst_h, const ColorMatrix& cm, ConvertTarget target)
+        -> rstd::Result<int, Error>;
+    auto submit_drm_prime(const DrmFrameView& drm, VkImage dst, rstd::uint32_t dst_w,
+                          rstd::uint32_t dst_h, const ColorMatrix& cm, ConvertTarget target)
         -> rstd::Result<ConversionSubmission, Error>;
 
     vvk::CompletionObservation   poll_completion() const noexcept;
@@ -144,16 +148,20 @@ public:
     Option<vvk::SubmissionToken> last_submission_readiness() const noexcept;
 
 private:
-    bool init(VkInstance instance, VkPhysicalDevice phys, VkDevice device, u32 queue_family,
-              VkQueue queue, u32 max_w, u32 max_h, Error* err);
-    int  convert_nv12_(VkImage dst, u32 dst_w, u32 dst_h, const u8* nv12, usize nv12_size,
-                       const ColorMatrix& cm, ConvertTarget target, Error* err);
-    int  convert_av_vk_frame_(const VkFrameImports& imports, VkImage dst, u32 dst_w, u32 dst_h,
-                              const ColorMatrix& cm, ConvertTarget target, Error* err);
-    int  convert_drm_prime_(const DrmFrameView& drm, VkImage dst, u32 dst_w, u32 dst_h,
-                            const ColorMatrix& cm, ConvertTarget target, Error* err);
-    void publish_submission(VkImage dst, u32 dst_w, u32 dst_h, ConvertTarget target,
-                            u64 completion_value);
+    bool init(VkInstance instance, VkPhysicalDevice phys, VkDevice device,
+              rstd::uint32_t queue_family, VkQueue queue, rstd::uint32_t max_w,
+              rstd::uint32_t max_h, Error* err);
+    int  convert_nv12_(VkImage dst, rstd::uint32_t dst_w, rstd::uint32_t dst_h,
+                       const rstd::uint8_t* nv12, usize nv12_size, const ColorMatrix& cm,
+                       ConvertTarget target, Error* err);
+    int  convert_av_vk_frame_(const VkFrameImports& imports, VkImage dst, rstd::uint32_t dst_w,
+                              rstd::uint32_t dst_h, const ColorMatrix& cm, ConvertTarget target,
+                              Error* err);
+    int  convert_drm_prime_(const DrmFrameView& drm, VkImage dst, rstd::uint32_t dst_w,
+                            rstd::uint32_t dst_h, const ColorMatrix& cm, ConvertTarget target,
+                            Error* err);
+    void publish_submission(VkImage dst, rstd::uint32_t dst_w, rstd::uint32_t dst_h,
+                            ConvertTarget target, u64 completion_value);
 
     vvk::InstanceDispatch instance_dispatch_;
     vvk::DeviceDispatch   device_dispatch_;
@@ -161,10 +169,10 @@ private:
     vvk::PhysicalDevice   phys_;
     vvk::Device           device_;
     vvk::Queue            queue_;
-    u32                   queue_family_ { 0 };
+    rstd::uint32_t        queue_family_ { 0 };
 
-    u32 max_w_ { 0 };
-    u32 max_h_ { 0 };
+    rstd::uint32_t max_w_ { 0 };
+    rstd::uint32_t max_h_ { 0 };
 
     vvk::ShaderModule        shader_;
     vvk::DescriptorSetLayout dsl_;
@@ -182,7 +190,7 @@ private:
 
     vvk::DeviceMemory staging_mem_;
     vvk::Buffer       staging_buf_;
-    u8*               staging_map_ { nullptr };
+    rstd::uint8_t*    staging_map_ { nullptr };
     VkDeviceSize      staging_size_ { 0 };
 
     vvk::CommandPool    cmd_pool_;

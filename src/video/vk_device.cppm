@@ -23,11 +23,11 @@ struct Error {
 // Producer creates 1 queue from each enumerated family and remembers each
 // family's caps so FFmpeg can pick the right one for video decode/encode.
 struct QueueFamily {
-    u32          index;
-    VkQueueFlags flags;
+    rstd::uint32_t index;
+    VkQueueFlags   flags;
     /* Video codec ops the family advertises (only meaningful when the
      * device exposes VK_KHR_video_queue). 0 if unknown. */
-    u32 video_caps;
+    rstd::uint32_t video_caps;
 };
 
 // Bring up a VkInstance/VkPhysicalDevice/VkDevice with the extension set
@@ -41,13 +41,15 @@ public:
     Producer(const Producer&)            = delete;
     Producer& operator=(const Producer&) = delete;
 
-    static auto create(u32 width, u32 height) -> Result<rstd::boxed::Box<Producer>, Error>;
+    static auto create(rstd::uint32_t width, rstd::uint32_t height)
+        -> Result<rstd::boxed::Box<Producer>, Error>;
 
     // Pin the picked VkPhysicalDevice to the GPU that exposes
     // `render_node` (e.g. "/dev/dri/renderD128"). Empty string → behaves
     // identically to the no-arg overload (first device that advertises
     // the required extension set wins).
-    static auto create_with_render_node(u32 width, u32 height, ref<str> render_node)
+    static auto create_with_render_node(rstd::uint32_t width, rstd::uint32_t height,
+                                        ref<str> render_node)
         -> Result<rstd::boxed::Box<Producer>, Error>;
 
     // Adopt a caller-owned VkInstance/VkDevice. The returned Producer
@@ -66,7 +68,7 @@ public:
         VkPhysicalDevice physical_device;
         VkDevice         device;
         VkQueue          queue;
-        u32              queue_family_index;
+        rstd::uint32_t   queue_family_index;
         // Full per-family caps list — typically as wide as
         // vkGetPhysicalDeviceQueueFamilyProperties returns. Used for
         // AVVulkanDeviceContext::qf[]. May be empty (FFmpeg falls back
@@ -74,31 +76,31 @@ public:
         rstd::vec::Vec<QueueFamily> queue_families;
         rstd::vec::Vec<const char*> enabled_instance_extensions;
         rstd::vec::Vec<const char*> enabled_device_extensions;
-        u32                         api_version { 0x00403000u }; // VK_API_VERSION_1_3
-        u32                         width { 0 };
-        u32                         height { 0 };
+        rstd::uint32_t              api_version { 0x00403000u }; // VK_API_VERSION_1_3
+        rstd::uint32_t              width { 0 };
+        rstd::uint32_t              height { 0 };
         // Optional DRM render-node info (renderD12X). drm_render_fd is
         // adopted (closed on Producer destruction) if >= 0.
-        int drm_render_fd { -1 };
-        u32 drm_render_major { 0 };
-        u32 drm_render_minor { 0 };
+        int            drm_render_fd { -1 };
+        rstd::uint32_t drm_render_major { 0 };
+        rstd::uint32_t drm_render_minor { 0 };
     };
     static auto from_external(ExternalDeviceInfo info) -> Result<rstd::boxed::Box<Producer>, Error>;
 
-    VkInstance       instance() const { return *instance_; }
-    VkPhysicalDevice physical_device() const { return *phys_; }
-    VkDevice         device() const { return *device_; }
-    VkQueue          queue() const { return *queue_; }
-    u32              queue_family_index() const { return queue_family_; }
-    u32              drm_render_major() const { return drm_render_major_; }
-    u32              drm_render_minor() const { return drm_render_minor_; }
-    const u8*        device_uuid() const { return have_uuid_ ? device_uuid_ : nullptr; }
-    const u8*        driver_uuid() const { return have_uuid_ ? driver_uuid_ : nullptr; }
-    int              drm_render_fd() const { return drm_render_fd_; }
-    u32              width() const { return width_; }
-    u32              height() const { return height_; }
+    VkInstance           instance() const { return *instance_; }
+    VkPhysicalDevice     physical_device() const { return *phys_; }
+    VkDevice             device() const { return *device_; }
+    VkQueue              queue() const { return *queue_; }
+    rstd::uint32_t       queue_family_index() const { return queue_family_; }
+    rstd::uint32_t       drm_render_major() const { return drm_render_major_; }
+    rstd::uint32_t       drm_render_minor() const { return drm_render_minor_; }
+    const rstd::uint8_t* device_uuid() const { return have_uuid_ ? device_uuid_ : nullptr; }
+    const rstd::uint8_t* driver_uuid() const { return have_uuid_ ? driver_uuid_ : nullptr; }
+    int                  drm_render_fd() const { return drm_render_file_.as_raw_fd(); }
+    rstd::uint32_t       width() const { return width_; }
+    rstd::uint32_t       height() const { return height_; }
 
-    u32                instance_api_version() const { return instance_api_version_; }
+    rstd::uint32_t     instance_api_version() const { return instance_api_version_; }
     slice<const char*> enabled_instance_extensions() const { return enabled_inst_exts_.as_slice(); }
     slice<const char*> enabled_device_extensions() const { return enabled_dev_exts_.as_slice(); }
     slice<QueueFamily> queue_families() const { return queue_families_.as_slice(); }
@@ -107,26 +109,26 @@ public:
     // into `target` VkImage. On success returns an exported sync_fd that
     // signals when the GPU is done writing — the bridge pool takes
     // ownership.
-    auto upload_into(VkImage target, u32 target_width, u32 target_height, const u8* data,
-                     usize size) -> Result<int, Error>;
+    auto upload_into(VkImage target, rstd::uint32_t target_width, rstd::uint32_t target_height,
+                     const rstd::uint8_t* data, usize size) -> Result<int, Error>;
 
     Producer() = default;
 
 private:
     // Internal builder used by the two public factories. Returns a
     // unique_ptr or nullptr; on failure populates `*err` with a message.
-    static Option<rstd::boxed::Box<Producer>> build_(u32 width, u32 height,
+    static Option<rstd::boxed::Box<Producer>> build_(rstd::uint32_t width, rstd::uint32_t height,
                                                      Option<ref<str>> render_node, Error* err);
 
-    int upload_into_(VkImage target, u32 target_width, u32 target_height, const u8* data,
-                     usize size, Error* err);
+    int upload_into_(VkImage target, rstd::uint32_t target_width, rstd::uint32_t target_height,
+                     const rstd::uint8_t* data, usize size, Error* err);
 
     vvk::InstanceDispatch instance_dispatch_;
     vvk::DeviceDispatch   device_dispatch_;
     vvk::Instance         instance_;
     vvk::PhysicalDevice   phys_;
     vvk::Device           device_;
-    u32                   queue_family_ { 0 };
+    rstd::uint32_t        queue_family_ { 0 };
     vvk::Queue            queue_;
 
     vvk::CommandPool    cmd_pool_;
@@ -138,20 +140,20 @@ private:
 
     vvk::DeviceMemory staging_mem_;
     vvk::Buffer       staging_buf_;
-    u8*               staging_map_ { nullptr };
+    rstd::uint8_t*    staging_map_ { nullptr };
     VkDeviceSize      staging_size_ { 0 };
 
-    u32 width_ { 0 };
-    u32 height_ { 0 };
-    u32 drm_render_major_ { 0 };
-    u32 drm_render_minor_ { 0 };
-    int drm_render_fd_ { -1 };
+    rstd::uint32_t width_ { 0 };
+    rstd::uint32_t height_ { 0 };
+    rstd::uint32_t drm_render_major_ { 0 };
+    rstd::uint32_t drm_render_minor_ { 0 };
+    rstd::fs::File drm_render_file_;
 
-    bool have_uuid_ { false };
-    u8   device_uuid_[16] { 0 };
-    u8   driver_uuid_[16] { 0 };
+    bool          have_uuid_ { false };
+    rstd::uint8_t device_uuid_[16] {};
+    rstd::uint8_t driver_uuid_[16] {};
 
-    u32                         instance_api_version_ { 0 };
+    rstd::uint32_t              instance_api_version_ { 0 };
     rstd::vec::Vec<const char*> enabled_inst_exts_;
     rstd::vec::Vec<const char*> enabled_dev_exts_;
     rstd::vec::Vec<QueueFamily> queue_families_;

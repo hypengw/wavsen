@@ -11,6 +11,10 @@ using namespace rstd::prelude;
 
 namespace vvk
 {
+constexpr auto vk_count(usize value) noexcept -> rstd::uint32_t {
+    return rstd::as_cast<rstd::uint32_t>(value);
+}
+
 template<typename T>
 bool Proc(T& result, const InstanceDispatch& dld, const char* proc_name,
           VkInstance instance = nullptr) noexcept {
@@ -256,7 +260,7 @@ void Destroy(VkInstance instance, VkSurfaceKHR handle, const InstanceDispatch& d
 
 VkResult Free(VkDevice device, VkCommandPool pool, slice<VkCommandBuffer> allos,
               const DeviceDispatch& dld) noexcept {
-    dld.vkFreeCommandBuffers(device, pool, static_cast<u32>(allos.len()), allos.as_raw_ptr());
+    dld.vkFreeCommandBuffers(device, pool, vk_count(allos.len()), allos.as_raw_ptr());
     return VK_SUCCESS;
 }
 
@@ -268,9 +272,9 @@ VkResult Instance::Create(Instance& inst, const VkApplicationInfo& app_info,
         .pNext                   = nullptr,
         .flags                   = 0,
         .pApplicationInfo        = &app_info,
-        .enabledLayerCount       = static_cast<u32>(layers.len()),
+        .enabledLayerCount       = vk_count(layers.len()),
         .ppEnabledLayerNames     = layers.as_raw_ptr(),
-        .enabledExtensionCount   = static_cast<u32>(extensions.len()),
+        .enabledExtensionCount   = vk_count(extensions.len()),
         .ppEnabledExtensionNames = extensions.as_raw_ptr(),
     };
 
@@ -286,12 +290,12 @@ VkResult Instance::Create(Instance& inst, const VkApplicationInfo& app_info,
 }
 
 rstd::vec::Vec<PhysicalDevice> Instance::EnumeratePhysicalDevices() const noexcept {
-    u32 num;
+    rstd::uint32_t num;
     VVK_CHECK(dld->vkEnumeratePhysicalDevices(handle, &num, nullptr));
-    auto vkphysical_devices = rstd::vec::Vec<VkPhysicalDevice>::with_capacity(num);
-    vkphysical_devices.resize(num, VK_NULL_HANDLE);
+    auto vkphysical_devices = rstd::vec::Vec<VkPhysicalDevice>::with_capacity(usize(num));
+    vkphysical_devices.resize(usize(num), VK_NULL_HANDLE);
     VVK_CHECK(dld->vkEnumeratePhysicalDevices(handle, &num, vkphysical_devices.data()));
-    auto physical_devices = rstd::vec::Vec<PhysicalDevice>::with_capacity(num);
+    auto physical_devices = rstd::vec::Vec<PhysicalDevice>::with_capacity(usize(num));
     for (const auto vkphysical_device : vkphysical_devices) {
         physical_devices.push(PhysicalDevice(vkphysical_device, *dld));
     }
@@ -312,11 +316,11 @@ VkResult Device::Create(Device& device, VkPhysicalDevice physical_device,
         .sType                   = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
         .pNext                   = next,
         .flags                   = 0,
-        .queueCreateInfoCount    = static_cast<u32>(queues_ci.len()),
+        .queueCreateInfoCount    = vk_count(queues_ci.len()),
         .pQueueCreateInfos       = queues_ci.as_raw_ptr(),
         .enabledLayerCount       = 0,
         .ppEnabledLayerNames     = nullptr,
-        .enabledExtensionCount   = static_cast<u32>(enabled_extensions.len()),
+        .enabledExtensionCount   = vk_count(enabled_extensions.len()),
         .ppEnabledExtensionNames = enabled_extensions.as_raw_ptr(),
         .pEnabledFeatures        = enabled_features,
     };
@@ -329,7 +333,7 @@ VkResult Device::Create(Device& device, VkPhysicalDevice physical_device,
     return res;
 }
 
-Queue Device::GetQueue(u32 family_index) const noexcept {
+Queue Device::GetQueue(rstd::uint32_t family_index) const noexcept {
     VkQueue queue;
     dld->vkGetDeviceQueue(handle, family_index, 0, &queue);
     return Queue(queue, *dld);
@@ -386,7 +390,7 @@ VkResult Device::GetMemoryFdPropertiesKHR(VkExternalMemoryHandleTypeFlagBits han
 }
 
 VkResult Device::BindImageMemory2(slice<VkBindImageMemoryInfo> bindings) const noexcept {
-    return dld->vkBindImageMemory2(handle, static_cast<u32>(bindings.len()), bindings.as_raw_ptr());
+    return dld->vkBindImageMemory2(handle, vk_count(bindings.len()), bindings.as_raw_ptr());
 }
 
 VkResult Device::AllocateMemory(const VkMemoryAllocateInfo& ai, DeviceMemory& mem) const noexcept {
@@ -524,10 +528,10 @@ VkResult Image::BindMemory(VkDeviceMemory memory, VkDeviceSize offset) const noe
 }
 
 VkResult SwapchainKHR::GetImages(rstd::vec::Vec<VkImage>& images) const {
-    u32 num;
+    rstd::uint32_t num;
     if (auto res = dld->vkGetSwapchainImagesKHR(owner, handle, &num, nullptr); res != VK_SUCCESS)
         return res;
-    images.resize(num, VK_NULL_HANDLE);
+    images.resize(usize(num), VK_NULL_HANDLE);
     return dld->vkGetSwapchainImagesKHR(owner, handle, &num, images.data());
 }
 
@@ -550,16 +554,16 @@ void PhysicalDevice::GetFeatures2KHR(VkPhysicalDeviceFeatures2KHR& feats) const 
 
 VkResult PhysicalDevice::EnumerateDeviceExtensionProperties(
     rstd::vec::Vec<VkExtensionProperties>& properties) const {
-    u32      num;
-    VkResult res = dld->vkEnumerateDeviceExtensionProperties(handle, nullptr, &num, nullptr);
+    rstd::uint32_t num;
+    VkResult       res = dld->vkEnumerateDeviceExtensionProperties(handle, nullptr, &num, nullptr);
     if (res != VK_SUCCESS) return res;
 
-    properties.resize(num, VkExtensionProperties {});
+    properties.resize(usize(num), VkExtensionProperties {});
     return dld->vkEnumerateDeviceExtensionProperties(handle, nullptr, &num, properties.data());
 }
 
-VkResult PhysicalDevice::GetSurfaceSupportKHR(u32 queue_family_index, VkSurfaceKHR surface,
-                                              bool& supported) const {
+VkResult PhysicalDevice::GetSurfaceSupportKHR(rstd::uint32_t queue_family_index,
+                                              VkSurfaceKHR surface, bool& supported) const {
     VkBool32 vksupported;
     VkResult res = dld->vkGetPhysicalDeviceSurfaceSupportKHR(
         handle, queue_family_index, surface, &vksupported);
@@ -575,23 +579,23 @@ PhysicalDevice::GetSurfaceCapabilitiesKHR(VkSurfaceKHR              surface,
 
 VkResult PhysicalDevice::GetSurfaceFormatsKHR(VkSurfaceKHR                        surface,
                                               rstd::vec::Vec<VkSurfaceFormatKHR>& formats) const {
-    u32 num;
+    rstd::uint32_t num;
     if (auto res = dld->vkGetPhysicalDeviceSurfaceFormatsKHR(handle, surface, &num, nullptr);
         res != VK_SUCCESS) {
         return res;
     }
-    formats.resize(num, VkSurfaceFormatKHR {});
+    formats.resize(usize(num), VkSurfaceFormatKHR {});
     return dld->vkGetPhysicalDeviceSurfaceFormatsKHR(handle, surface, &num, formats.data());
 }
 
 VkResult PhysicalDevice::GetSurfacePresentModesKHR(VkSurfaceKHR                      surface,
                                                    rstd::vec::Vec<VkPresentModeKHR>& modes) const {
-    u32 num;
+    rstd::uint32_t num;
     if (auto res = dld->vkGetPhysicalDeviceSurfacePresentModesKHR(handle, surface, &num, nullptr);
         res != VK_SUCCESS) {
         return res;
     }
-    modes.resize(num, VK_PRESENT_MODE_IMMEDIATE_KHR);
+    modes.resize(usize(num), VK_PRESENT_MODE_IMMEDIATE_KHR);
     return dld->vkGetPhysicalDeviceSurfacePresentModesKHR(handle, surface, &num, modes.data());
 }
 
@@ -605,17 +609,18 @@ PhysicalDevice::GetMemoryProperties(void* next_structures) const noexcept {
 }
 
 rstd::vec::Vec<VkQueueFamilyProperties> PhysicalDevice::GetQueueFamilyProperties() const {
-    u32 num;
+    rstd::uint32_t num;
     dld->vkGetPhysicalDeviceQueueFamilyProperties2(handle, &num, nullptr);
-    auto properties2 = rstd::vec::Vec<VkQueueFamilyProperties2>::with_capacity(num);
+    auto properties2 = rstd::vec::Vec<VkQueueFamilyProperties2>::with_capacity(usize(num));
     properties2.resize(
-        num, VkQueueFamilyProperties2 { .sType = VK_STRUCTURE_TYPE_QUEUE_FAMILY_PROPERTIES_2 });
+        usize(num),
+        VkQueueFamilyProperties2 { .sType = VK_STRUCTURE_TYPE_QUEUE_FAMILY_PROPERTIES_2 });
     dld->vkGetPhysicalDeviceQueueFamilyProperties2(handle, &num, properties2.data());
 
-    auto properties = rstd::vec::Vec<VkQueueFamilyProperties>::with_capacity(num);
-    properties.reserve(num);
-    for (u32 i = 0; i < num; ++i) {
-        auto property = properties2[i].queueFamilyProperties;
+    auto properties = rstd::vec::Vec<VkQueueFamilyProperties>::with_capacity(usize(num));
+    properties.reserve(usize(num));
+    for (rstd::uint32_t i = 0; i < num; ++i) {
+        auto property = properties2[usize(i)].queueFamilyProperties;
         properties.push(rstd::move(property));
     }
     return properties;
@@ -628,7 +633,7 @@ VkResult CommandPool::Allocate(usize num_buffers, VkCommandBufferLevel level,
         .pNext              = nullptr,
         .commandPool        = handle,
         .level              = level,
-        .commandBufferCount = static_cast<u32>(num_buffers),
+        .commandBufferCount = vk_count(num_buffers),
     };
 
     auto buffers = rstd::vec::Vec<VkCommandBuffer>::with_capacity(num_buffers);
@@ -653,12 +658,12 @@ VkResult DeviceMemory::GetMemoryFdKHR(int* fd) const {
 
 rstd::Option<rstd::vec::Vec<VkExtensionProperties>>
 EnumerateInstanceExtensionProperties(const InstanceDispatch& dld) {
-    u32 num;
+    rstd::uint32_t num;
     if (dld.vkEnumerateInstanceExtensionProperties(nullptr, &num, nullptr) != VK_SUCCESS) {
         return rstd::None();
     }
-    auto properties = rstd::vec::Vec<VkExtensionProperties>::with_capacity(num);
-    properties.resize(num, VkExtensionProperties {});
+    auto properties = rstd::vec::Vec<VkExtensionProperties>::with_capacity(usize(num));
+    properties.resize(usize(num), VkExtensionProperties {});
     if (dld.vkEnumerateInstanceExtensionProperties(nullptr, &num, properties.data()) !=
         VK_SUCCESS) {
         return rstd::None();
@@ -668,12 +673,12 @@ EnumerateInstanceExtensionProperties(const InstanceDispatch& dld) {
 
 rstd::Option<rstd::vec::Vec<VkLayerProperties>>
 EnumerateInstanceLayerProperties(const InstanceDispatch& dld) {
-    u32 num;
+    rstd::uint32_t num;
     if (dld.vkEnumerateInstanceLayerProperties(&num, nullptr) != VK_SUCCESS) {
         return rstd::None();
     }
-    auto properties = rstd::vec::Vec<VkLayerProperties>::with_capacity(num);
-    properties.resize(num, VkLayerProperties {});
+    auto properties = rstd::vec::Vec<VkLayerProperties>::with_capacity(usize(num));
+    properties.resize(usize(num), VkLayerProperties {});
     if (dld.vkEnumerateInstanceLayerProperties(&num, properties.data()) != VK_SUCCESS) {
         return rstd::None();
     }

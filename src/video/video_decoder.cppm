@@ -10,17 +10,17 @@ export namespace wavsen::video
 using namespace rstd::prelude;
 
 struct Nv12Frame {
-    rstd::vec::Vec<u8> data;
-    u32                width { 0 };
-    u32                height { 0 };
-    double             pts_seconds { -1.0 };
-    u32                colorspace { 0 };
-    u32                color_range { 0 };
+    rstd::vec::Vec<rstd::uint8_t> data;
+    rstd::uint32_t                width { 0 };
+    rstd::uint32_t                height { 0 };
+    double                        pts_seconds { -1.0 };
+    rstd::uint32_t                colorspace { 0 };
+    rstd::uint32_t                color_range { 0 };
 };
 
 struct ProbeResult {
-    u32 width;
-    u32 height;
+    rstd::uint32_t width;
+    rstd::uint32_t height;
 };
 
 enum class NextFrame
@@ -31,18 +31,18 @@ enum class NextFrame
 };
 
 struct VkFrameView {
-    VkImage*       img;
-    VkImageLayout* layout;
-    VkSemaphore*   sem;
-    u64*           sem_value;
-    u32*           queue_family;
-    u32            plane_count;
-    u32            width;
-    u32            height;
-    double         pts_seconds;
-    u32            colorspace { 0 };
-    u32            color_range { 0 };
-    u32            bit_depth { 8 };
+    VkImage*        img;
+    VkImageLayout*  layout;
+    VkSemaphore*    sem;
+    rstd::uint64_t* sem_value;
+    rstd::uint32_t* queue_family;
+    rstd::uint32_t  plane_count;
+    rstd::uint32_t  width;
+    rstd::uint32_t  height;
+    double          pts_seconds;
+    rstd::uint32_t  colorspace { 0 };
+    rstd::uint32_t  color_range { 0 };
+    rstd::uint32_t  bit_depth { 8 };
 };
 
 enum class HwAccel
@@ -66,8 +66,10 @@ struct InputStream {
     struct Api {
         using Trait = InputStream;
 
-        auto read(u8* buf, int size) -> int { return rstd::trait_call<0>(this, buf, size); }
-        auto seek(i64 offset, int whence) -> i64 {
+        auto read(rstd::uint8_t* buf, int size) -> int {
+            return rstd::trait_call<0>(this, buf, size);
+        }
+        auto seek(rstd::int64_t offset, int whence) -> rstd::int64_t {
             return rstd::trait_call<1>(this, offset, whence);
         }
     };
@@ -86,50 +88,51 @@ enum class FrameKind
 };
 
 struct DrmPlane {
-    u32 object_index;
-    u64 offset;
-    u64 pitch;
+    rstd::uint32_t object_index;
+    rstd::uint64_t offset;
+    rstd::uint64_t pitch;
 };
 
 struct DrmLayer {
-    u32      fourcc;
-    u32      plane_count;
-    DrmPlane planes[4];
+    rstd::uint32_t fourcc;
+    rstd::uint32_t plane_count;
+    DrmPlane       planes[4];
 };
 
 struct DrmObject {
-    int fd;
-    u64 size;
-    u64 format_modifier;
+    int            fd;
+    rstd::uint64_t size;
+    rstd::uint64_t format_modifier;
 };
 
 struct DrmFrameView {
-    u32       object_count { 0 };
-    DrmObject objects[4] {};
-    u32       layer_count { 0 };
-    DrmLayer  layers[4] {};
-    u32       width { 0 };
-    u32       height { 0 };
-    double    pts_seconds { -1.0 };
-    u32       colorspace { 0 };
-    u32       color_range { 0 };
-    u32       bit_depth { 8 };
+    rstd::uint32_t object_count { 0 };
+    DrmObject      objects[4] {};
+    rstd::uint32_t layer_count { 0 };
+    DrmLayer       layers[4] {};
+    rstd::uint32_t width { 0 };
+    rstd::uint32_t height { 0 };
+    double         pts_seconds { -1.0 };
+    rstd::uint32_t colorspace { 0 };
+    rstd::uint32_t color_range { 0 };
+    rstd::uint32_t bit_depth { 8 };
 };
 
 class VideoDecoder {
 public:
     static auto probe_native(ref<str> path) -> Result<ProbeResult, Error>;
 
-    static auto open(ref<str> path, u32 target_width, u32 target_height, bool loop)
+    static auto open(ref<str> path, rstd::uint32_t target_width, rstd::uint32_t target_height,
+                     bool loop) -> Result<rstd::boxed::Box<VideoDecoder>, Error>;
+
+    static auto open_with_vk(ref<str> path, rstd::uint32_t target_width,
+                             rstd::uint32_t target_height, bool loop, const Producer& producer,
+                             const OpenOpts& opts = {})
         -> Result<rstd::boxed::Box<VideoDecoder>, Error>;
 
-    static auto open_with_vk(ref<str> path, u32 target_width, u32 target_height, bool loop,
-                             const Producer& producer, const OpenOpts& opts = {})
-        -> Result<rstd::boxed::Box<VideoDecoder>, Error>;
-
-    static auto open_from_stream(InputStreamFactory make_stream, u32 target_width,
-                                 u32 target_height, bool loop, const Producer* producer = nullptr,
-                                 const OpenOpts& opts = {})
+    static auto open_from_stream(InputStreamFactory make_stream, rstd::uint32_t target_width,
+                                 rstd::uint32_t target_height, bool loop,
+                                 const Producer* producer = nullptr, const OpenOpts& opts = {})
         -> Result<rstd::boxed::Box<VideoDecoder>, Error>;
 
     ~VideoDecoder();
@@ -140,11 +143,11 @@ public:
     auto next_vk_frame(VkFrameView& out) -> Result<NextFrame, Error>;
     auto next_drm_frame(DrmFrameView& out) -> Result<NextFrame, Error>;
 
-    FrameKind kind() const { return kind_; }
-    bool      using_vk_frames() const { return kind_ == FrameKind::VulkanShared; }
-    u32       width() const { return target_width_; }
-    u32       height() const { return target_height_; }
-    void      set_loop(bool loop) { loop_ = loop; }
+    FrameKind      kind() const { return kind_; }
+    bool           using_vk_frames() const { return kind_ == FrameKind::VulkanShared; }
+    rstd::uint32_t width() const { return target_width_; }
+    rstd::uint32_t height() const { return target_height_; }
+    void           set_loop(bool loop) { loop_ = loop; }
 
     struct State;
 
@@ -170,19 +173,20 @@ private:
         Option<rstd::boxed::Box<dyn<InputStream>>> stream;
     };
 
-    static auto build_internal(InputSpec input, u32 target_width, u32 target_height, bool loop,
-                               void* prebuilt_hwdevice, FrameKind requested_kind, Error* err)
+    static auto build_internal(InputSpec input, rstd::uint32_t target_width,
+                               rstd::uint32_t target_height, bool loop, void* prebuilt_hwdevice,
+                               FrameKind requested_kind, Error* err)
         -> Option<rstd::boxed::Box<VideoDecoder>>;
 
     int next_frame_(Nv12Frame& out, Error* err);
     int next_vk_frame_(VkFrameView& out, Error* err);
     int next_drm_frame_(DrmFrameView& out, Error* err);
 
-    StateOwner state_;
-    u32        target_width_ { 0 };
-    u32        target_height_ { 0 };
-    bool       loop_ { false };
-    FrameKind  kind_ { FrameKind::Sw };
+    StateOwner     state_;
+    rstd::uint32_t target_width_ { 0 };
+    rstd::uint32_t target_height_ { 0 };
+    bool           loop_ { false };
+    FrameKind      kind_ { FrameKind::Sw };
 };
 
 } // namespace wavsen::video
