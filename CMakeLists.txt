@@ -23,11 +23,9 @@ else()
         "WAVSEN_AUDIO_BACKEND='${WAVSEN_AUDIO_BACKEND}' is not one of: pulse pipewire")
 endif()
 
-find_package(Vulkan REQUIRED)
-
-if(NOT TARGET GPUOpen::VulkanMemoryAllocator)
+if(NOT TARGET vvk::vvk)
     message(FATAL_ERROR
-        "wavsen requires the host project to provide GPUOpen::VulkanMemoryAllocator")
+        "wavsen requires the host project to provide vvk::vvk")
 endif()
 
 # ---------------------------------------------------------------------------
@@ -35,44 +33,11 @@ endif()
 # its own STATIC library so external consumers can pick & link them.
 # ---------------------------------------------------------------------------
 add_subdirectory(src/ffi/ffmpeg)
-add_subdirectory(src/ffi/vulkan)
-add_subdirectory(src/ffi/vma)
 if(WAVSEN_AUDIO_BACKEND STREQUAL "pulse")
     add_subdirectory(src/ffi/pulse)
 else()
     add_subdirectory(src/ffi/pipewire)
 endif()
-
-
-add_library(wavsen_vvk STATIC
-    src/vvk/vvk.cpp
-)
-add_library(wavsen::vvk ALIAS wavsen_vvk)
-
-target_compile_features(wavsen_vvk PUBLIC cxx_std_20)
-target_sources(wavsen_vvk
-    PUBLIC FILE_SET CXX_MODULES FILES
-        src/vvk/vvk.cppm
-        src/vvk/handle.cppm
-        src/vvk/vma.cppm
-        src/vvk/dispatch.cppm
-        src/vvk/objects.cppm
-        src/vvk/completion.cppm
-        src/vvk/descriptor.cppm
-)
-target_include_directories(wavsen_vvk PUBLIC src/vvk/include)
-target_link_libraries(wavsen_vvk
-    PUBLIC
-        rstd::rstd
-        rstd.cppstd
-        wavsen::ffi::vulkan
-        wavsen::ffi::vma
-    PRIVATE
-        rstd.log
-)
-set_property(TARGET wavsen_vvk PROPERTY POSITION_INDEPENDENT_CODE ON)
-set_target_properties(wavsen_vvk PROPERTIES CXX_SCAN_FOR_MODULES ON)
-
 
 add_library(wavsen_decode STATIC)
 add_library(wavsen::decode ALIAS wavsen_decode)
@@ -145,7 +110,7 @@ target_link_libraries(wavsen_video
     PUBLIC
         rstd::rstd
         wavsen::ffi::ffmpeg
-        wavsen::vvk
+        vvk::vvk
     PRIVATE
         rstd.log
 )

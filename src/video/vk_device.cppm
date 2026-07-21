@@ -2,7 +2,7 @@ export module wavsen.video:vk_device;
 
 import rstd;
 export import vulkan;
-import wavsen.vvk;
+import vvk;
 
 export namespace wavsen::video
 {

@@ -2,7 +2,7 @@ module;
 
 /* convert_drm_prime_ touches a wide slice of Vulkan: external memory FD
  * import, image plane memory binding, DRM modifier image creation. The
- * wavsen::ffi::vulkan module exports only a curated subset; pull the
+ * vvk::ffi::vulkan module exports only a curated subset; pull the
  * full header into the GMF for the implementation. */
 #include <vulkan/vulkan.h>
 #include "nv12_to_rgba.spv.h" // generated at build time by glslangValidator

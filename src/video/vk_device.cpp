@@ -3,7 +3,7 @@ module wavsen.video;
 import rstd;
 import rstd.cppstd;
 import vulkan;
-import wavsen.vvk;
+import vvk;
 import :vk_device;
 
 using namespace rstd::prelude;

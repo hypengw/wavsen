@@ -26,8 +26,8 @@ target_link_libraries(wavsen_ffi_ffmpeg
     PRIVATE
         # avutil.cppm GMF #includes <vulkan/vulkan.h> for hwcontext_vulkan.h.
         # Consumers that touch AVVulkanDeviceContext-bearing fields need to
-        # link wavsen::ffi::vulkan separately (or include vulkan.h themselves).
-        Vulkan::Vulkan
+        # link vvk::ffi::vulkan separately (or include vulkan.h themselves).
+        vvk::ffi::vulkan
 )
 
 # swresample is optional at the workspace level (only audio targets need it).
