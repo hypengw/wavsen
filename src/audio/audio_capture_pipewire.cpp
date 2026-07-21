@@ -19,13 +19,15 @@ import :capture;
 namespace wavsen::audio
 {
 
+namespace pipewire_ffi = wavsen::ffi::pipewire;
+
 namespace
 {
 
 std::once_flag g_pw_init_once_capture;
-void           ensure_pw_init() {
-    std::call_once(g_pw_init_once_capture, [] {
-        pw_init(nullptr, nullptr);
+void           ensure_pw_init(const pipewire_ffi::Api& api) {
+    std::call_once(g_pw_init_once_capture, [&api] {
+        api.pw_init(nullptr, nullptr);
     });
 }
 
@@ -42,16 +44,22 @@ public:
     bool init() {
         if (is_inited()) return true;
 
-        ensure_pw_init();
+        api_ = pipewire_ffi::load();
+        if (! api_) {
+            rstd::log::error("wavsen::audio: capture failed to load PipeWire: {}",
+                             pipewire_ffi::load_error());
+            return false;
+        }
+        ensure_pw_init(*api_);
 
-        loop_ = pw_thread_loop_new("wavsen-capture", nullptr);
+        loop_ = api_->pw_thread_loop_new("wavsen-capture", nullptr);
         if (! loop_) {
             rstd::log::error("wavsen::audio: capture pw_thread_loop_new failed");
             return false;
         }
-        if (pw_thread_loop_start(loop_) < 0) {
+        if (api_->pw_thread_loop_start(loop_) < 0) {
             rstd::log::error("wavsen::audio: capture pw_thread_loop_start failed");
-            pw_thread_loop_destroy(loop_);
+            api_->pw_thread_loop_destroy(loop_);
             loop_ = nullptr;
             return false;
         }
@@ -71,32 +79,32 @@ public:
             .trigger_done  = nullptr,
         };
 
-        pw_thread_loop_lock(loop_);
+        api_->pw_thread_loop_lock(loop_);
 
-        auto* props = pw_properties_new(PW_KEY_MEDIA_TYPE,
-                                        "Audio",
-                                        PW_KEY_MEDIA_CATEGORY,
-                                        "Capture",
-                                        PW_KEY_MEDIA_ROLE,
-                                        "Music",
-                                        PW_KEY_APP_NAME,
-                                        "wavsen",
-                                        PW_KEY_NODE_NAME,
-                                        "wavsen-capture",
-                                        PW_KEY_NODE_DESCRIPTION,
-                                        "wavsen audio response capture",
-                                        PW_KEY_STREAM_CAPTURE_SINK,
-                                        "true",
-                                        nullptr);
-        pw_properties_setf(props, PW_KEY_NODE_LATENCY, "%u/%u", kQuantum, kDefaultRate);
+        auto* props = api_->pw_properties_new(PW_KEY_MEDIA_TYPE,
+                                              "Audio",
+                                              PW_KEY_MEDIA_CATEGORY,
+                                              "Capture",
+                                              PW_KEY_MEDIA_ROLE,
+                                              "Music",
+                                              PW_KEY_APP_NAME,
+                                              "wavsen",
+                                              PW_KEY_NODE_NAME,
+                                              "wavsen-capture",
+                                              PW_KEY_NODE_DESCRIPTION,
+                                              "wavsen audio response capture",
+                                              PW_KEY_STREAM_CAPTURE_SINK,
+                                              "true",
+                                              nullptr);
+        api_->pw_properties_setf(props, PW_KEY_NODE_LATENCY, "%u/%u", kQuantum, kDefaultRate);
 
-        stream_ = pw_stream_new_simple(
-            pw_thread_loop_get_loop(loop_), "wavsen-capture", props, &stream_events, this);
+        stream_ = api_->pw_stream_new_simple(
+            api_->pw_thread_loop_get_loop(loop_), "wavsen-capture", props, &stream_events, this);
         if (! stream_) {
-            pw_thread_loop_unlock(loop_);
+            api_->pw_thread_loop_unlock(loop_);
             rstd::log::error("wavsen::audio: capture pw_stream_new_simple failed");
-            pw_thread_loop_stop(loop_);
-            pw_thread_loop_destroy(loop_);
+            api_->pw_thread_loop_stop(loop_);
+            api_->pw_thread_loop_destroy(loop_);
             loop_ = nullptr;
             return false;
         }
@@ -117,18 +125,18 @@ public:
         const auto flags = static_cast<pw_stream_flags>(
             PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS | PW_STREAM_FLAG_RT_PROCESS);
 
-        if (pw_stream_connect(stream_, PW_DIRECTION_INPUT, PW_ID_ANY, flags, params, 1) < 0) {
+        if (api_->pw_stream_connect(stream_, PW_DIRECTION_INPUT, PW_ID_ANY, flags, params, 1) < 0) {
             rstd::log::error("wavsen::audio: capture pw_stream_connect failed");
-            pw_stream_destroy(stream_);
+            api_->pw_stream_destroy(stream_);
             stream_ = nullptr;
-            pw_thread_loop_unlock(loop_);
-            pw_thread_loop_stop(loop_);
-            pw_thread_loop_destroy(loop_);
+            api_->pw_thread_loop_unlock(loop_);
+            api_->pw_thread_loop_stop(loop_);
+            api_->pw_thread_loop_destroy(loop_);
             loop_ = nullptr;
             return false;
         }
 
-        pw_thread_loop_unlock(loop_);
+        api_->pw_thread_loop_unlock(loop_);
 
         rstd::log::info("wavsen::audio: capture inited (monitor sink, "
                         "{} ch @ {} Hz)",
@@ -139,14 +147,14 @@ public:
 
     void uninit() {
         if (stream_) {
-            pw_thread_loop_lock(loop_);
-            pw_stream_destroy(stream_);
+            api_->pw_thread_loop_lock(loop_);
+            api_->pw_stream_destroy(stream_);
             stream_ = nullptr;
-            pw_thread_loop_unlock(loop_);
+            api_->pw_thread_loop_unlock(loop_);
         }
         if (loop_) {
-            pw_thread_loop_stop(loop_);
-            pw_thread_loop_destroy(loop_);
+            api_->pw_thread_loop_stop(loop_);
+            api_->pw_thread_loop_destroy(loop_);
             loop_ = nullptr;
         }
     }
@@ -178,12 +186,12 @@ private:
         auto* self = static_cast<Impl*>(user);
         if (! self->stream_) return;
 
-        pw_buffer* b = pw_stream_dequeue_buffer(self->stream_);
+        pw_buffer* b = self->api_->pw_stream_dequeue_buffer(self->stream_);
         if (! b) return;
 
         auto* sb = b->buffer;
         if (! sb || sb->n_datas == 0 || ! sb->datas[0].data) {
-            pw_stream_queue_buffer(self->stream_, b);
+            self->api_->pw_stream_queue_buffer(self->stream_, b);
             return;
         }
 
@@ -200,7 +208,7 @@ private:
 
         self->ingest(src, n_frames, channels);
 
-        pw_stream_queue_buffer(self->stream_, b);
+        self->api_->pw_stream_queue_buffer(self->stream_, b);
     }
 
     static void on_state_changed(void* /*user*/, ::pw_stream_state /*old*/, ::pw_stream_state state,
@@ -274,8 +282,9 @@ private:
         seq_.fetch_add(1, std::memory_order_release);
     }
 
-    ::pw_thread_loop* loop_   = nullptr;
-    ::pw_stream*      stream_ = nullptr;
+    const pipewire_ffi::Api* api_    = nullptr;
+    ::pw_thread_loop*        loop_   = nullptr;
+    ::pw_stream*             stream_ = nullptr;
 
     std::array<float, dsp::kFftSize> ring_left_ {};
     std::array<float, dsp::kFftSize> ring_right_ {};

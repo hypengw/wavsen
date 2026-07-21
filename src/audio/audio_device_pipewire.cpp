@@ -16,13 +16,15 @@ import :core;
 namespace wavsen::audio
 {
 
+namespace pipewire_ffi = wavsen::ffi::pipewire;
+
 namespace
 {
 
 std::once_flag g_pw_init_once;
-void           ensure_pw_init() {
-    std::call_once(g_pw_init_once, [] {
-        pw_init(nullptr, nullptr);
+void           ensure_pw_init(const pipewire_ffi::Api& api) {
+    std::call_once(g_pw_init_once, [&api] {
+        api.pw_init(nullptr, nullptr);
     });
 }
 
@@ -59,17 +61,23 @@ public:
             return false;
         }
 
-        ensure_pw_init();
+        api_ = pipewire_ffi::load();
+        if (! api_) {
+            rstd::log::error("wavsen::audio: failed to load PipeWire: {}",
+                             pipewire_ffi::load_error());
+            return false;
+        }
+        ensure_pw_init(*api_);
 
-        loop_ = pw_thread_loop_new("wavsen-audio", nullptr);
+        loop_ = api_->pw_thread_loop_new("wavsen-audio", nullptr);
         if (! loop_) {
             rstd::log::error("wavsen::audio: pw_thread_loop_new failed");
             return false;
         }
 
-        if (pw_thread_loop_start(loop_) < 0) {
+        if (api_->pw_thread_loop_start(loop_) < 0) {
             rstd::log::error("wavsen::audio: pw_thread_loop_start failed");
-            pw_thread_loop_destroy(loop_);
+            api_->pw_thread_loop_destroy(loop_);
             loop_ = nullptr;
             return false;
         }
@@ -89,41 +97,44 @@ public:
             .trigger_done  = nullptr,
         };
 
-        pw_thread_loop_lock(loop_);
+        api_->pw_thread_loop_lock(loop_);
 
-        auto* props = pw_properties_new(PW_KEY_MEDIA_TYPE,
-                                        "Audio",
-                                        PW_KEY_MEDIA_CATEGORY,
-                                        "Playback",
-                                        PW_KEY_MEDIA_ROLE,
-                                        identity_.media_role.c_str(),
-                                        PW_KEY_APP_NAME,
-                                        identity_.application_name.c_str(),
-                                        PW_KEY_APP_ID,
-                                        identity_.application_id.c_str(),
-                                        PW_KEY_NODE_NAME,
-                                        stream_name->c_str(),
-                                        PW_KEY_NODE_DESCRIPTION,
-                                        identity_.media_name.c_str(),
-                                        nullptr);
+        auto* props = api_->pw_properties_new(PW_KEY_MEDIA_TYPE,
+                                              "Audio",
+                                              PW_KEY_MEDIA_CATEGORY,
+                                              "Playback",
+                                              PW_KEY_MEDIA_ROLE,
+                                              identity_.media_role.c_str(),
+                                              PW_KEY_APP_NAME,
+                                              identity_.application_name.c_str(),
+                                              PW_KEY_APP_ID,
+                                              identity_.application_id.c_str(),
+                                              PW_KEY_NODE_NAME,
+                                              stream_name->c_str(),
+                                              PW_KEY_NODE_DESCRIPTION,
+                                              identity_.media_name.c_str(),
+                                              nullptr);
         if (! props) {
-            pw_thread_loop_unlock(loop_);
+            api_->pw_thread_loop_unlock(loop_);
             rstd::log::error("wavsen::audio: pw_properties_new failed");
-            pw_thread_loop_stop(loop_);
-            pw_thread_loop_destroy(loop_);
+            api_->pw_thread_loop_stop(loop_);
+            api_->pw_thread_loop_destroy(loop_);
             loop_ = nullptr;
             return false;
         }
-        pw_properties_setf(props, PW_KEY_NODE_LATENCY, "%u/%u", kQuantum, kDefaultRate);
-        pw_properties_setf(props, PW_KEY_NODE_RATE, "1/%u", kDefaultRate);
+        api_->pw_properties_setf(props, PW_KEY_NODE_LATENCY, "%u/%u", kQuantum, kDefaultRate);
+        api_->pw_properties_setf(props, PW_KEY_NODE_RATE, "1/%u", kDefaultRate);
 
-        stream_ = pw_stream_new_simple(
-            pw_thread_loop_get_loop(loop_), stream_name->c_str(), props, &stream_events, this);
+        stream_ = api_->pw_stream_new_simple(api_->pw_thread_loop_get_loop(loop_),
+                                             stream_name->c_str(),
+                                             props,
+                                             &stream_events,
+                                             this);
         if (! stream_) {
-            pw_thread_loop_unlock(loop_);
+            api_->pw_thread_loop_unlock(loop_);
             rstd::log::error("wavsen::audio: pw_stream_new_simple failed");
-            pw_thread_loop_stop(loop_);
-            pw_thread_loop_destroy(loop_);
+            api_->pw_thread_loop_stop(loop_);
+            api_->pw_thread_loop_destroy(loop_);
             loop_ = nullptr;
             return false;
         }
@@ -144,18 +155,19 @@ public:
         const auto flags = static_cast<pw_stream_flags>(
             PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS | PW_STREAM_FLAG_RT_PROCESS);
 
-        if (pw_stream_connect(stream_, PW_DIRECTION_OUTPUT, PW_ID_ANY, flags, params, 1) < 0) {
+        if (api_->pw_stream_connect(stream_, PW_DIRECTION_OUTPUT, PW_ID_ANY, flags, params, 1) <
+            0) {
             rstd::log::error("wavsen::audio: pw_stream_connect failed");
-            pw_stream_destroy(stream_);
+            api_->pw_stream_destroy(stream_);
             stream_ = nullptr;
-            pw_thread_loop_unlock(loop_);
-            pw_thread_loop_stop(loop_);
-            pw_thread_loop_destroy(loop_);
+            api_->pw_thread_loop_unlock(loop_);
+            api_->pw_thread_loop_stop(loop_);
+            api_->pw_thread_loop_destroy(loop_);
             loop_ = nullptr;
             return false;
         }
 
-        pw_thread_loop_unlock(loop_);
+        api_->pw_thread_loop_unlock(loop_);
 
         desc_ = { kDefaultChannels, kDefaultRate };
 
@@ -174,14 +186,14 @@ public:
 
     void uninit() {
         if (stream_) {
-            pw_thread_loop_lock(loop_);
-            pw_stream_destroy(stream_);
+            api_->pw_thread_loop_lock(loop_);
+            api_->pw_stream_destroy(stream_);
             stream_ = nullptr;
-            pw_thread_loop_unlock(loop_);
+            api_->pw_thread_loop_unlock(loop_);
         }
         if (loop_) {
-            pw_thread_loop_stop(loop_);
-            pw_thread_loop_destroy(loop_);
+            api_->pw_thread_loop_stop(loop_);
+            api_->pw_thread_loop_destroy(loop_);
             loop_ = nullptr;
         }
     }
@@ -190,16 +202,16 @@ public:
 
     void start() {
         if (! stream_) return;
-        pw_thread_loop_lock(loop_);
-        pw_stream_set_active(stream_, true);
-        pw_thread_loop_unlock(loop_);
+        api_->pw_thread_loop_lock(loop_);
+        api_->pw_stream_set_active(stream_, true);
+        api_->pw_thread_loop_unlock(loop_);
     }
 
     void stop() {
         if (! stream_) return;
-        pw_thread_loop_lock(loop_);
-        pw_stream_set_active(stream_, false);
-        pw_thread_loop_unlock(loop_);
+        api_->pw_thread_loop_lock(loop_);
+        api_->pw_stream_set_active(stream_, false);
+        api_->pw_thread_loop_unlock(loop_);
     }
 
     void mount(std::unique_ptr<IPullChannel> ch) {
@@ -262,7 +274,7 @@ public:
     std::uint64_t stream_position_frames() const {
         if (! stream_) return 0;
         pw_time t {};
-        if (pw_stream_get_time_n(stream_, &t, sizeof(t)) < 0) return 0;
+        if (api_->pw_stream_get_time_n(stream_, &t, sizeof(t)) < 0) return 0;
         if (t.ticks <= static_cast<std::uint64_t>(t.delay)) return 0;
         return t.ticks - static_cast<std::uint64_t>(t.delay);
     }
@@ -305,12 +317,12 @@ private:
         auto* self = static_cast<Impl*>(user);
         if (! self->stream_) return;
 
-        pw_buffer* b = pw_stream_dequeue_buffer(self->stream_);
+        pw_buffer* b = self->api_->pw_stream_dequeue_buffer(self->stream_);
         if (! b) return;
 
         auto* sb = b->buffer;
         if (! sb || sb->n_datas == 0 || ! sb->datas[0].data) {
-            pw_stream_queue_buffer(self->stream_, b);
+            self->api_->pw_stream_queue_buffer(self->stream_, b);
             return;
         }
 
@@ -348,7 +360,7 @@ private:
         sb->datas[0].chunk->stride = static_cast<std::int32_t>(stride);
         sb->datas[0].chunk->size   = n_frames * stride;
 
-        pw_stream_queue_buffer(self->stream_, b);
+        self->api_->pw_stream_queue_buffer(self->stream_, b);
     }
 
     static void on_state_changed(void* /*user*/, ::pw_stream_state /*old*/, ::pw_stream_state state,
@@ -369,10 +381,11 @@ private:
         }
     }
 
-    ::pw_thread_loop*   loop_   = nullptr;
-    ::pw_stream*        stream_ = nullptr;
-    DeviceDesc          desc_ {};
-    AudioClientIdentity identity_;
+    const pipewire_ffi::Api* api_    = nullptr;
+    ::pw_thread_loop*        loop_   = nullptr;
+    ::pw_stream*             stream_ = nullptr;
+    DeviceDesc               desc_ {};
+    AudioClientIdentity      identity_;
 
     std::mutex                                 channels_mu_;
     std::vector<std::unique_ptr<IPullChannel>> channels_;

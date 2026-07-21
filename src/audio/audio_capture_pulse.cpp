@@ -19,6 +19,8 @@ import :capture;
 namespace wavsen::audio
 {
 
+namespace pulse_ffi = wavsen::ffi::pulse;
+
 namespace
 {
 
@@ -35,72 +37,79 @@ public:
     bool init() {
         if (is_inited()) return true;
 
-        loop_ = pa_threaded_mainloop_new();
+        api_ = pulse_ffi::load();
+        if (! api_) {
+            rstd::log::error("wavsen::audio: capture failed to load PulseAudio: {}",
+                             pulse_ffi::load_error());
+            return false;
+        }
+
+        loop_ = api_->pa_threaded_mainloop_new();
         if (! loop_) {
             rstd::log::error("wavsen::audio: capture pa_threaded_mainloop_new failed");
             return false;
         }
-        if (pa_threaded_mainloop_start(loop_) < 0) {
+        if (api_->pa_threaded_mainloop_start(loop_) < 0) {
             rstd::log::error("wavsen::audio: capture pa_threaded_mainloop_start failed");
-            pa_threaded_mainloop_free(loop_);
+            api_->pa_threaded_mainloop_free(loop_);
             loop_ = nullptr;
             return false;
         }
 
-        pa_threaded_mainloop_lock(loop_);
+        api_->pa_threaded_mainloop_lock(loop_);
 
-        ctx_ = pa_context_new(pa_threaded_mainloop_get_api(loop_), "wavsen-capture");
+        ctx_ = api_->pa_context_new(api_->pa_threaded_mainloop_get_api(loop_), "wavsen-capture");
         if (! ctx_) {
-            pa_threaded_mainloop_unlock(loop_);
+            api_->pa_threaded_mainloop_unlock(loop_);
             rstd::log::error("wavsen::audio: capture pa_context_new failed");
-            pa_threaded_mainloop_stop(loop_);
-            pa_threaded_mainloop_free(loop_);
+            api_->pa_threaded_mainloop_stop(loop_);
+            api_->pa_threaded_mainloop_free(loop_);
             loop_ = nullptr;
             return false;
         }
-        pa_context_set_state_callback(ctx_, &Impl::on_context_state, this);
+        api_->pa_context_set_state_callback(ctx_, &Impl::on_context_state, this);
 
-        if (pa_context_connect(ctx_, nullptr, PA_CONTEXT_NOFLAGS, nullptr) < 0) {
+        if (api_->pa_context_connect(ctx_, nullptr, PA_CONTEXT_NOFLAGS, nullptr) < 0) {
             rstd::log::error("wavsen::audio: capture pa_context_connect failed: {}",
-                             pa_strerror(pa_context_errno(ctx_)));
+                             api_->pa_strerror(api_->pa_context_errno(ctx_)));
             destroy_locked();
-            pa_threaded_mainloop_unlock(loop_);
+            api_->pa_threaded_mainloop_unlock(loop_);
             shutdown_loop();
             return false;
         }
 
         for (;;) {
-            const auto st = pa_context_get_state(ctx_);
+            const auto st = api_->pa_context_get_state(ctx_);
             if (st == PA_CONTEXT_READY) break;
             if (! PA_CONTEXT_IS_GOOD(st)) {
                 rstd::log::error("wavsen::audio: capture pa_context failed: {}",
-                                 pa_strerror(pa_context_errno(ctx_)));
+                                 api_->pa_strerror(api_->pa_context_errno(ctx_)));
                 destroy_locked();
-                pa_threaded_mainloop_unlock(loop_);
+                api_->pa_threaded_mainloop_unlock(loop_);
                 shutdown_loop();
                 return false;
             }
-            pa_threaded_mainloop_wait(loop_);
+            api_->pa_threaded_mainloop_wait(loop_);
         }
 
         // Resolve default sink → "<sink>.monitor" source name.
         default_sink_.clear();
         server_info_done_ = false;
-        auto* op          = pa_context_get_server_info(ctx_, &Impl::on_server_info, this);
+        auto* op          = api_->pa_context_get_server_info(ctx_, &Impl::on_server_info, this);
         if (! op) {
             rstd::log::error("wavsen::audio: capture pa_context_get_server_info failed");
             destroy_locked();
-            pa_threaded_mainloop_unlock(loop_);
+            api_->pa_threaded_mainloop_unlock(loop_);
             shutdown_loop();
             return false;
         }
         while (! server_info_done_) {
-            pa_threaded_mainloop_wait(loop_);
+            api_->pa_threaded_mainloop_wait(loop_);
         }
         if (default_sink_.empty()) {
             rstd::log::error("wavsen::audio: capture could not resolve default sink");
             destroy_locked();
-            pa_threaded_mainloop_unlock(loop_);
+            api_->pa_threaded_mainloop_unlock(loop_);
             shutdown_loop();
             return false;
         }
@@ -112,19 +121,19 @@ public:
         ss.channels = static_cast<std::uint8_t>(kDefaultChannels);
 
         pa_channel_map cm {};
-        pa_channel_map_init_stereo(&cm);
+        api_->pa_channel_map_init_stereo(&cm);
 
-        stream_ = pa_stream_new(ctx_, "wavsen-capture", &ss, &cm);
+        stream_ = api_->pa_stream_new(ctx_, "wavsen-capture", &ss, &cm);
         if (! stream_) {
             rstd::log::error("wavsen::audio: capture pa_stream_new failed: {}",
-                             pa_strerror(pa_context_errno(ctx_)));
+                             api_->pa_strerror(api_->pa_context_errno(ctx_)));
             destroy_locked();
-            pa_threaded_mainloop_unlock(loop_);
+            api_->pa_threaded_mainloop_unlock(loop_);
             shutdown_loop();
             return false;
         }
-        pa_stream_set_state_callback(stream_, &Impl::on_stream_state, this);
-        pa_stream_set_read_callback(stream_, &Impl::on_read, this);
+        api_->pa_stream_set_state_callback(stream_, &Impl::on_stream_state, this);
+        api_->pa_stream_set_read_callback(stream_, &Impl::on_read, this);
 
         const auto     frame_bytes = kDefaultChannels * static_cast<std::uint32_t>(sizeof(float));
         pa_buffer_attr ba {};
@@ -136,30 +145,30 @@ public:
 
         const auto flags = static_cast<pa_stream_flags_t>(PA_STREAM_ADJUST_LATENCY);
 
-        if (pa_stream_connect_record(stream_, monitor_name.c_str(), &ba, flags) < 0) {
+        if (api_->pa_stream_connect_record(stream_, monitor_name.c_str(), &ba, flags) < 0) {
             rstd::log::error("wavsen::audio: capture pa_stream_connect_record failed: {}",
-                             pa_strerror(pa_context_errno(ctx_)));
+                             api_->pa_strerror(api_->pa_context_errno(ctx_)));
             destroy_locked();
-            pa_threaded_mainloop_unlock(loop_);
+            api_->pa_threaded_mainloop_unlock(loop_);
             shutdown_loop();
             return false;
         }
 
         for (;;) {
-            const auto st = pa_stream_get_state(stream_);
+            const auto st = api_->pa_stream_get_state(stream_);
             if (st == PA_STREAM_READY) break;
             if (! PA_STREAM_IS_GOOD(st)) {
                 rstd::log::error("wavsen::audio: capture pa_stream failed: {}",
-                                 pa_strerror(pa_context_errno(ctx_)));
+                                 api_->pa_strerror(api_->pa_context_errno(ctx_)));
                 destroy_locked();
-                pa_threaded_mainloop_unlock(loop_);
+                api_->pa_threaded_mainloop_unlock(loop_);
                 shutdown_loop();
                 return false;
             }
-            pa_threaded_mainloop_wait(loop_);
+            api_->pa_threaded_mainloop_wait(loop_);
         }
 
-        pa_threaded_mainloop_unlock(loop_);
+        api_->pa_threaded_mainloop_unlock(loop_);
 
         rstd::log::info("wavsen::audio: capture inited (pulse monitor '{}', "
                         "{} ch @ {} Hz)",
@@ -171,9 +180,9 @@ public:
 
     void uninit() {
         if (loop_) {
-            pa_threaded_mainloop_lock(loop_);
+            api_->pa_threaded_mainloop_lock(loop_);
             destroy_locked();
-            pa_threaded_mainloop_unlock(loop_);
+            api_->pa_threaded_mainloop_unlock(loop_);
             shutdown_loop();
         }
     }
@@ -203,35 +212,35 @@ public:
 private:
     void destroy_locked() {
         if (stream_) {
-            pa_stream_set_state_callback(stream_, nullptr, nullptr);
-            pa_stream_set_read_callback(stream_, nullptr, nullptr);
-            pa_stream_disconnect(stream_);
-            pa_stream_unref(stream_);
+            api_->pa_stream_set_state_callback(stream_, nullptr, nullptr);
+            api_->pa_stream_set_read_callback(stream_, nullptr, nullptr);
+            api_->pa_stream_disconnect(stream_);
+            api_->pa_stream_unref(stream_);
             stream_ = nullptr;
         }
         if (ctx_) {
-            pa_context_set_state_callback(ctx_, nullptr, nullptr);
-            pa_context_disconnect(ctx_);
-            pa_context_unref(ctx_);
+            api_->pa_context_set_state_callback(ctx_, nullptr, nullptr);
+            api_->pa_context_disconnect(ctx_);
+            api_->pa_context_unref(ctx_);
             ctx_ = nullptr;
         }
     }
     void shutdown_loop() {
         if (loop_) {
-            pa_threaded_mainloop_stop(loop_);
-            pa_threaded_mainloop_free(loop_);
+            api_->pa_threaded_mainloop_stop(loop_);
+            api_->pa_threaded_mainloop_free(loop_);
             loop_ = nullptr;
         }
     }
 
     static void on_context_state(::pa_context* /*c*/, void* user) {
         auto* self = static_cast<Impl*>(user);
-        pa_threaded_mainloop_signal(self->loop_, 0);
+        self->api_->pa_threaded_mainloop_signal(self->loop_, 0);
     }
 
     static void on_stream_state(::pa_stream* /*s*/, void* user) {
         auto* self = static_cast<Impl*>(user);
-        pa_threaded_mainloop_signal(self->loop_, 0);
+        self->api_->pa_threaded_mainloop_signal(self->loop_, 0);
     }
 
     static void on_server_info(::pa_context* /*c*/, const ::pa_server_info* info, void* user) {
@@ -240,19 +249,19 @@ private:
             self->default_sink_ = info->default_sink_name;
         }
         self->server_info_done_ = true;
-        pa_threaded_mainloop_signal(self->loop_, 0);
+        self->api_->pa_threaded_mainloop_signal(self->loop_, 0);
     }
 
     static void on_read(::pa_stream* s, size_t /*nbytes*/, void* user) {
         auto* self = static_cast<Impl*>(user);
-        while (pa_stream_readable_size(s) > 0) {
+        while (self->api_->pa_stream_readable_size(s) > 0) {
             const void* data = nullptr;
             size_t      sz   = 0;
-            if (pa_stream_peek(s, &data, &sz) < 0) return;
+            if (self->api_->pa_stream_peek(s, &data, &sz) < 0) return;
             if (sz == 0) return;
             // A hole: data==nullptr means dropped samples; advance and continue.
             if (! data) {
-                pa_stream_drop(s);
+                self->api_->pa_stream_drop(s);
                 continue;
             }
             constexpr std::uint32_t channels = kDefaultChannels;
@@ -260,7 +269,7 @@ private:
             const auto*             src      = static_cast<const float*>(data);
             const std::uint32_t     n_frames = static_cast<std::uint32_t>(sz / stride);
             self->ingest(src, n_frames, channels);
-            pa_stream_drop(s);
+            self->api_->pa_stream_drop(s);
         }
     }
 
@@ -313,6 +322,7 @@ private:
         seq_.fetch_add(1, std::memory_order_release);
     }
 
+    const pulse_ffi::Api*   api_    = nullptr;
     ::pa_threaded_mainloop* loop_   = nullptr;
     ::pa_context*           ctx_    = nullptr;
     ::pa_stream*            stream_ = nullptr;

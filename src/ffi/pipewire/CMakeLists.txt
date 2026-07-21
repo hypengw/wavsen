@@ -1,5 +1,4 @@
-# wavsen::ffi::pipewire — C++20 module wrapper around libpipewire-0.3.
-# Consumers `import pipewire;` instead of `#include <pipewire/pipewire.h>`.
+# wavsen::ffi::pipewire — C++20 module dynamically loading libpipewire-0.3.
 
 add_library(wavsen_ffi_pipewire STATIC)
 add_library(wavsen::ffi::pipewire ALIAS wavsen_ffi_pipewire)
@@ -12,11 +11,19 @@ target_compile_options(wavsen_ffi_pipewire PRIVATE
 target_sources(wavsen_ffi_pipewire
     PUBLIC FILE_SET CXX_MODULES FILES
         pipewire.cppm
+    PRIVATE
+        pipewire.cpp
 )
 
+target_include_directories(wavsen_ffi_pipewire SYSTEM PUBLIC
+    ${WAVSEN_LIBPIPEWIRE_INCLUDE_DIRS}
+)
 target_link_libraries(wavsen_ffi_pipewire
     PUBLIC
-        PkgConfig::WAVSEN_LIBPIPEWIRE
+        rstd::core
+    PRIVATE
+        rstd::rstd
+        ${CMAKE_DL_LIBS}
 )
 
 set_property(TARGET wavsen_ffi_pipewire PROPERTY POSITION_INDEPENDENT_CODE ON)

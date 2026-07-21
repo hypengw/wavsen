@@ -3,6 +3,7 @@ module;
 #include <pulse/pulseaudio.h>
 
 export module pulse;
+export import rstd.core;
 
 export {
     using ::pa_buffer_attr;
@@ -11,6 +12,8 @@ export {
     using ::pa_context_flags_t;
     using ::pa_context_state_t;
     using ::pa_mainloop_api;
+    using ::pa_operation;
+    using ::pa_proplist;
     using ::pa_sample_format_t;
     using ::pa_sample_spec;
     using ::pa_seek_mode_t;
@@ -21,52 +24,86 @@ export {
     using ::pa_threaded_mainloop;
     using ::pa_timing_info;
     using ::pa_usec_t;
+}
 
-    using ::pa_threaded_mainloop_free;
-    using ::pa_threaded_mainloop_get_api;
-    using ::pa_threaded_mainloop_in_thread;
-    using ::pa_threaded_mainloop_lock;
-    using ::pa_threaded_mainloop_new;
-    using ::pa_threaded_mainloop_signal;
-    using ::pa_threaded_mainloop_start;
-    using ::pa_threaded_mainloop_stop;
-    using ::pa_threaded_mainloop_unlock;
-    using ::pa_threaded_mainloop_wait;
+export namespace wavsen::ffi::pulse
+{
 
-    using ::pa_context_connect;
-    using ::pa_context_disconnect;
-    using ::pa_context_errno;
-    using ::pa_context_get_server_info;
-    using ::pa_context_get_state;
-    using ::pa_context_new;
-    using ::pa_context_set_state_callback;
-    using ::pa_context_unref;
+using ::pa_buffer_attr;
+using ::pa_channel_map;
+using ::pa_context;
+using ::pa_context_flags_t;
+using ::pa_context_state_t;
+using ::pa_mainloop_api;
+using ::pa_operation;
+using ::pa_proplist;
+using ::pa_sample_format_t;
+using ::pa_sample_spec;
+using ::pa_seek_mode_t;
+using ::pa_server_info;
+using ::pa_stream;
+using ::pa_stream_flags_t;
+using ::pa_stream_state_t;
+using ::pa_threaded_mainloop;
+using ::pa_timing_info;
+using ::pa_usec_t;
 
-    using ::pa_stream_begin_write;
-    using ::pa_stream_cancel_write;
-    using ::pa_stream_connect_playback;
-    using ::pa_stream_connect_record;
-    using ::pa_stream_cork;
-    using ::pa_stream_disconnect;
-    using ::pa_stream_drop;
-    using ::pa_stream_get_latency;
-    using ::pa_stream_get_state;
-    using ::pa_stream_get_time;
-    using ::pa_stream_get_timing_info;
-    using ::pa_stream_new;
-    using ::pa_stream_peek;
-    using ::pa_stream_readable_size;
-    using ::pa_stream_set_buffer_attr;
-    using ::pa_stream_set_read_callback;
-    using ::pa_stream_set_state_callback;
-    using ::pa_stream_set_write_callback;
-    using ::pa_stream_unref;
-    using ::pa_stream_update_timing_info;
-    using ::pa_stream_writable_size;
-    using ::pa_stream_write;
+struct Api {
+    decltype(&::pa_threaded_mainloop_free)      pa_threaded_mainloop_free {};
+    decltype(&::pa_threaded_mainloop_get_api)   pa_threaded_mainloop_get_api {};
+    decltype(&::pa_threaded_mainloop_in_thread) pa_threaded_mainloop_in_thread {};
+    decltype(&::pa_threaded_mainloop_lock)      pa_threaded_mainloop_lock {};
+    decltype(&::pa_threaded_mainloop_new)       pa_threaded_mainloop_new {};
+    decltype(&::pa_threaded_mainloop_signal)    pa_threaded_mainloop_signal {};
+    decltype(&::pa_threaded_mainloop_start)     pa_threaded_mainloop_start {};
+    decltype(&::pa_threaded_mainloop_stop)      pa_threaded_mainloop_stop {};
+    decltype(&::pa_threaded_mainloop_unlock)    pa_threaded_mainloop_unlock {};
+    decltype(&::pa_threaded_mainloop_wait)      pa_threaded_mainloop_wait {};
 
-    using ::pa_channel_map_init_stereo;
+    decltype(&::pa_context_connect)            pa_context_connect {};
+    decltype(&::pa_context_disconnect)         pa_context_disconnect {};
+    decltype(&::pa_context_errno)              pa_context_errno {};
+    decltype(&::pa_context_get_server_info)    pa_context_get_server_info {};
+    decltype(&::pa_context_get_state)          pa_context_get_state {};
+    decltype(&::pa_context_new)                pa_context_new {};
+    decltype(&::pa_context_new_with_proplist)  pa_context_new_with_proplist {};
+    decltype(&::pa_context_set_state_callback) pa_context_set_state_callback {};
+    decltype(&::pa_context_unref)              pa_context_unref {};
 
-    using ::pa_strerror;
+    decltype(&::pa_operation_unref) pa_operation_unref {};
+    decltype(&::pa_proplist_free)   pa_proplist_free {};
+    decltype(&::pa_proplist_new)    pa_proplist_new {};
+    decltype(&::pa_proplist_sets)   pa_proplist_sets {};
 
-} // export
+    decltype(&::pa_stream_begin_write)        pa_stream_begin_write {};
+    decltype(&::pa_stream_cancel_write)       pa_stream_cancel_write {};
+    decltype(&::pa_stream_connect_playback)   pa_stream_connect_playback {};
+    decltype(&::pa_stream_connect_record)     pa_stream_connect_record {};
+    decltype(&::pa_stream_cork)               pa_stream_cork {};
+    decltype(&::pa_stream_disconnect)         pa_stream_disconnect {};
+    decltype(&::pa_stream_drop)               pa_stream_drop {};
+    decltype(&::pa_stream_get_latency)        pa_stream_get_latency {};
+    decltype(&::pa_stream_get_state)          pa_stream_get_state {};
+    decltype(&::pa_stream_get_time)           pa_stream_get_time {};
+    decltype(&::pa_stream_get_timing_info)    pa_stream_get_timing_info {};
+    decltype(&::pa_stream_new)                pa_stream_new {};
+    decltype(&::pa_stream_new_with_proplist)  pa_stream_new_with_proplist {};
+    decltype(&::pa_stream_peek)               pa_stream_peek {};
+    decltype(&::pa_stream_readable_size)      pa_stream_readable_size {};
+    decltype(&::pa_stream_set_buffer_attr)    pa_stream_set_buffer_attr {};
+    decltype(&::pa_stream_set_read_callback)  pa_stream_set_read_callback {};
+    decltype(&::pa_stream_set_state_callback) pa_stream_set_state_callback {};
+    decltype(&::pa_stream_set_write_callback) pa_stream_set_write_callback {};
+    decltype(&::pa_stream_unref)              pa_stream_unref {};
+    decltype(&::pa_stream_update_timing_info) pa_stream_update_timing_info {};
+    decltype(&::pa_stream_writable_size)      pa_stream_writable_size {};
+    decltype(&::pa_stream_write)              pa_stream_write {};
+
+    decltype(&::pa_channel_map_init_stereo) pa_channel_map_init_stereo {};
+    decltype(&::pa_strerror)                pa_strerror {};
+};
+
+auto load() noexcept -> const Api*;
+auto load_error() noexcept -> rstd::ref<rstd::str>;
+
+} // namespace wavsen::ffi::pulse

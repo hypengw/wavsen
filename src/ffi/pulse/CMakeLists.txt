@@ -1,5 +1,4 @@
-# wavsen::ffi::pulse — C++20 module wrapper around libpulse.
-# Consumers `import pulse;` instead of `#include <pulse/pulseaudio.h>`.
+# wavsen::ffi::pulse — C++20 module dynamically loading libpulse.
 
 add_library(wavsen_ffi_pulse STATIC)
 add_library(wavsen::ffi::pulse ALIAS wavsen_ffi_pulse)
@@ -12,11 +11,19 @@ target_compile_options(wavsen_ffi_pulse PRIVATE
 target_sources(wavsen_ffi_pulse
     PUBLIC FILE_SET CXX_MODULES FILES
         pulse.cppm
+    PRIVATE
+        pulse.cpp
 )
 
+target_include_directories(wavsen_ffi_pulse SYSTEM PUBLIC
+    ${WAVSEN_LIBPULSE_INCLUDE_DIRS}
+)
 target_link_libraries(wavsen_ffi_pulse
     PUBLIC
-        PkgConfig::WAVSEN_LIBPULSE
+        rstd::core
+    PRIVATE
+        rstd::rstd
+        ${CMAKE_DL_LIBS}
 )
 
 set_property(TARGET wavsen_ffi_pulse PROPERTY POSITION_INDEPENDENT_CODE ON)

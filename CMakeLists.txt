@@ -15,13 +15,9 @@ set(WAVSEN_AUDIO_BACKEND "pulse" CACHE STRING
 set_property(CACHE WAVSEN_AUDIO_BACKEND PROPERTY STRINGS pulse pipewire)
 
 if(WAVSEN_AUDIO_BACKEND STREQUAL "pulse")
-    pkg_check_modules(WAVSEN_LIBPULSE REQUIRED IMPORTED_TARGET libpulse>=14.0)
+    pkg_check_modules(WAVSEN_LIBPULSE REQUIRED libpulse>=14.0)
 elseif(WAVSEN_AUDIO_BACKEND STREQUAL "pipewire")
-    pkg_check_modules(WAVSEN_LIBPIPEWIRE REQUIRED IMPORTED_TARGET libpipewire-0.3)
-    # libpipewire's Cflags inject -fno-strict-overflow / -fno-strict-aliasing
-    # which trip C++20 module PCM config checks against modules (rstd.cppstd
-    # etc.) built without them. Keep the include dirs + link lib, drop the flags.
-    set_property(TARGET PkgConfig::WAVSEN_LIBPIPEWIRE PROPERTY INTERFACE_COMPILE_OPTIONS "")
+    pkg_check_modules(WAVSEN_LIBPIPEWIRE REQUIRED libpipewire-0.3)
 else()
     message(FATAL_ERROR
         "WAVSEN_AUDIO_BACKEND='${WAVSEN_AUDIO_BACKEND}' is not one of: pulse pipewire")
@@ -35,9 +31,8 @@ if(NOT TARGET GPUOpen::VulkanMemoryAllocator)
 endif()
 
 # ---------------------------------------------------------------------------
-# wavsen::ffi::{ffmpeg,vulkan,vma} — C++20 module wrappers around
-# the libav* + swscale (+ optional swresample) and Vulkan headers. Each
-# is its own STATIC library so external consumers can pick & link them.
+# wavsen::ffi::* — C++20 module wrappers around external APIs. Each is
+# its own STATIC library so external consumers can pick & link them.
 # ---------------------------------------------------------------------------
 add_subdirectory(src/ffi/ffmpeg)
 add_subdirectory(src/ffi/vulkan)

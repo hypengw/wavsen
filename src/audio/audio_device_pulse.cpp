@@ -14,6 +14,8 @@ import :core;
 namespace wavsen::audio
 {
 
+namespace pulse_ffi = wavsen::ffi::pulse;
+
 namespace
 {
 
@@ -44,81 +46,89 @@ public:
     bool init() {
         if (is_inited()) return true;
 
+        api_ = pulse_ffi::load();
+        if (! api_) {
+            rstd::log::error("wavsen::audio: failed to load PulseAudio: {}",
+                             pulse_ffi::load_error());
+            return false;
+        }
+
         const auto stream_name = identity_.playback_stream_name();
         if (! stream_name) {
             rstd::log::error("wavsen::audio: invalid audio client component");
             return false;
         }
 
-        loop_ = pa_threaded_mainloop_new();
+        loop_ = api_->pa_threaded_mainloop_new();
         if (! loop_) {
             rstd::log::error("wavsen::audio: pa_threaded_mainloop_new failed");
             return false;
         }
-        if (pa_threaded_mainloop_start(loop_) < 0) {
+        if (api_->pa_threaded_mainloop_start(loop_) < 0) {
             rstd::log::error("wavsen::audio: pa_threaded_mainloop_start failed");
-            pa_threaded_mainloop_free(loop_);
+            api_->pa_threaded_mainloop_free(loop_);
             loop_ = nullptr;
             return false;
         }
 
-        pa_threaded_mainloop_lock(loop_);
+        api_->pa_threaded_mainloop_lock(loop_);
 
-        auto* context_props = pa_proplist_new();
+        auto* context_props = api_->pa_proplist_new();
         if (! context_props ||
-            pa_proplist_sets(
+            api_->pa_proplist_sets(
                 context_props, PA_PROP_APPLICATION_NAME, identity_.application_name.c_str()) < 0 ||
-            pa_proplist_sets(
+            api_->pa_proplist_sets(
                 context_props, PA_PROP_APPLICATION_ID, identity_.application_id.c_str()) < 0) {
-            if (context_props) pa_proplist_free(context_props);
-            pa_threaded_mainloop_unlock(loop_);
+            if (context_props) api_->pa_proplist_free(context_props);
+            api_->pa_threaded_mainloop_unlock(loop_);
             rstd::log::error("wavsen::audio: failed to build PulseAudio context properties");
-            pa_threaded_mainloop_stop(loop_);
-            pa_threaded_mainloop_free(loop_);
+            api_->pa_threaded_mainloop_stop(loop_);
+            api_->pa_threaded_mainloop_free(loop_);
             loop_ = nullptr;
             return false;
         }
-        ctx_ = pa_context_new_with_proplist(
-            pa_threaded_mainloop_get_api(loop_), identity_.application_name.c_str(), context_props);
-        pa_proplist_free(context_props);
+        ctx_ = api_->pa_context_new_with_proplist(api_->pa_threaded_mainloop_get_api(loop_),
+                                                  identity_.application_name.c_str(),
+                                                  context_props);
+        api_->pa_proplist_free(context_props);
         if (! ctx_) {
-            pa_threaded_mainloop_unlock(loop_);
+            api_->pa_threaded_mainloop_unlock(loop_);
             rstd::log::error("wavsen::audio: pa_context_new failed");
-            pa_threaded_mainloop_stop(loop_);
-            pa_threaded_mainloop_free(loop_);
+            api_->pa_threaded_mainloop_stop(loop_);
+            api_->pa_threaded_mainloop_free(loop_);
             loop_ = nullptr;
             return false;
         }
-        pa_context_set_state_callback(ctx_, &Impl::on_context_state, this);
+        api_->pa_context_set_state_callback(ctx_, &Impl::on_context_state, this);
 
-        if (pa_context_connect(ctx_, nullptr, PA_CONTEXT_NOFLAGS, nullptr) < 0) {
+        if (api_->pa_context_connect(ctx_, nullptr, PA_CONTEXT_NOFLAGS, nullptr) < 0) {
             rstd::log::error("wavsen::audio: pa_context_connect failed: {}",
-                             pa_strerror(pa_context_errno(ctx_)));
-            pa_context_unref(ctx_);
+                             api_->pa_strerror(api_->pa_context_errno(ctx_)));
+            api_->pa_context_unref(ctx_);
             ctx_ = nullptr;
-            pa_threaded_mainloop_unlock(loop_);
-            pa_threaded_mainloop_stop(loop_);
-            pa_threaded_mainloop_free(loop_);
+            api_->pa_threaded_mainloop_unlock(loop_);
+            api_->pa_threaded_mainloop_stop(loop_);
+            api_->pa_threaded_mainloop_free(loop_);
             loop_ = nullptr;
             return false;
         }
 
         for (;;) {
-            const auto st = pa_context_get_state(ctx_);
+            const auto st = api_->pa_context_get_state(ctx_);
             if (st == PA_CONTEXT_READY) break;
             if (! PA_CONTEXT_IS_GOOD(st)) {
                 rstd::log::error("wavsen::audio: pa_context failed: {}",
-                                 pa_strerror(pa_context_errno(ctx_)));
-                pa_context_disconnect(ctx_);
-                pa_context_unref(ctx_);
+                                 api_->pa_strerror(api_->pa_context_errno(ctx_)));
+                api_->pa_context_disconnect(ctx_);
+                api_->pa_context_unref(ctx_);
                 ctx_ = nullptr;
-                pa_threaded_mainloop_unlock(loop_);
-                pa_threaded_mainloop_stop(loop_);
-                pa_threaded_mainloop_free(loop_);
+                api_->pa_threaded_mainloop_unlock(loop_);
+                api_->pa_threaded_mainloop_stop(loop_);
+                api_->pa_threaded_mainloop_free(loop_);
                 loop_ = nullptr;
                 return false;
             }
-            pa_threaded_mainloop_wait(loop_);
+            api_->pa_threaded_mainloop_wait(loop_);
         }
 
         pa_sample_spec ss {};
@@ -127,43 +137,46 @@ public:
         ss.channels = static_cast<std::uint8_t>(kDefaultChannels);
 
         pa_channel_map cm {};
-        pa_channel_map_init_stereo(&cm);
+        api_->pa_channel_map_init_stereo(&cm);
 
-        auto* stream_props = pa_proplist_new();
+        auto* stream_props = api_->pa_proplist_new();
         if (! stream_props ||
-            pa_proplist_sets(
+            api_->pa_proplist_sets(
                 stream_props, PA_PROP_APPLICATION_NAME, identity_.application_name.c_str()) < 0 ||
-            pa_proplist_sets(
+            api_->pa_proplist_sets(
                 stream_props, PA_PROP_APPLICATION_ID, identity_.application_id.c_str()) < 0 ||
-            pa_proplist_sets(stream_props, PA_PROP_MEDIA_NAME, identity_.media_name.c_str()) < 0 ||
-            pa_proplist_sets(stream_props, PA_PROP_MEDIA_ROLE, identity_.media_role.c_str()) < 0) {
-            if (stream_props) pa_proplist_free(stream_props);
+            api_->pa_proplist_sets(stream_props, PA_PROP_MEDIA_NAME, identity_.media_name.c_str()) <
+                0 ||
+            api_->pa_proplist_sets(stream_props, PA_PROP_MEDIA_ROLE, identity_.media_role.c_str()) <
+                0) {
+            if (stream_props) api_->pa_proplist_free(stream_props);
             rstd::log::error("wavsen::audio: failed to build PulseAudio stream properties");
-            pa_context_disconnect(ctx_);
-            pa_context_unref(ctx_);
+            api_->pa_context_disconnect(ctx_);
+            api_->pa_context_unref(ctx_);
             ctx_ = nullptr;
-            pa_threaded_mainloop_unlock(loop_);
-            pa_threaded_mainloop_stop(loop_);
-            pa_threaded_mainloop_free(loop_);
+            api_->pa_threaded_mainloop_unlock(loop_);
+            api_->pa_threaded_mainloop_stop(loop_);
+            api_->pa_threaded_mainloop_free(loop_);
             loop_ = nullptr;
             return false;
         }
-        stream_ = pa_stream_new_with_proplist(ctx_, stream_name->c_str(), &ss, &cm, stream_props);
-        pa_proplist_free(stream_props);
+        stream_ =
+            api_->pa_stream_new_with_proplist(ctx_, stream_name->c_str(), &ss, &cm, stream_props);
+        api_->pa_proplist_free(stream_props);
         if (! stream_) {
             rstd::log::error("wavsen::audio: pa_stream_new failed: {}",
-                             pa_strerror(pa_context_errno(ctx_)));
-            pa_context_disconnect(ctx_);
-            pa_context_unref(ctx_);
+                             api_->pa_strerror(api_->pa_context_errno(ctx_)));
+            api_->pa_context_disconnect(ctx_);
+            api_->pa_context_unref(ctx_);
             ctx_ = nullptr;
-            pa_threaded_mainloop_unlock(loop_);
-            pa_threaded_mainloop_stop(loop_);
-            pa_threaded_mainloop_free(loop_);
+            api_->pa_threaded_mainloop_unlock(loop_);
+            api_->pa_threaded_mainloop_stop(loop_);
+            api_->pa_threaded_mainloop_free(loop_);
             loop_ = nullptr;
             return false;
         }
-        pa_stream_set_state_callback(stream_, &Impl::on_stream_state, this);
-        pa_stream_set_write_callback(stream_, &Impl::on_write, this);
+        api_->pa_stream_set_state_callback(stream_, &Impl::on_stream_state, this);
+        api_->pa_stream_set_write_callback(stream_, &Impl::on_write, this);
 
         // Must be set before connect: the write callback can fire as soon as
         // the stream is writable (during the READY wait below). If desc_ is
@@ -184,42 +197,42 @@ public:
             static_cast<pa_stream_flags_t>(PA_STREAM_ADJUST_LATENCY | PA_STREAM_AUTO_TIMING_UPDATE |
                                            PA_STREAM_INTERPOLATE_TIMING | PA_STREAM_START_CORKED);
 
-        if (pa_stream_connect_playback(stream_, nullptr, &ba, flags, nullptr, nullptr) < 0) {
+        if (api_->pa_stream_connect_playback(stream_, nullptr, &ba, flags, nullptr, nullptr) < 0) {
             rstd::log::error("wavsen::audio: pa_stream_connect_playback failed: {}",
-                             pa_strerror(pa_context_errno(ctx_)));
-            pa_stream_unref(stream_);
+                             api_->pa_strerror(api_->pa_context_errno(ctx_)));
+            api_->pa_stream_unref(stream_);
             stream_ = nullptr;
-            pa_context_disconnect(ctx_);
-            pa_context_unref(ctx_);
+            api_->pa_context_disconnect(ctx_);
+            api_->pa_context_unref(ctx_);
             ctx_ = nullptr;
-            pa_threaded_mainloop_unlock(loop_);
-            pa_threaded_mainloop_stop(loop_);
-            pa_threaded_mainloop_free(loop_);
+            api_->pa_threaded_mainloop_unlock(loop_);
+            api_->pa_threaded_mainloop_stop(loop_);
+            api_->pa_threaded_mainloop_free(loop_);
             loop_ = nullptr;
             return false;
         }
 
         for (;;) {
-            const auto st = pa_stream_get_state(stream_);
+            const auto st = api_->pa_stream_get_state(stream_);
             if (st == PA_STREAM_READY) break;
             if (! PA_STREAM_IS_GOOD(st)) {
                 rstd::log::error("wavsen::audio: pa_stream failed: {}",
-                                 pa_strerror(pa_context_errno(ctx_)));
-                pa_stream_unref(stream_);
+                                 api_->pa_strerror(api_->pa_context_errno(ctx_)));
+                api_->pa_stream_unref(stream_);
                 stream_ = nullptr;
-                pa_context_disconnect(ctx_);
-                pa_context_unref(ctx_);
+                api_->pa_context_disconnect(ctx_);
+                api_->pa_context_unref(ctx_);
                 ctx_ = nullptr;
-                pa_threaded_mainloop_unlock(loop_);
-                pa_threaded_mainloop_stop(loop_);
-                pa_threaded_mainloop_free(loop_);
+                api_->pa_threaded_mainloop_unlock(loop_);
+                api_->pa_threaded_mainloop_stop(loop_);
+                api_->pa_threaded_mainloop_free(loop_);
                 loop_ = nullptr;
                 return false;
             }
-            pa_threaded_mainloop_wait(loop_);
+            api_->pa_threaded_mainloop_wait(loop_);
         }
 
-        pa_threaded_mainloop_unlock(loop_);
+        api_->pa_threaded_mainloop_unlock(loop_);
 
         {
             std::lock_guard<std::mutex> lk(channels_mu_);
@@ -236,23 +249,23 @@ public:
 
     void uninit() {
         if (loop_) {
-            pa_threaded_mainloop_lock(loop_);
+            api_->pa_threaded_mainloop_lock(loop_);
             if (stream_) {
-                pa_stream_set_state_callback(stream_, nullptr, nullptr);
-                pa_stream_set_write_callback(stream_, nullptr, nullptr);
-                pa_stream_disconnect(stream_);
-                pa_stream_unref(stream_);
+                api_->pa_stream_set_state_callback(stream_, nullptr, nullptr);
+                api_->pa_stream_set_write_callback(stream_, nullptr, nullptr);
+                api_->pa_stream_disconnect(stream_);
+                api_->pa_stream_unref(stream_);
                 stream_ = nullptr;
             }
             if (ctx_) {
-                pa_context_set_state_callback(ctx_, nullptr, nullptr);
-                pa_context_disconnect(ctx_);
-                pa_context_unref(ctx_);
+                api_->pa_context_set_state_callback(ctx_, nullptr, nullptr);
+                api_->pa_context_disconnect(ctx_);
+                api_->pa_context_unref(ctx_);
                 ctx_ = nullptr;
             }
-            pa_threaded_mainloop_unlock(loop_);
-            pa_threaded_mainloop_stop(loop_);
-            pa_threaded_mainloop_free(loop_);
+            api_->pa_threaded_mainloop_unlock(loop_);
+            api_->pa_threaded_mainloop_stop(loop_);
+            api_->pa_threaded_mainloop_free(loop_);
             loop_ = nullptr;
         }
     }
@@ -261,20 +274,20 @@ public:
 
     void start() {
         if (! stream_ || ! loop_) return;
-        pa_threaded_mainloop_lock(loop_);
-        auto* op = pa_stream_cork(stream_, 0, nullptr, nullptr);
+        api_->pa_threaded_mainloop_lock(loop_);
+        auto* op = api_->pa_stream_cork(stream_, 0, nullptr, nullptr);
         if (op) {
         } // fire-and-forget; mainloop frees it via callback=nullptr
-        pa_threaded_mainloop_unlock(loop_);
+        api_->pa_threaded_mainloop_unlock(loop_);
     }
 
     void stop() {
         if (! stream_ || ! loop_) return;
-        pa_threaded_mainloop_lock(loop_);
-        auto* op = pa_stream_cork(stream_, 1, nullptr, nullptr);
+        api_->pa_threaded_mainloop_lock(loop_);
+        auto* op = api_->pa_stream_cork(stream_, 1, nullptr, nullptr);
         if (op) {
         }
-        pa_threaded_mainloop_unlock(loop_);
+        api_->pa_threaded_mainloop_unlock(loop_);
     }
 
     void mount(std::unique_ptr<IPullChannel> ch) {
@@ -341,7 +354,7 @@ public:
         // PA_STREAM_AUTO_TIMING_UPDATE + INTERPOLATE_TIMING. Avoid taking
         // the mainloop lock from the audio callback (it's held there).
         pa_usec_t usec = 0;
-        if (pa_stream_get_time(stream_, &usec) < 0) return 0;
+        if (api_->pa_stream_get_time(stream_, &usec) < 0) return 0;
         const auto sr = desc_.sample_rate ? desc_.sample_rate : kDefaultRate;
         return static_cast<std::uint64_t>(usec) * sr / 1'000'000ULL;
     }
@@ -382,12 +395,12 @@ private:
 
     static void on_context_state(::pa_context* /*c*/, void* user) {
         auto* self = static_cast<Impl*>(user);
-        pa_threaded_mainloop_signal(self->loop_, 0);
+        self->api_->pa_threaded_mainloop_signal(self->loop_, 0);
     }
 
     static void on_stream_state(::pa_stream* /*s*/, void* user) {
         auto* self = static_cast<Impl*>(user);
-        pa_threaded_mainloop_signal(self->loop_, 0);
+        self->api_->pa_threaded_mainloop_signal(self->loop_, 0);
     }
 
     static void on_write(::pa_stream* s, size_t nbytes, void* user) {
@@ -402,7 +415,7 @@ private:
         while (remaining > 0) {
             void*  buf  = nullptr;
             size_t want = remaining;
-            if (pa_stream_begin_write(s, &buf, &want) < 0 || ! buf || want == 0) {
+            if (self->api_->pa_stream_begin_write(s, &buf, &want) < 0 || ! buf || want == 0) {
                 return;
             }
 
@@ -429,7 +442,7 @@ private:
             }
 
             const size_t written = static_cast<size_t>(n_frames) * stride;
-            if (pa_stream_write(s, buf, written, nullptr, 0, PA_SEEK_RELATIVE) < 0) {
+            if (self->api_->pa_stream_write(s, buf, written, nullptr, 0, PA_SEEK_RELATIVE) < 0) {
                 return;
             }
             if (written == 0) return;
@@ -437,6 +450,7 @@ private:
         }
     }
 
+    const pulse_ffi::Api*   api_    = nullptr;
     ::pa_threaded_mainloop* loop_   = nullptr;
     ::pa_context*           ctx_    = nullptr;
     ::pa_stream*            stream_ = nullptr;
