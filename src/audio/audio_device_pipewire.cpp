@@ -40,10 +40,24 @@ float clamp_volume_scale(float v) {
 
 class AudioDevice::Impl {
 public:
+    explicit Impl(AudioClientIdentity identity): identity_(std::move(identity)) {}
+
     ~Impl() { uninit(); }
+
+    bool set_identity(AudioClientIdentity identity) {
+        if (is_inited()) return false;
+        identity_ = std::move(identity);
+        return true;
+    }
 
     bool init() {
         if (is_inited()) return true;
+
+        const auto stream_name = identity_.playback_stream_name();
+        if (! stream_name) {
+            rstd::log::error("wavsen::audio: invalid audio client component");
+            return false;
+        }
 
         ensure_pw_init();
 
@@ -82,19 +96,29 @@ public:
                                         PW_KEY_MEDIA_CATEGORY,
                                         "Playback",
                                         PW_KEY_MEDIA_ROLE,
-                                        "Music",
+                                        identity_.media_role.c_str(),
                                         PW_KEY_APP_NAME,
-                                        "wavsen",
+                                        identity_.application_name.c_str(),
+                                        PW_KEY_APP_ID,
+                                        identity_.application_id.c_str(),
                                         PW_KEY_NODE_NAME,
-                                        "wavsen-out",
+                                        stream_name->c_str(),
                                         PW_KEY_NODE_DESCRIPTION,
-                                        "wavsen audio output",
+                                        identity_.media_name.c_str(),
                                         nullptr);
+        if (! props) {
+            pw_thread_loop_unlock(loop_);
+            rstd::log::error("wavsen::audio: pw_properties_new failed");
+            pw_thread_loop_stop(loop_);
+            pw_thread_loop_destroy(loop_);
+            loop_ = nullptr;
+            return false;
+        }
         pw_properties_setf(props, PW_KEY_NODE_LATENCY, "%u/%u", kQuantum, kDefaultRate);
         pw_properties_setf(props, PW_KEY_NODE_RATE, "1/%u", kDefaultRate);
 
         stream_ = pw_stream_new_simple(
-            pw_thread_loop_get_loop(loop_), "wavsen-out", props, &stream_events, this);
+            pw_thread_loop_get_loop(loop_), stream_name->c_str(), props, &stream_events, this);
         if (! stream_) {
             pw_thread_loop_unlock(loop_);
             rstd::log::error("wavsen::audio: pw_stream_new_simple failed");
@@ -345,9 +369,10 @@ private:
         }
     }
 
-    ::pw_thread_loop* loop_   = nullptr;
-    ::pw_stream*      stream_ = nullptr;
-    DeviceDesc        desc_ {};
+    ::pw_thread_loop*   loop_   = nullptr;
+    ::pw_stream*        stream_ = nullptr;
+    DeviceDesc          desc_ {};
+    AudioClientIdentity identity_;
 
     std::mutex                                 channels_mu_;
     std::vector<std::unique_ptr<IPullChannel>> channels_;
@@ -361,10 +386,14 @@ private:
     std::atomic<bool>          muted_ { false };
 };
 
-AudioDevice::AudioDevice(): impl_(std::make_unique<Impl>()) {}
+AudioDevice::AudioDevice(AudioClientIdentity identity)
+    : impl_(std::make_unique<Impl>(std::move(identity))) {}
 AudioDevice::~AudioDevice() = default;
 
-bool  AudioDevice::init() { return impl_->init(); }
+bool AudioDevice::init() { return impl_->init(); }
+bool AudioDevice::set_identity(AudioClientIdentity identity) {
+    return impl_->set_identity(std::move(identity));
+}
 void  AudioDevice::uninit() { impl_->uninit(); }
 bool  AudioDevice::is_inited() const { return impl_->is_inited(); }
 void  AudioDevice::start() { impl_->start(); }

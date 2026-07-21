@@ -3,6 +3,7 @@ export module wavsen.audio:av_sync;
 import rstd.cppstd;
 import rstd;
 import :byte_stream;
+import :core;
 
 export namespace wavsen::audio
 {
@@ -24,6 +25,8 @@ class AvPlayer {
 public:
     static auto open(ByteStream src) -> rstd::Result<std::unique_ptr<AvPlayer>, AvPlayerError>;
     static auto open(ByteStream src, bool open_device)
+        -> rstd::Result<std::unique_ptr<AvPlayer>, AvPlayerError>;
+    static auto open(ByteStream src, bool open_device, AudioClientIdentity identity)
         -> rstd::Result<std::unique_ptr<AvPlayer>, AvPlayerError>;
 
     ~AvPlayer();
@@ -61,7 +64,7 @@ public:
     bool is_eof() const;
 
 private:
-    AvPlayer();
+    explicit AvPlayer(AudioClientIdentity identity);
     class Impl;
     std::unique_ptr<Impl> impl_;
 };

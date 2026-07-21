@@ -1,6 +1,7 @@
 export module wavsen.audio:mixer;
 
 import rstd.cppstd;
+import :core;
 
 export namespace wavsen::audio
 {
@@ -34,7 +35,7 @@ public:
 // so UI threads can poke them without locks.
 class SoundManager {
 public:
-    SoundManager();
+    explicit SoundManager(AudioClientIdentity identity = {});
     ~SoundManager();
     SoundManager(const SoundManager&)            = delete;
     SoundManager& operator=(const SoundManager&) = delete;
@@ -43,6 +44,7 @@ public:
     void unmount_all();
 
     auto init() -> bool;
+    auto set_identity(AudioClientIdentity identity) -> bool;
     auto is_inited() const -> bool;
     void play();
     void pause();

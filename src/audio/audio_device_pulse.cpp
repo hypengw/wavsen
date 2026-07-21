@@ -31,10 +31,24 @@ float clamp_volume_scale(float v) {
 
 class AudioDevice::Impl {
 public:
+    explicit Impl(AudioClientIdentity identity): identity_(std::move(identity)) {}
+
     ~Impl() { uninit(); }
+
+    bool set_identity(AudioClientIdentity identity) {
+        if (is_inited()) return false;
+        identity_ = std::move(identity);
+        return true;
+    }
 
     bool init() {
         if (is_inited()) return true;
+
+        const auto stream_name = identity_.playback_stream_name();
+        if (! stream_name) {
+            rstd::log::error("wavsen::audio: invalid audio client component");
+            return false;
+        }
 
         loop_ = pa_threaded_mainloop_new();
         if (! loop_) {
@@ -50,7 +64,23 @@ public:
 
         pa_threaded_mainloop_lock(loop_);
 
-        ctx_ = pa_context_new(pa_threaded_mainloop_get_api(loop_), "wavsen");
+        auto* context_props = pa_proplist_new();
+        if (! context_props ||
+            pa_proplist_sets(
+                context_props, PA_PROP_APPLICATION_NAME, identity_.application_name.c_str()) < 0 ||
+            pa_proplist_sets(
+                context_props, PA_PROP_APPLICATION_ID, identity_.application_id.c_str()) < 0) {
+            if (context_props) pa_proplist_free(context_props);
+            pa_threaded_mainloop_unlock(loop_);
+            rstd::log::error("wavsen::audio: failed to build PulseAudio context properties");
+            pa_threaded_mainloop_stop(loop_);
+            pa_threaded_mainloop_free(loop_);
+            loop_ = nullptr;
+            return false;
+        }
+        ctx_ = pa_context_new_with_proplist(
+            pa_threaded_mainloop_get_api(loop_), identity_.application_name.c_str(), context_props);
+        pa_proplist_free(context_props);
         if (! ctx_) {
             pa_threaded_mainloop_unlock(loop_);
             rstd::log::error("wavsen::audio: pa_context_new failed");
@@ -99,7 +129,27 @@ public:
         pa_channel_map cm {};
         pa_channel_map_init_stereo(&cm);
 
-        stream_ = pa_stream_new(ctx_, "wavsen-out", &ss, &cm);
+        auto* stream_props = pa_proplist_new();
+        if (! stream_props ||
+            pa_proplist_sets(
+                stream_props, PA_PROP_APPLICATION_NAME, identity_.application_name.c_str()) < 0 ||
+            pa_proplist_sets(
+                stream_props, PA_PROP_APPLICATION_ID, identity_.application_id.c_str()) < 0 ||
+            pa_proplist_sets(stream_props, PA_PROP_MEDIA_NAME, identity_.media_name.c_str()) < 0 ||
+            pa_proplist_sets(stream_props, PA_PROP_MEDIA_ROLE, identity_.media_role.c_str()) < 0) {
+            if (stream_props) pa_proplist_free(stream_props);
+            rstd::log::error("wavsen::audio: failed to build PulseAudio stream properties");
+            pa_context_disconnect(ctx_);
+            pa_context_unref(ctx_);
+            ctx_ = nullptr;
+            pa_threaded_mainloop_unlock(loop_);
+            pa_threaded_mainloop_stop(loop_);
+            pa_threaded_mainloop_free(loop_);
+            loop_ = nullptr;
+            return false;
+        }
+        stream_ = pa_stream_new_with_proplist(ctx_, stream_name->c_str(), &ss, &cm, stream_props);
+        pa_proplist_free(stream_props);
         if (! stream_) {
             rstd::log::error("wavsen::audio: pa_stream_new failed: {}",
                              pa_strerror(pa_context_errno(ctx_)));
@@ -391,6 +441,7 @@ private:
     ::pa_context*           ctx_    = nullptr;
     ::pa_stream*            stream_ = nullptr;
     DeviceDesc              desc_ {};
+    AudioClientIdentity     identity_;
 
     std::mutex                                 channels_mu_;
     std::vector<std::unique_ptr<IPullChannel>> channels_;
@@ -404,10 +455,14 @@ private:
     std::atomic<bool>          muted_ { false };
 };
 
-AudioDevice::AudioDevice(): impl_(std::make_unique<Impl>()) {}
+AudioDevice::AudioDevice(AudioClientIdentity identity)
+    : impl_(std::make_unique<Impl>(std::move(identity))) {}
 AudioDevice::~AudioDevice() = default;
 
-bool  AudioDevice::init() { return impl_->init(); }
+bool AudioDevice::init() { return impl_->init(); }
+bool AudioDevice::set_identity(AudioClientIdentity identity) {
+    return impl_->set_identity(std::move(identity));
+}
 void  AudioDevice::uninit() { impl_->uninit(); }
 bool  AudioDevice::is_inited() const { return impl_->is_inited(); }
 void  AudioDevice::start() { impl_->start(); }

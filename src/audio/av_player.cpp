@@ -58,6 +58,8 @@ private:
 
 class AvPlayer::Impl {
 public:
+    explicit Impl(AudioClientIdentity identity): device(std::move(identity)) {}
+
     ~Impl() {
         // The audio callback borrows decoder_ptr, so it must stop before the decoder is destroyed.
         device.uninit();
@@ -77,16 +79,22 @@ public:
     std::atomic<bool>          paused { true };
 };
 
-AvPlayer::AvPlayer(): impl_(std::make_unique<Impl>()) {}
+AvPlayer::AvPlayer(AudioClientIdentity identity)
+    : impl_(std::make_unique<Impl>(std::move(identity))) {}
 AvPlayer::~AvPlayer() = default;
 
 auto AvPlayer::open(ByteStream src) -> rstd::Result<std::unique_ptr<AvPlayer>, AvPlayerError> {
-    return open(std::move(src), true);
+    return open(std::move(src), true, {});
 }
 
 auto AvPlayer::open(ByteStream src, bool open_device)
     -> rstd::Result<std::unique_ptr<AvPlayer>, AvPlayerError> {
-    auto p = std::unique_ptr<AvPlayer>(new AvPlayer());
+    return open(std::move(src), open_device, {});
+}
+
+auto AvPlayer::open(ByteStream src, bool open_device, AudioClientIdentity identity)
+    -> rstd::Result<std::unique_ptr<AvPlayer>, AvPlayerError> {
+    auto p = std::unique_ptr<AvPlayer>(new AvPlayer(std::move(identity)));
 
     DeviceDesc desc {
         .channels    = 2,

@@ -30,10 +30,13 @@ private:
 
 class SoundManager::Impl {
 public:
+    explicit Impl(AudioClientIdentity identity): device(std::move(identity)) {}
+
     AudioDevice device;
 };
 
-SoundManager::SoundManager(): impl_(std::make_unique<Impl>()) {}
+SoundManager::SoundManager(AudioClientIdentity identity)
+    : impl_(std::make_unique<Impl>(std::move(identity))) {}
 SoundManager::~SoundManager() = default;
 
 void SoundManager::mount(std::unique_ptr<SoundStream> ss) {
@@ -49,6 +52,10 @@ bool SoundManager::init() {
         return false;
     }
     return impl_->device.init();
+}
+
+bool SoundManager::set_identity(AudioClientIdentity identity) {
+    return impl_->device.set_identity(std::move(identity));
 }
 
 bool SoundManager::is_inited() const { return impl_->device.is_inited(); }

@@ -11,6 +11,25 @@ struct DeviceDesc {
     std::uint32_t sample_rate;
 };
 
+struct AudioClientIdentity {
+    std::string application_name { "wavsen" };
+    std::string application_id { "org.wavsen" };
+    std::string stream_prefix { "wavsen." };
+    std::string component { "audio" };
+    std::string media_name { "wavsen audio output" };
+    std::string media_role { "music" };
+
+    auto playback_stream_name() const -> std::optional<std::string> {
+        if (component.empty()) return std::nullopt;
+        for (const char value : component) {
+            const bool valid =
+                (value >= 'a' && value <= 'z') || (value >= '0' && value <= '9') || value == '-';
+            if (! valid) return std::nullopt;
+        }
+        return stream_prefix + component + ".playback";
+    }
+};
+
 // Pulled by the audio thread to fill an output buffer. Implementations
 // must NOT block (the backend data thread is realtime). `frames` is the
 // number of interleaved frames to write into `dst`.
@@ -23,12 +42,13 @@ public:
 
 class AudioDevice {
 public:
-    AudioDevice();
+    explicit AudioDevice(AudioClientIdentity identity = {});
     ~AudioDevice();
     AudioDevice(const AudioDevice&)            = delete;
     AudioDevice& operator=(const AudioDevice&) = delete;
 
     auto init() -> bool;
+    auto set_identity(AudioClientIdentity identity) -> bool;
     void uninit();
     auto is_inited() const -> bool;
 
