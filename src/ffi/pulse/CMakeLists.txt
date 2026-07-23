@@ -23,6 +23,7 @@ target_link_libraries(wavsen_ffi_pulse
         rstd::core
     PRIVATE
         rstd::rstd
+        rstd.cppstd
         ${CMAKE_DL_LIBS}
 )
 

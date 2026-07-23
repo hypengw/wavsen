@@ -15,6 +15,7 @@ namespace wavsen::video
 {
 
 using namespace rstd::prelude;
+using namespace rstd::literals;
 
 namespace
 {
@@ -199,7 +200,7 @@ AVBufferRef* make_vaapi_hwdevice(const rstd::string::String& render_node, Error*
 AVBufferRef* make_shared_vulkan_hwdevice(const Producer& vk, Error* err) {
     AVBufferRef* hwd = av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_VULKAN);
     if (! hwd) {
-        fail(err, "av_hwdevice_ctx_alloc(VULKAN) failed");
+        fail(err, "av_hwdevice_ctx_alloc(VULKAN) failed"_str);
         return nullptr;
     }
     auto* dctx = reinterpret_cast<AVHWDeviceContext*>(hwd->data);
@@ -251,7 +252,7 @@ bool fail(Error* err, rstd::string::String message) {
 auto av_err_str(int rc) -> rstd::string::String {
     char buf[AV_ERROR_MAX_STRING_SIZE] = {};
     av_strerror(rc, buf, sizeof(buf));
-    return rstd::string::String::make(buf);
+    return rstd::string::String::make(rstd::cppstd::as_str(buf).unwrap());
 }
 
 } // namespace
@@ -360,12 +361,12 @@ bool probe_native_impl(ref<str> path, rstd::uint32_t* native_width, rstd::uint32
     }
     int idx = av_find_best_stream(fmt.get(), AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
     if (idx < 0) {
-        fail(err, "no video stream in file");
+        fail(err, "no video stream in file"_str);
         return false;
     }
     AVCodecParameters* par = fmt->streams[idx]->codecpar;
     if (par->width <= 0 || par->height <= 0) {
-        fail(err, "video stream has invalid native dimensions");
+        fail(err, "video stream has invalid native dimensions"_str);
         return false;
     }
     *native_width  = static_cast<rstd::uint32_t>(par->width);
@@ -451,7 +452,8 @@ auto VideoDecoder::open_with_vk(ref<str> path, rstd::uint32_t target_width,
             hwd  = make_vaapi_hwdevice(opts.render_node, &local_err);
             kind = FrameKind::VaapiDrm;
 #else
-            local_err.message = rstd::string::String::make("wavsen built without VAAPI support");
+            local_err.message =
+                rstd::string::String::make("wavsen built without VAAPI support"_str);
 #endif
         }
         if (! hwd) {
@@ -544,7 +546,8 @@ auto VideoDecoder::open_from_stream(InputStreamFactory make_stream, rstd::uint32
             hwd  = make_vaapi_hwdevice(opts.render_node, &local_err);
             kind = FrameKind::VaapiDrm;
 #else
-            local_err.message = rstd::string::String::make("wavsen built without VAAPI support");
+            local_err.message =
+                rstd::string::String::make("wavsen built without VAAPI support"_str);
 #endif
         }
         if (! hwd) {
@@ -587,12 +590,12 @@ auto VideoDecoder::build_internal(InputSpec input, rstd::uint32_t target_width,
                                   Error* err) -> Option<rstd::boxed::Box<VideoDecoder>> {
     AVBufferRef* prebuilt_hwdevice = static_cast<AVBufferRef*>(prebuilt_hwdevice_value);
     if (target_width == 0 || target_height == 0) {
-        fail(err, "target dimensions must be non-zero");
+        fail(err, "target dimensions must be non-zero"_str);
         if (prebuilt_hwdevice) av_buffer_unref(&prebuilt_hwdevice);
         return None();
     }
     if (input.path.is_empty() && input.stream.is_none()) {
-        fail(err, "InputSpec: neither path nor stream provided");
+        fail(err, "InputSpec: neither path nor stream provided"_str);
         if (prebuilt_hwdevice) av_buffer_unref(&prebuilt_hwdevice);
         return None();
     }
@@ -624,7 +627,7 @@ auto VideoDecoder::build_internal(InputSpec input, rstd::uint32_t target_width,
         constexpr int kAvioBuf     = 4096;
         auto*         avio_buf     = static_cast<unsigned char*>(av_malloc(kAvioBuf));
         if (! avio_buf) {
-            fail(err, "av_malloc(avio buffer) failed");
+            fail(err, "av_malloc(avio buffer) failed"_str);
             return None();
         }
         self->state_->avio_ctx = avio_alloc_context(avio_buf,
@@ -636,12 +639,12 @@ auto VideoDecoder::build_internal(InputSpec input, rstd::uint32_t target_width,
                                                     &avio_seek_shim);
         if (! self->state_->avio_ctx) {
             av_free(avio_buf);
-            fail(err, "avio_alloc_context failed");
+            fail(err, "avio_alloc_context failed"_str);
             return None();
         }
         raw_fmt = avformat_alloc_context();
         if (! raw_fmt) {
-            fail(err, "avformat_alloc_context failed");
+            fail(err, "avformat_alloc_context failed"_str);
             return None();
         }
         raw_fmt->pb = self->state_->avio_ctx;
@@ -669,7 +672,7 @@ auto VideoDecoder::build_internal(InputSpec input, rstd::uint32_t target_width,
 
     int idx = av_find_best_stream(self->state_->fmt.get(), AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
     if (idx < 0) {
-        fail(err, "no video stream in file");
+        fail(err, "no video stream in file"_str);
         return None();
     }
     self->state_->video_idx = idx;
@@ -692,7 +695,7 @@ auto VideoDecoder::build_internal(InputSpec input, rstd::uint32_t target_width,
     }
     self->state_->cctx.reset(avcodec_alloc_context3(dec));
     if (! self->state_->cctx) {
-        fail(err, "avcodec_alloc_context3 failed");
+        fail(err, "avcodec_alloc_context3 failed"_str);
         return None();
     }
     if (int rc = avcodec_parameters_to_context(self->state_->cctx.get(), par); rc < 0) {
@@ -733,7 +736,7 @@ auto VideoDecoder::build_internal(InputSpec input, rstd::uint32_t target_width,
     self->state_->pkt.reset(av_packet_alloc());
     self->state_->src_frame.reset(av_frame_alloc());
     if (! self->state_->pkt || ! self->state_->src_frame) {
-        fail(err, "av_packet_alloc / av_frame_alloc failed");
+        fail(err, "av_packet_alloc / av_frame_alloc failed"_str);
         return None();
     }
 
@@ -803,7 +806,7 @@ auto VideoDecoder::build_internal(InputSpec input, rstd::uint32_t target_width,
 
 int VideoDecoder::next_vk_frame_(VkFrameView& out, Error* err) {
     if (kind_ != FrameKind::VulkanShared) {
-        fail(err, "next_vk_frame called on non-shared-device decoder");
+        fail(err, "next_vk_frame called on non-shared-device decoder"_str);
         return -1;
     }
     State& st     = *state_;
@@ -819,7 +822,7 @@ int VideoDecoder::next_vk_frame_(VkFrameView& out, Error* err) {
         int rc = avcodec_receive_frame(st.cctx.get(), st.src_frame.get());
         if (rc == 0) {
             if (st.src_frame->format != AV_PIX_FMT_VULKAN) {
-                fail(err, "next_vk_frame: decoder produced non-vulkan frame");
+                fail(err, "next_vk_frame: decoder produced non-vulkan frame"_str);
                 return -1;
             }
             auto* vkf        = reinterpret_cast<AVVkFrame*>(st.src_frame->data[0]);
@@ -855,7 +858,7 @@ int VideoDecoder::next_vk_frame_(VkFrameView& out, Error* err) {
         if (rc == AVERROR_EOF) {
             if (loop_) {
                 if (! seek_to_start(st)) {
-                    fail(err, "loop seek-to-zero failed");
+                    fail(err, "loop seek-to-zero failed"_str);
                     return -1;
                 }
                 looped = true;
@@ -894,7 +897,7 @@ int VideoDecoder::next_vk_frame_(VkFrameView& out, Error* err) {
 
 int VideoDecoder::next_drm_frame_(DrmFrameView& out, Error* err) {
     if (kind_ != FrameKind::VaapiDrm) {
-        fail(err, "next_drm_frame called on non-VAAPI decoder");
+        fail(err, "next_drm_frame called on non-VAAPI decoder"_str);
         return -1;
     }
     State& st     = *state_;
@@ -902,7 +905,7 @@ int VideoDecoder::next_drm_frame_(DrmFrameView& out, Error* err) {
 
     if (! st.drm_frame) st.drm_frame.reset(av_frame_alloc());
     if (! st.drm_frame) {
-        fail(err, "av_frame_alloc(drm_frame) failed");
+        fail(err, "av_frame_alloc(drm_frame) failed"_str);
         return -1;
     }
 
@@ -915,11 +918,11 @@ int VideoDecoder::next_drm_frame_(DrmFrameView& out, Error* err) {
         if (rc == 0) {
 #if defined(WAVSEN_HAS_VAAPI)
             if (st.src_frame->format != AV_PIX_FMT_VAAPI) {
-                fail(err, "next_drm_frame: decoder produced non-VAAPI frame");
+                fail(err, "next_drm_frame: decoder produced non-VAAPI frame"_str);
                 return -1;
             }
 #else
-            fail(err, "next_drm_frame: VAAPI support not built");
+            fail(err, "next_drm_frame: VAAPI support not built"_str);
             return -1;
 #endif
             st.drm_frame->format = AV_PIX_FMT_DRM_PRIME;
@@ -932,7 +935,7 @@ int VideoDecoder::next_drm_frame_(DrmFrameView& out, Error* err) {
             }
             const auto* desc = reinterpret_cast<const AVDRMFrameDescriptor*>(st.drm_frame->data[0]);
             if (! desc) {
-                fail(err, "av_hwframe_map: DRM_PRIME descriptor null");
+                fail(err, "av_hwframe_map: DRM_PRIME descriptor null"_str);
                 return -1;
             }
             const int n_obj  = desc->nb_objects < 4 ? desc->nb_objects : 4;
@@ -974,7 +977,7 @@ int VideoDecoder::next_drm_frame_(DrmFrameView& out, Error* err) {
         if (rc == AVERROR_EOF) {
             if (loop_) {
                 if (! seek_to_start(st)) {
-                    fail(err, "loop seek-to-zero failed");
+                    fail(err, "loop seek-to-zero failed"_str);
                     return -1;
                 }
                 looped = true;
@@ -1036,7 +1039,7 @@ int VideoDecoder::next_frame_(Nv12Frame& out, Error* err) {
             if (feed->format == AV_PIX_FMT_VULKAN) {
                 if (! st.sw_frame) st.sw_frame.reset(av_frame_alloc());
                 if (! st.sw_frame) {
-                    fail(err, "av_frame_alloc(sw_frame) failed");
+                    fail(err, "av_frame_alloc(sw_frame) failed"_str);
                     return -1;
                 }
                 av_frame_unref(st.sw_frame.get());
@@ -1058,7 +1061,7 @@ int VideoDecoder::next_frame_(Nv12Frame& out, Error* err) {
             const int  src_w   = feed->width;
             const int  src_h   = feed->height;
             if (src_w <= 0 || src_h <= 0 || src_fmt == AV_PIX_FMT_NONE) {
-                fail(err, "decoded frame has invalid dimensions/format");
+                fail(err, "decoded frame has invalid dimensions/format"_str);
                 return -1;
             }
             if (! ensure_sws(st, src_w, src_h, src_fmt, target_width_, target_height_)) {
@@ -1077,7 +1080,7 @@ int VideoDecoder::next_frame_(Nv12Frame& out, Error* err) {
             int scaled         = sws_scale(
                 st.sws.get(), feed->data, feed->linesize, 0, src_h, dst_planes, dst_strides);
             if (scaled <= 0) {
-                fail(err, "sws_scale produced no rows");
+                fail(err, "sws_scale produced no rows"_str);
                 return -1;
             }
             const rstd::int64_t pts = (feed->best_effort_timestamp != AV_NOPTS_VALUE)
@@ -1095,7 +1098,7 @@ int VideoDecoder::next_frame_(Nv12Frame& out, Error* err) {
         if (rc == AVERROR_EOF) {
             if (loop_) {
                 if (! seek_to_start(st)) {
-                    fail(err, "loop seek-to-zero failed");
+                    fail(err, "loop seek-to-zero failed"_str);
                     return -1;
                 }
                 looped = true;

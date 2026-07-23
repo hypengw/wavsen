@@ -22,8 +22,9 @@ constexpr std::size_t kAvioBuf = 32 * 1024;
 
 int avio_read_cb(void* opaque, std::uint8_t* buf, int sz) {
     auto* source = static_cast<ByteStream*>(opaque);
-    auto  bytes  = rstd::mut_ref<rstd::byte[]>::from_raw_parts(buf, rstd::usize(sz));
-    auto  r      = (*source)->read(bytes);
+    auto  bytes  = rstd::mut_ref<rstd::byte[]>::from_raw_parts(reinterpret_cast<rstd::byte*>(buf),
+                                                               rstd::usize(sz));
+    auto  r      = (*source)->read(rstd::as_u8_slice_mut(bytes));
     if (r.is_err()) return AVERROR_EOF;
     auto n = std::move(r).unwrap();
     if (n == rstd::usize()) return AVERROR_EOF;

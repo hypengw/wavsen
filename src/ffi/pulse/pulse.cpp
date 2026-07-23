@@ -7,6 +7,7 @@ module;
 module pulse;
 
 import rstd;
+import rstd.cppstd;
 
 namespace wavsen::ffi::pulse
 {
@@ -30,7 +31,8 @@ void load_once(LoadState& state) {
     state.library   = dlopen(kSoname, RTLD_NOW | RTLD_LOCAL);
     if (! state.library) {
         const char* error = dlerror();
-        state.error       = rstd::string::String::make(error ? error : "unknown error");
+        state.error       = rstd::string::String::make(
+            rstd::cppstd::as_str(error ? error : "unknown error").unwrap());
         return;
     }
 

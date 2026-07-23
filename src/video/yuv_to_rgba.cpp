@@ -18,6 +18,7 @@ namespace wavsen::video
 {
 
 using namespace rstd::prelude;
+using namespace rstd::literals;
 
 /* Push-constant struct mirroring `PC` in shaders/nv12_to_rgba.comp.
  * std140-friendly: padded to 16-byte boundaries. */
@@ -179,14 +180,14 @@ bool create_image_2d(const vvk::Device& device, const vvk::PhysicalDevice& phys,
     ici.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
     ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     if (VkResult r = device.CreateImage(ici, out_img); r != VK_SUCCESS) {
-        fail(err, vk_error("vkCreateImage", r));
+        fail(err, vk_error("vkCreateImage"_str, r));
         return false;
     }
     const auto     mr = device.GetImageMemoryRequirements(*out_img);
     rstd::uint32_t type =
         pick_memory_type(phys, mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     if (type == UINT32_MAX) {
-        fail(err, "no DEVICE_LOCAL memory type for plane image");
+        fail(err, "no DEVICE_LOCAL memory type for plane image"_str);
         return false;
     }
     VkMemoryAllocateInfo mai {};
@@ -194,11 +195,11 @@ bool create_image_2d(const vvk::Device& device, const vvk::PhysicalDevice& phys,
     mai.allocationSize  = mr.size;
     mai.memoryTypeIndex = type;
     if (VkResult r = device.AllocateMemory(mai, out_mem); r != VK_SUCCESS) {
-        fail(err, vk_error("vkAllocateMemory(plane)", r));
+        fail(err, vk_error("vkAllocateMemory(plane)"_str, r));
         return false;
     }
     if (VkResult r = out_img.BindMemory(*out_mem, 0); r != VK_SUCCESS) {
-        fail(err, vk_error("vkBindImageMemory(plane)", r));
+        fail(err, vk_error("vkBindImageMemory(plane)"_str, r));
         return false;
     }
     return true;
@@ -217,7 +218,7 @@ bool create_image_view(const vvk::Device& device, VkImage img, VkFormat fmt, vvk
                              VK_COMPONENT_SWIZZLE_IDENTITY };
     vci.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
     if (VkResult r = device.CreateImageView(vci, out); r != VK_SUCCESS) {
-        fail(err, vk_error("vkCreateImageView", r));
+        fail(err, vk_error("vkCreateImageView"_str, r));
         return false;
     }
     return true;
@@ -342,7 +343,7 @@ auto YuvToRgba::create(VkInstance instance, VkPhysicalDevice phys, VkDevice devi
                        rstd::uint32_t queue_family, VkQueue queue, rstd::uint32_t max_w,
                        rstd::uint32_t max_h) -> Result<rstd::boxed::Box<YuvToRgba>, Error> {
     if (max_w == 0 || max_h == 0) {
-        return Err(Error { "YuvToRgba: max_w/max_h must be non-zero" });
+        return Err(Error { "YuvToRgba: max_w/max_h must be non-zero"_str });
     }
     // NV12 chroma is 4:2:0, so plane W/H must be even.
     if (max_w & 1u) ++max_w;
@@ -359,11 +360,11 @@ bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device
                      rstd::uint32_t queue_family, VkQueue queue, rstd::uint32_t max_w,
                      rstd::uint32_t max_h, Error* err) {
     if (! vvk::Load(instance_dispatch_) || ! vvk::Load(instance, instance_dispatch_)) {
-        return fail(err, "YuvToRgba: failed to load instance dispatch");
+        return fail(err, "YuvToRgba: failed to load instance dispatch"_str);
     }
     device_dispatch_ = vvk::DeviceDispatch { instance_dispatch_ };
     if (! vvk::Load(device, device_dispatch_)) {
-        return fail(err, "YuvToRgba: failed to load device dispatch");
+        return fail(err, "YuvToRgba: failed to load device dispatch"_str);
     }
 
     instance_     = vvk::Instance(instance, instance_dispatch_, vvk::borrowed_handle);
@@ -375,7 +376,7 @@ bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device
     max_h_        = max_h;
 
     if (! device_dispatch_.vkGetSemaphoreFdKHR) {
-        return fail(err, "vkGetSemaphoreFdKHR missing");
+        return fail(err, "vkGetSemaphoreFdKHR missing"_str);
     }
 
     // ----- Sampler (linear, clamp-to-edge) -----
@@ -390,7 +391,7 @@ bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device
         sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         sci.maxLod       = 0.0f;
         if (VkResult r = device_.CreateSampler(sci, sampler_); r != VK_SUCCESS)
-            return fail(err, vk_error("vkCreateSampler", r));
+            return fail(err, vk_error("vkCreateSampler"_str, r));
     }
 
     // ----- Y image (R8_UNORM, max_w × max_h) -----
@@ -429,24 +430,24 @@ bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device
         bci.usage       = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
         bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         if (VkResult r = device_.CreateBuffer(bci, staging_buf_); r != VK_SUCCESS)
-            return fail(err, vk_error("vkCreateBuffer(stage)", r));
+            return fail(err, vk_error("vkCreateBuffer(stage)"_str, r));
         const auto     mr   = device_.GetBufferMemoryRequirements(*staging_buf_);
         rstd::uint32_t type = pick_memory_type(phys_,
                                                mr.memoryTypeBits,
                                                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                                                    VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         if (type == UINT32_MAX)
-            return fail(err, "no HOST_VISIBLE|COHERENT memory type for staging");
+            return fail(err, "no HOST_VISIBLE|COHERENT memory type for staging"_str);
         VkMemoryAllocateInfo mai {};
         mai.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         mai.allocationSize  = mr.size;
         mai.memoryTypeIndex = type;
         if (VkResult r = device_.AllocateMemory(mai, staging_mem_); r != VK_SUCCESS)
-            return fail(err, vk_error("vkAllocateMemory(stage)", r));
+            return fail(err, vk_error("vkAllocateMemory(stage)"_str, r));
         if (VkResult r = staging_buf_.BindMemory(*staging_mem_, 0); r != VK_SUCCESS)
-            return fail(err, vk_error("vkBindBufferMemory(stage)", r));
+            return fail(err, vk_error("vkBindBufferMemory(stage)"_str, r));
         if (VkResult r = staging_mem_.Map(0, VK_WHOLE_SIZE, &staging_map_); r != VK_SUCCESS)
-            return fail(err, vk_error("vkMapMemory(stage)", r));
+            return fail(err, vk_error("vkMapMemory(stage)"_str, r));
     }
 
     // ----- Shader module -----
@@ -456,7 +457,7 @@ bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device
         smi.codeSize = sizeof(nv12_to_rgba_spv);
         smi.pCode    = reinterpret_cast<const rstd::uint32_t*>(nv12_to_rgba_spv);
         if (VkResult r = device_.CreateShaderModule(smi, shader_); r != VK_SUCCESS)
-            return fail(err, vk_error("vkCreateShaderModule", r));
+            return fail(err, vk_error("vkCreateShaderModule"_str, r));
     }
 
     // ----- Descriptor set layout (binding 0/1 = sampled, binding 2 = storage)
@@ -480,7 +481,7 @@ bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device
         dsli.bindingCount = 3;
         dsli.pBindings    = bs;
         if (VkResult r = device_.CreateDescriptorSetLayout(dsli, dsl_); r != VK_SUCCESS)
-            return fail(err, vk_error("vkCreateDescriptorSetLayout", r));
+            return fail(err, vk_error("vkCreateDescriptorSetLayout"_str, r));
     }
 
     // ----- Pipeline layout (push constants: dst dims + color matrix) -----
@@ -497,7 +498,7 @@ bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device
         pli.pushConstantRangeCount       = 1;
         pli.pPushConstantRanges          = &pcr;
         if (VkResult r = device_.CreatePipelineLayout(pli, pipeline_layout_); r != VK_SUCCESS)
-            return fail(err, vk_error("vkCreatePipelineLayout", r));
+            return fail(err, vk_error("vkCreatePipelineLayout"_str, r));
     }
 
     // ----- Compute pipeline -----
@@ -512,7 +513,7 @@ bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device
         cpi.stage  = ssi;
         cpi.layout = *pipeline_layout_;
         if (VkResult r = device_.CreateComputePipeline(cpi, pipeline_); r != VK_SUCCESS)
-            return fail(err, vk_error("vkCreateComputePipelines", r));
+            return fail(err, vk_error("vkCreateComputePipelines"_str, r));
     }
 
     // ----- Descriptor pool + set -----
@@ -531,11 +532,11 @@ bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device
         auto arena = vvk::DescriptorArenaGeneration::Create(
             *device_, 1, slice<VkDescriptorPoolSize>::from_raw_parts(ps, usize(2)), dispatch);
         if (! arena.created())
-            return fail(err, vk_error("vkCreateDescriptorPool", arena.api_result));
+            return fail(err, vk_error("vkCreateDescriptorPool"_str, arena.api_result));
         descriptor_arena_ = rstd::move(arena.arena);
         auto allocation   = vvk::DescriptorArenaGeneration::Allocate(*descriptor_arena_, *dsl_);
         if (! allocation.allocated())
-            return fail(err, vk_error("vkAllocateDescriptorSets", allocation.api_result));
+            return fail(err, vk_error("vkAllocateDescriptorSets"_str, allocation.api_result));
         descriptor_set_ = rstd::move(allocation.lease);
     }
 
@@ -546,17 +547,17 @@ bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device
         cpi.flags            = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
         cpi.queueFamilyIndex = queue_family_;
         if (VkResult r = device_.CreateCommandPool(cpi, cmd_pool_); r != VK_SUCCESS)
-            return fail(err, vk_error("vkCreateCommandPool", r));
+            return fail(err, vk_error("vkCreateCommandPool"_str, r));
         if (VkResult r =
                 cmd_pool_.Allocate(usize(1), VK_COMMAND_BUFFER_LEVEL_PRIMARY, command_buffers_);
             r != VK_SUCCESS)
-            return fail(err, vk_error("vkAllocateCommandBuffers", r));
+            return fail(err, vk_error("vkAllocateCommandBuffers"_str, r));
         cmd_ = vvk::CommandBuffer(command_buffers_[usize()], device_dispatch_);
 
         VkFenceCreateInfo fci {};
         fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
         if (VkResult r = device_.CreateFence(fci, done_fence_); r != VK_SUCCESS)
-            return fail(err, vk_error("vkCreateFence", r));
+            return fail(err, vk_error("vkCreateFence"_str, r));
 
         VkExportSemaphoreCreateInfo es {};
         es.sType       = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO;
@@ -565,7 +566,7 @@ bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device
         sci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
         sci.pNext = &es;
         if (VkResult r = device_.CreateSemaphore(sci, signal_sem_); r != VK_SUCCESS)
-            return fail(err, vk_error("vkCreateSemaphore(signal)", r));
+            return fail(err, vk_error("vkCreateSemaphore(signal)"_str, r));
 
         const auto generation = next_completion_generation();
         auto       timeline   = vvk::TimelineSemaphoreGeneration::Create(
@@ -584,7 +585,7 @@ bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device
             device_dispatch_.vkWaitSemaphoresKHR));
         if (completion_timeline_.is_none() || ! (*completion_timeline_)->source().valid() ||
             completion_observer_.is_none() || ! completion_observer_->valid()) {
-            return fail(err, "timeline completion observer unavailable");
+            return fail(err, "timeline completion observer unavailable"_str);
         }
     }
 
@@ -608,7 +609,7 @@ bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device
                                VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                slice<VkDescriptorImageInfo>::from_raw_parts(&dii_uv, usize(1))) ||
             ! batch.Commit().committed())
-            return fail(err, "failed to update static YUV descriptors");
+            return fail(err, "failed to update static YUV descriptors"_str);
     }
 
     return true;
@@ -618,35 +619,35 @@ int YuvToRgba::convert_nv12_(VkImage dst, rstd::uint32_t dst_w, rstd::uint32_t d
                              const rstd::uint8_t* nv12, usize nv12_size, const ColorMatrix& cm,
                              ConvertTarget target, Error* err) {
     if (dst == VK_NULL_HANDLE) {
-        fail(err, "convert_nv12: dst VkImage null");
+        fail(err, "convert_nv12: dst VkImage null"_str);
         return -1;
     }
     if (dst_w == 0 || dst_h == 0) {
-        fail(err, "convert_nv12: dst_w/h zero");
+        fail(err, "convert_nv12: dst_w/h zero"_str);
         return -1;
     }
     if ((dst_w & 1u) || (dst_h & 1u)) {
-        fail(err, "convert_nv12: dst dims must be even (NV12 chroma)");
+        fail(err, "convert_nv12: dst dims must be even (NV12 chroma)"_str);
         return -1;
     }
     if (dst_w > max_w_ || dst_h > max_h_) {
-        fail(err, "convert_nv12: dst exceeds configured max extent");
+        fail(err, "convert_nv12: dst exceeds configured max extent"_str);
         return -1;
     }
     const usize want = usize(dst_w) * usize(dst_h) * usize(3) / usize(2);
     if (nv12_size != want) {
-        fail(err, "convert_nv12: nv12_size mismatch (expected NV12 layout)");
+        fail(err, "convert_nv12: nv12_size mismatch (expected NV12 layout)"_str);
         return -1;
     }
 
     /* Wait for prior submit — protects cmd_/staging_/dset_ from races. */
     if (fence_pending_) {
         if (VkResult r = done_fence_.Wait(1'000'000'000ull); r != VK_SUCCESS) {
-            fail(err, vk_error("vkWaitForFences", r));
+            fail(err, vk_error("vkWaitForFences"_str, r));
             return -1;
         }
         if (VkResult r = done_fence_.Reset(); r != VK_SUCCESS) {
-            fail(err, vk_error("vkResetFences", r));
+            fail(err, vk_error("vkResetFences"_str, r));
             return -1;
         }
         fence_pending_ = false;
@@ -671,7 +672,7 @@ int YuvToRgba::convert_nv12_(VkImage dst, rstd::uint32_t dst_w, rstd::uint32_t d
                                  VK_COMPONENT_SWIZZLE_IDENTITY };
         vci.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
         if (VkResult r = device_.CreateImageView(vci, dst_view); r != VK_SUCCESS) {
-            fail(err, vk_error("vkCreateImageView(dst)", r));
+            fail(err, vk_error("vkCreateImageView(dst)"_str, r));
             return -1;
         }
     }
@@ -687,21 +688,21 @@ int YuvToRgba::convert_nv12_(VkImage dst, rstd::uint32_t dst_w, rstd::uint32_t d
                                VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                                slice<VkDescriptorImageInfo>::from_raw_parts(&dii, usize(1))) ||
             ! batch.Commit().committed()) {
-            fail(err, "failed to update destination descriptor");
+            fail(err, "failed to update destination descriptor"_str);
             return -1;
         }
     }
 
     /* Reset + record. */
     if (VkResult r = cmd_.Reset(); r != VK_SUCCESS) {
-        fail(err, vk_error("vkResetCommandBuffer", r));
+        fail(err, vk_error("vkResetCommandBuffer"_str, r));
         return -1;
     }
     VkCommandBufferBeginInfo bi {};
     bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     if (VkResult r = cmd_.Begin(bi); r != VK_SUCCESS) {
-        fail(err, vk_error("vkBeginCommandBuffer", r));
+        fail(err, vk_error("vkBeginCommandBuffer"_str, r));
         return -1;
     }
 
@@ -795,7 +796,7 @@ int YuvToRgba::convert_nv12_(VkImage dst, rstd::uint32_t dst_w, rstd::uint32_t d
     barrier_dst_from_storage(cmd_, dst, target, queue_family_);
 
     if (VkResult r = cmd_.End(); r != VK_SUCCESS) {
-        fail(err, vk_error("vkEndCommandBuffer", r));
+        fail(err, vk_error("vkEndCommandBuffer"_str, r));
         return -1;
     }
 
@@ -817,7 +818,7 @@ int YuvToRgba::convert_nv12_(VkImage dst, rstd::uint32_t dst_w, rstd::uint32_t d
     si.signalSemaphoreCount              = signal_count;
     si.pSignalSemaphores                 = signal_sems;
     if (VkResult r = queue_.Submit(si, *done_fence_); r != VK_SUCCESS) {
-        fail(err, vk_error("vkQueueSubmit", r));
+        fail(err, vk_error("vkQueueSubmit"_str, r));
         return -1;
     }
     fence_pending_ = true;
@@ -831,7 +832,7 @@ int YuvToRgba::convert_nv12_(VkImage dst, rstd::uint32_t dst_w, rstd::uint32_t d
         sgfi.semaphore  = *signal_sem_;
         sgfi.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
         if (VkResult r = device_.GetSemaphoreFdKHR(sgfi, &sync_fd); r != VK_SUCCESS) {
-            fail(err, vk_error("vkGetSemaphoreFdKHR", r));
+            fail(err, vk_error("vkGetSemaphoreFdKHR"_str, r));
             return -1;
         }
     }
@@ -842,11 +843,11 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im, VkImage dst, rstd:
                                     rstd::uint32_t dst_h, const ColorMatrix& cm,
                                     ConvertTarget target, Error* err) {
     if (dst == VK_NULL_HANDLE) {
-        fail(err, "convert_av_vk_frame: dst null");
+        fail(err, "convert_av_vk_frame: dst null"_str);
         return -1;
     }
     if (im.y_image == VK_NULL_HANDLE) {
-        fail(err, "convert_av_vk_frame: AVVkFrame y_image NULL");
+        fail(err, "convert_av_vk_frame: AVVkFrame y_image NULL"_str);
         return -1;
     }
     /* Two layouts the producer can hand us:
@@ -861,11 +862,11 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im, VkImage dst, rstd:
      * In single-image mode we sample plane 0 / plane 1 via aspect masks. */
     const bool single_image = (im.uv_image == VK_NULL_HANDLE) || (im.uv_image == im.y_image);
     if ((dst_w & 1u) || (dst_h & 1u)) {
-        fail(err, "convert_av_vk_frame: dst dims must be even");
+        fail(err, "convert_av_vk_frame: dst dims must be even"_str);
         return -1;
     }
     if (dst_w > max_w_ || dst_h > max_h_) {
-        fail(err, "convert_av_vk_frame: dst exceeds configured max extent");
+        fail(err, "convert_av_vk_frame: dst exceeds configured max extent"_str);
         return -1;
     }
 
@@ -874,11 +875,11 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im, VkImage dst, rstd:
      * relies on this. */
     if (fence_pending_) {
         if (VkResult r = done_fence_.Wait(1'000'000'000ull); r != VK_SUCCESS) {
-            fail(err, vk_error("vkWaitForFences", r));
+            fail(err, vk_error("vkWaitForFences"_str, r));
             return -1;
         }
         if (VkResult r = done_fence_.Reset(); r != VK_SUCCESS) {
-            fail(err, vk_error("vkResetFences", r));
+            fail(err, vk_error("vkResetFences"_str, r));
             return -1;
         }
         fence_pending_ = false;
@@ -932,14 +933,14 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im, VkImage dst, rstd:
         vci.format           = y_fmt;
         vci.subresourceRange = { y_aspect, 0, 1, 0, 1 };
         if (VkResult r = device_.CreateImageView(vci, y_view); r != VK_SUCCESS) {
-            fail(err, vk_error("vkCreateImageView(Y, AVVkFrame)", r));
+            fail(err, vk_error("vkCreateImageView(Y, AVVkFrame)"_str, r));
             return -1;
         }
         vci.image            = single_image ? im.y_image : im.uv_image;
         vci.format           = uv_fmt;
         vci.subresourceRange = { uv_aspect, 0, 1, 0, 1 };
         if (VkResult r = device_.CreateImageView(vci, uv_view); r != VK_SUCCESS) {
-            fail(err, vk_error("vkCreateImageView(UV, AVVkFrame)", r));
+            fail(err, vk_error("vkCreateImageView(UV, AVVkFrame)"_str, r));
             return -1;
         }
         vci.image            = dst;
@@ -947,7 +948,7 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im, VkImage dst, rstd:
         vci.format           = VK_FORMAT_R8G8B8A8_UNORM;
         vci.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
         if (VkResult r = device_.CreateImageView(vci, dst_view); r != VK_SUCCESS) {
-            fail(err, vk_error("vkCreateImageView(dst, AVVkFrame)", r));
+            fail(err, vk_error("vkCreateImageView(dst, AVVkFrame)"_str, r));
             return -1;
         }
     }
@@ -976,20 +977,20 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im, VkImage dst, rstd:
                                VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                                slice<VkDescriptorImageInfo>::from_raw_parts(&dii_d, usize(1))) ||
             ! batch.Commit().committed()) {
-            fail(err, "failed to update AVVkFrame descriptors");
+            fail(err, "failed to update AVVkFrame descriptors"_str);
             return -1;
         }
     }
 
     if (VkResult r = cmd_.Reset(); r != VK_SUCCESS) {
-        fail(err, vk_error("vkResetCommandBuffer", r));
+        fail(err, vk_error("vkResetCommandBuffer"_str, r));
         return -1;
     }
     VkCommandBufferBeginInfo bi {};
     bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     if (VkResult r = cmd_.Begin(bi); r != VK_SUCCESS) {
-        fail(err, vk_error("vkBeginCommandBuffer", r));
+        fail(err, vk_error("vkBeginCommandBuffer"_str, r));
         return -1;
     }
 
@@ -1113,7 +1114,7 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im, VkImage dst, rstd:
     barrier_dst_from_storage(cmd_, dst, target, queue_family_);
 
     if (VkResult r = cmd_.End(); r != VK_SUCCESS) {
-        fail(err, vk_error("vkEndCommandBuffer", r));
+        fail(err, vk_error("vkEndCommandBuffer"_str, r));
         return -1;
     }
 
@@ -1180,7 +1181,7 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im, VkImage dst, rstd:
     si.signalSemaphoreCount              = signal_count;
     si.pSignalSemaphores                 = signal_sems;
     if (VkResult r = queue_.Submit(si, *done_fence_); r != VK_SUCCESS) {
-        fail(err, vk_error("vkQueueSubmit", r));
+        fail(err, vk_error("vkQueueSubmit"_str, r));
         return -1;
     }
     fence_pending_ = true;
@@ -1207,7 +1208,7 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im, VkImage dst, rstd:
         sgfi.semaphore  = *signal_sem_;
         sgfi.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
         if (VkResult r = device_.GetSemaphoreFdKHR(sgfi, &sync_fd); r != VK_SUCCESS) {
-            fail(err, vk_error("vkGetSemaphoreFdKHR", r));
+            fail(err, vk_error("vkGetSemaphoreFdKHR"_str, r));
             return -1;
         }
     }
@@ -1225,23 +1226,23 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm, VkImage dst, rstd::ui
                                   rstd::uint32_t dst_h, const ColorMatrix& cm, ConvertTarget target,
                                   Error* err) {
     if (dst == VK_NULL_HANDLE) {
-        fail(err, "convert_drm_prime: dst null");
+        fail(err, "convert_drm_prime: dst null"_str);
         return -1;
     }
     if (! device_dispatch_.vkGetMemoryFdPropertiesKHR) {
-        fail(err, "convert_drm_prime: vkGetMemoryFdPropertiesKHR missing");
+        fail(err, "convert_drm_prime: vkGetMemoryFdPropertiesKHR missing"_str);
         return -1;
     }
     if (drm.object_count == 0 || drm.layer_count == 0) {
-        fail(err, "convert_drm_prime: empty DRM_PRIME descriptor");
+        fail(err, "convert_drm_prime: empty DRM_PRIME descriptor"_str);
         return -1;
     }
     if ((dst_w & 1u) || (dst_h & 1u)) {
-        fail(err, "convert_drm_prime: dst dims must be even");
+        fail(err, "convert_drm_prime: dst dims must be even"_str);
         return -1;
     }
     if (dst_w > max_w_ || dst_h > max_h_) {
-        fail(err, "convert_drm_prime: dst exceeds configured max extent");
+        fail(err, "convert_drm_prime: dst exceeds configured max extent"_str);
         return -1;
     }
 
@@ -1249,11 +1250,11 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm, VkImage dst, rstd::ui
      * cmd_/dset_. */
     if (fence_pending_) {
         if (VkResult r = done_fence_.Wait(1'000'000'000ull); r != VK_SUCCESS) {
-            fail(err, vk_error("vkWaitForFences", r));
+            fail(err, vk_error("vkWaitForFences"_str, r));
             return -1;
         }
         if (VkResult r = done_fence_.Reset(); r != VK_SUCCESS) {
-            fail(err, vk_error("vkResetFences", r));
+            fail(err, vk_error("vkResetFences"_str, r));
             return -1;
         }
         fence_pending_ = false;
@@ -1368,7 +1369,7 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm, VkImage dst, rstd::ui
         if (VkResult r = device_.GetMemoryFdPropertiesKHR(
                 VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, raw_fd, fdp);
             r != VK_SUCCESS) {
-            fail(err, vk_error("vkGetMemoryFdPropertiesKHR", r));
+            fail(err, vk_error("vkGetMemoryFdPropertiesKHR"_str, r));
             return false;
         }
 
@@ -1385,7 +1386,7 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm, VkImage dst, rstd::ui
             req2.memoryRequirements.memoryTypeBits & fdp.memoryTypeBits;
         const rstd::uint32_t mtype = pick_memory_type(phys_, type_bits, 0);
         if (mtype == UINT32_MAX) {
-            fail(err, "convert_drm_prime: no compatible memory type for imported DMA-BUF");
+            fail(err, "convert_drm_prime: no compatible memory type for imported DMA-BUF"_str);
             return false;
         }
 
@@ -1403,7 +1404,7 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm, VkImage dst, rstd::ui
         mai.allocationSize  = drm.objects[obj_idx].size;
         mai.memoryTypeIndex = mtype;
         if (VkResult r = device_.AllocateMemory(mai, plane_mem[plane_idx]); r != VK_SUCCESS) {
-            fail(err, vk_error("vkAllocateMemory(import DMA-BUF)", r));
+            fail(err, vk_error("vkAllocateMemory(import DMA-BUF)"_str, r));
             return false;
         }
         /* fd ownership transfers to Vulkan only after a successful import. */
@@ -1436,7 +1437,7 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm, VkImage dst, rstd::ui
         if (VkResult r = device_.BindImageMemory2(
                 slice<VkBindImageMemoryInfo>::from_raw_parts(binds, usize(2)));
             r != VK_SUCCESS) {
-            fail(err, vk_error("vkBindImageMemory2(disjoint)", r));
+            fail(err, vk_error("vkBindImageMemory2(disjoint)"_str, r));
             return -1;
         }
     } else {
@@ -1445,7 +1446,7 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm, VkImage dst, rstd::ui
             return -1;
         }
         if (VkResult r = drm_image.BindMemory(*plane_mem[0], 0); r != VK_SUCCESS) {
-            fail(err, vk_error("vkBindImageMemory(joint)", r));
+            fail(err, vk_error("vkBindImageMemory(joint)"_str, r));
             return -1;
         }
     }
@@ -1463,20 +1464,20 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm, VkImage dst, rstd::ui
         vci.subresourceRange = { VK_IMAGE_ASPECT_PLANE_0_BIT, 0, 1, 0, 1 };
         vci.format           = VK_FORMAT_R8_UNORM;
         if (VkResult r = device_.CreateImageView(vci, y_view); r != VK_SUCCESS) {
-            fail(err, vk_error("vkCreateImageView(DRM Y)", r));
+            fail(err, vk_error("vkCreateImageView(DRM Y)"_str, r));
             return -1;
         }
         vci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_PLANE_1_BIT;
         vci.format                      = VK_FORMAT_R8G8_UNORM;
         if (VkResult r = device_.CreateImageView(vci, uv_view); r != VK_SUCCESS) {
-            fail(err, vk_error("vkCreateImageView(DRM UV)", r));
+            fail(err, vk_error("vkCreateImageView(DRM UV)"_str, r));
             return -1;
         }
         vci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         vci.image                       = dst;
         vci.format                      = VK_FORMAT_R8G8B8A8_UNORM;
         if (VkResult r = device_.CreateImageView(vci, dst_view); r != VK_SUCCESS) {
-            fail(err, vk_error("vkCreateImageView(DRM dst)", r));
+            fail(err, vk_error("vkCreateImageView(DRM dst)"_str, r));
             return -1;
         }
     }
@@ -1504,20 +1505,20 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm, VkImage dst, rstd::ui
                                VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                                slice<VkDescriptorImageInfo>::from_raw_parts(&dii_d, usize(1))) ||
             ! batch.Commit().committed()) {
-            fail(err, "failed to update DRM PRIME descriptors");
+            fail(err, "failed to update DRM PRIME descriptors"_str);
             return -1;
         }
     }
 
     if (VkResult r = cmd_.Reset(); r != VK_SUCCESS) {
-        fail(err, vk_error("vkResetCommandBuffer", r));
+        fail(err, vk_error("vkResetCommandBuffer"_str, r));
         return -1;
     }
     VkCommandBufferBeginInfo bi {};
     bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     if (VkResult r = cmd_.Begin(bi); r != VK_SUCCESS) {
-        fail(err, vk_error("vkBeginCommandBuffer", r));
+        fail(err, vk_error("vkBeginCommandBuffer"_str, r));
         return -1;
     }
 
@@ -1576,7 +1577,7 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm, VkImage dst, rstd::ui
     barrier_dst_from_storage(cmd_, dst, target, queue_family_);
 
     if (VkResult r = cmd_.End(); r != VK_SUCCESS) {
-        fail(err, vk_error("vkEndCommandBuffer", r));
+        fail(err, vk_error("vkEndCommandBuffer"_str, r));
         return -1;
     }
 
@@ -1602,7 +1603,7 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm, VkImage dst, rstd::ui
     si.signalSemaphoreCount              = signal_count;
     si.pSignalSemaphores                 = signal_sems;
     if (VkResult r = queue_.Submit(si, *done_fence_); r != VK_SUCCESS) {
-        fail(err, vk_error("vkQueueSubmit", r));
+        fail(err, vk_error("vkQueueSubmit"_str, r));
         return -1;
     }
     fence_pending_ = true;
@@ -1622,7 +1623,7 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm, VkImage dst, rstd::ui
         sgfi.semaphore  = *signal_sem_;
         sgfi.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
         if (VkResult r = device_.GetSemaphoreFdKHR(sgfi, &sync_fd); r != VK_SUCCESS) {
-            fail(err, vk_error("vkGetSemaphoreFdKHR", r));
+            fail(err, vk_error("vkGetSemaphoreFdKHR"_str, r));
             return -1;
         }
     }
@@ -1697,7 +1698,7 @@ auto YuvToRgba::submit_nv12(VkImage dst, rstd::uint32_t dst_w, rstd::uint32_t ds
     int   fd = convert_nv12_(dst, dst_w, dst_h, nv12, nv12_size, cm, target, &err);
     if (fd < 0 && ! err.message.is_empty()) return Err(rstd::move(err));
     if (! last_submission_ || ! last_submission_->submitted()) {
-        return Err(Error { "YuvToRgba: conversion returned without a submission" });
+        return Err(Error { "YuvToRgba: conversion returned without a submission"_str });
     }
     auto submission    = last_submission_->clone();
     submission.sync_fd = fd;
@@ -1727,7 +1728,7 @@ auto YuvToRgba::submit_av_vk_frame(const VkFrameImports& imports, VkImage dst, r
     int   fd = convert_av_vk_frame_(imports, dst, dst_w, dst_h, cm, target, &err);
     if (fd < 0 && ! err.message.is_empty()) return Err(rstd::move(err));
     if (! last_submission_ || ! last_submission_->submitted()) {
-        return Err(Error { "YuvToRgba: conversion returned without a submission" });
+        return Err(Error { "YuvToRgba: conversion returned without a submission"_str });
     }
     auto submission    = last_submission_->clone();
     submission.sync_fd = fd;
@@ -1756,7 +1757,7 @@ auto YuvToRgba::submit_drm_prime(const DrmFrameView& drm, VkImage dst, rstd::uin
     int   fd = convert_drm_prime_(drm, dst, dst_w, dst_h, cm, target, &err);
     if (fd < 0 && ! err.message.is_empty()) return Err(rstd::move(err));
     if (! last_submission_ || ! last_submission_->submitted()) {
-        return Err(Error { "YuvToRgba: conversion returned without a submission" });
+        return Err(Error { "YuvToRgba: conversion returned without a submission"_str });
     }
     auto submission    = last_submission_->clone();
     submission.sync_fd = fd;

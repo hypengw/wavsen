@@ -7,6 +7,7 @@ import vvk;
 import :vk_device;
 
 using namespace rstd::prelude;
+using namespace rstd::literals;
 
 namespace wavsen::video
 {
@@ -28,7 +29,7 @@ bool device_has_ext(const vvk::PhysicalDevice& physical_device, ref<str> name) {
     rstd::vec::Vec<VkExtensionProperties> properties;
     if (physical_device.EnumerateDeviceExtensionProperties(properties) != VK_SUCCESS) return false;
     for (const auto& property : properties) {
-        if (ref<str>(property.extensionName) == name) return true;
+        if (rstd::cppstd::as_str(property.extensionName).unwrap() == name) return true;
     }
     return false;
 }
@@ -64,17 +65,17 @@ auto Producer::create_with_render_node(rstd::uint32_t width, rstd::uint32_t heig
 
 auto Producer::from_external(ExternalDeviceInfo info) -> Result<rstd::boxed::Box<Producer>, Error> {
     if (! info.instance || ! info.physical_device || ! info.device || ! info.queue) {
-        return Err(Error { "Producer::from_external: missing handle(s)" });
+        return Err(Error { "Producer::from_external: missing handle(s)"_str });
     }
 
     auto self = rstd::boxed::Box<Producer>::make();
     if (! vvk::Load(self->instance_dispatch_) ||
         ! vvk::Load(info.instance, self->instance_dispatch_)) {
-        return Err(Error { "Producer::from_external: failed to load instance dispatch" });
+        return Err(Error { "Producer::from_external: failed to load instance dispatch"_str });
     }
     self->device_dispatch_ = vvk::DeviceDispatch { self->instance_dispatch_ };
     if (! vvk::Load(info.device, self->device_dispatch_)) {
-        return Err(Error { "Producer::from_external: failed to load device dispatch" });
+        return Err(Error { "Producer::from_external: failed to load device dispatch"_str });
     }
 
     self->owns_device_ = false;
@@ -100,7 +101,7 @@ auto Producer::from_external(ExternalDeviceInfo info) -> Result<rstd::boxed::Box
 Option<rstd::boxed::Box<Producer>> Producer::build_(rstd::uint32_t width, rstd::uint32_t height,
                                                     Option<ref<str>> render_node, Error* err) {
     if (width == 0 || height == 0) {
-        fail(err, "Producer: width/height must be non-zero");
+        fail(err, "Producer: width/height must be non-zero"_str);
         return None();
     }
 
@@ -113,7 +114,7 @@ Option<rstd::boxed::Box<Producer>> Producer::build_(rstd::uint32_t width, rstd::
     self->enabled_inst_exts_.push_back(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
 
     if (! vvk::Load(self->instance_dispatch_)) {
-        fail(err, "Producer: failed to load Vulkan instance entry points");
+        fail(err, "Producer: failed to load Vulkan instance entry points"_str);
         return None();
     }
 
@@ -128,17 +129,17 @@ Option<rstd::boxed::Box<Producer>> Producer::build_(rstd::uint32_t width, rstd::
                                                 self->enabled_inst_exts_.as_slice(),
                                                 self->instance_dispatch_);
         result != VK_SUCCESS) {
-        fail(err, vk_error("vkCreateInstance", result));
+        fail(err, vk_error("vkCreateInstance"_str, result));
         return None();
     }
     if (! vvk::Load(*self->instance_, self->instance_dispatch_)) {
-        fail(err, "Producer: failed to load Vulkan instance dispatch");
+        fail(err, "Producer: failed to load Vulkan instance dispatch"_str);
         return None();
     }
 
     auto physical_devices = self->instance_.EnumeratePhysicalDevices();
     if (physical_devices.is_empty()) {
-        fail(err, "no Vulkan physical devices found");
+        fail(err, "no Vulkan physical devices found"_str);
         return None();
     }
 
@@ -149,7 +150,7 @@ Option<rstd::boxed::Box<Producer>> Producer::build_(rstd::uint32_t width, rstd::
         VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME,
         VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME,
     };
-    const ref<str> drm_extension = "VK_EXT_physical_device_drm";
+    const ref<str> drm_extension = "VK_EXT_physical_device_drm"_str;
 
     auto      pinning = render_node.is_some();
     rstd::u32 wanted_major {};
@@ -173,7 +174,7 @@ Option<rstd::boxed::Box<Producer>> Producer::build_(rstd::uint32_t width, rstd::
     for (auto& physical_device : physical_devices) {
         bool supported = true;
         for (const char* extension : required_extensions) {
-            if (! device_has_ext(physical_device, extension)) {
+            if (! device_has_ext(physical_device, rstd::cppstd::as_str(extension).unwrap())) {
                 supported = false;
                 break;
             }
@@ -206,14 +207,14 @@ Option<rstd::boxed::Box<Producer>> Producer::build_(rstd::uint32_t width, rstd::
                  rstd::format("Producer: no Vulkan device matches render_node {}",
                               render_node.unwrap()));
         } else {
-            fail(err, "no physical device supports the DMA-BUF export extension set");
+            fail(err, "no physical device supports the DMA-BUF export extension set"_str);
         }
         return None();
     }
 
     auto queue_properties = self->phys_.GetQueueFamilyProperties();
     if (queue_properties.is_empty()) {
-        fail(err, "no queue families");
+        fail(err, "no queue families"_str);
         return None();
     }
     self->queue_families_.reserve(queue_properties.len());
@@ -233,7 +234,7 @@ Option<rstd::boxed::Box<Producer>> Producer::build_(rstd::uint32_t width, rstd::
         }
     }
     if (! picked_queue) {
-        fail(err, "no graphics/compute/transfer queue family");
+        fail(err, "no graphics/compute/transfer queue family"_str);
         return None();
     }
 
@@ -258,7 +259,8 @@ Option<rstd::boxed::Box<Producer>> Producer::build_(rstd::uint32_t width, rstd::
         "VK_EXT_descriptor_buffer", "VK_EXT_shader_object",
     };
     for (const char* extension : optional_extensions) {
-        if (device_has_ext(self->phys_, extension)) self->enabled_dev_exts_.push_back(extension);
+        if (device_has_ext(self->phys_, rstd::cppstd::as_str(extension).unwrap()))
+            self->enabled_dev_exts_.push_back(extension);
     }
 
     VkPhysicalDeviceVulkan12Features features12 {};
@@ -293,11 +295,11 @@ Option<rstd::boxed::Box<Producer>> Producer::build_(rstd::uint32_t width, rstd::
                                               &wanted_features,
                                               self->device_dispatch_);
         result != VK_SUCCESS) {
-        fail(err, vk_error("vkCreateDevice", result));
+        fail(err, vk_error("vkCreateDevice"_str, result));
         return None();
     }
     if (! vvk::Load(*self->device_, self->device_dispatch_)) {
-        fail(err, "Producer: failed to load Vulkan device dispatch");
+        fail(err, "Producer: failed to load Vulkan device dispatch"_str);
         return None();
     }
     self->queue_ = self->device_.GetQueue(self->queue_family_);
@@ -337,13 +339,13 @@ Option<rstd::boxed::Box<Producer>> Producer::build_(rstd::uint32_t width, rstd::
     pool_info.queueFamilyIndex = self->queue_family_;
     if (VkResult result = self->device_.CreateCommandPool(pool_info, self->cmd_pool_);
         result != VK_SUCCESS) {
-        fail(err, vk_error("vkCreateCommandPool", result));
+        fail(err, vk_error("vkCreateCommandPool"_str, result));
         return None();
     }
     if (VkResult result = self->cmd_pool_.Allocate(
             usize(1), VK_COMMAND_BUFFER_LEVEL_PRIMARY, self->command_buffers_);
         result != VK_SUCCESS) {
-        fail(err, vk_error("vkAllocateCommandBuffers", result));
+        fail(err, vk_error("vkAllocateCommandBuffers"_str, result));
         return None();
     }
     self->cmd_ = vvk::CommandBuffer(self->command_buffers_[usize()], self->device_dispatch_);
@@ -352,7 +354,7 @@ Option<rstd::boxed::Box<Producer>> Producer::build_(rstd::uint32_t width, rstd::
     fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     if (VkResult result = self->device_.CreateFence(fence_info, self->done_fence_);
         result != VK_SUCCESS) {
-        fail(err, vk_error("vkCreateFence", result));
+        fail(err, vk_error("vkCreateFence"_str, result));
         return None();
     }
 
@@ -364,7 +366,7 @@ Option<rstd::boxed::Box<Producer>> Producer::build_(rstd::uint32_t width, rstd::
     semaphore_info.pNext = &export_semaphore;
     if (VkResult result = self->device_.CreateSemaphore(semaphore_info, self->signal_sem_);
         result != VK_SUCCESS) {
-        fail(err, vk_error("vkCreateSemaphore", result));
+        fail(err, vk_error("vkCreateSemaphore"_str, result));
         return None();
     }
 
@@ -376,7 +378,7 @@ Option<rstd::boxed::Box<Producer>> Producer::build_(rstd::uint32_t width, rstd::
     buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     if (VkResult result = self->device_.CreateBuffer(buffer_info, self->staging_buf_);
         result != VK_SUCCESS) {
-        fail(err, vk_error("vkCreateBuffer(staging)", result));
+        fail(err, vk_error("vkCreateBuffer(staging)"_str, result));
         return None();
     }
 
@@ -393,7 +395,7 @@ Option<rstd::boxed::Box<Producer>> Producer::build_(rstd::uint32_t width, rstd::
         }
     }
     if (host_type == std::numeric_limits<rstd::uint32_t>::max()) {
-        fail(err, "no HOST_VISIBLE|COHERENT memory type for staging");
+        fail(err, "no HOST_VISIBLE|COHERENT memory type for staging"_str);
         return None();
     }
 
@@ -403,17 +405,17 @@ Option<rstd::boxed::Box<Producer>> Producer::build_(rstd::uint32_t width, rstd::
     allocate_info.memoryTypeIndex = host_type;
     if (VkResult result = self->device_.AllocateMemory(allocate_info, self->staging_mem_);
         result != VK_SUCCESS) {
-        fail(err, vk_error("vkAllocateMemory(staging)", result));
+        fail(err, vk_error("vkAllocateMemory(staging)"_str, result));
         return None();
     }
     if (VkResult result = self->staging_buf_.BindMemory(*self->staging_mem_, 0);
         result != VK_SUCCESS) {
-        fail(err, vk_error("vkBindBufferMemory(staging)", result));
+        fail(err, vk_error("vkBindBufferMemory(staging)"_str, result));
         return None();
     }
     if (VkResult result = self->staging_mem_.Map(0, VK_WHOLE_SIZE, &self->staging_map_);
         result != VK_SUCCESS) {
-        fail(err, vk_error("vkMapMemory(staging)", result));
+        fail(err, vk_error("vkMapMemory(staging)"_str, result));
         return None();
     }
 
@@ -433,27 +435,27 @@ int Producer::upload_into_(VkImage target, rstd::uint32_t target_width,
                            rstd::uint32_t target_height, const rstd::uint8_t* data, usize size,
                            Error* err) {
     if (target == VK_NULL_HANDLE) {
-        fail(err, "upload_into: target VkImage is null");
+        fail(err, "upload_into: target VkImage is null"_str);
         return -1;
     }
     if (! owns_device_ || ! staging_buf_) {
         fail(err,
-             "upload_into: Producer has no staging buffer "
+             "upload_into: Producer has no staging buffer "_str
              "(from_external Producers are decode-only)");
         return -1;
     }
     if (static_cast<VkDeviceSize>(size.to_primitive()) != staging_size_) {
-        fail(err, "upload_into: size mismatch");
+        fail(err, "upload_into: size mismatch"_str);
         return -1;
     }
 
     if (fence_pending_) {
         if (VkResult result = done_fence_.Wait(1'000'000'000ull); result != VK_SUCCESS) {
-            fail(err, vk_error("vkWaitForFences(prev upload)", result));
+            fail(err, vk_error("vkWaitForFences(prev upload)"_str, result));
             return -1;
         }
         if (VkResult result = done_fence_.Reset(); result != VK_SUCCESS) {
-            fail(err, vk_error("vkResetFences", result));
+            fail(err, vk_error("vkResetFences"_str, result));
             return -1;
         }
         fence_pending_ = false;
@@ -461,7 +463,7 @@ int Producer::upload_into_(VkImage target, rstd::uint32_t target_width,
 
     rstd::mem::memcpy(staging_map_, data, size);
     if (VkResult result = cmd_.Reset(); result != VK_SUCCESS) {
-        fail(err, vk_error("vkResetCommandBuffer", result));
+        fail(err, vk_error("vkResetCommandBuffer"_str, result));
         return -1;
     }
 
@@ -469,7 +471,7 @@ int Producer::upload_into_(VkImage target, rstd::uint32_t target_width,
     begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     if (VkResult result = cmd_.Begin(begin_info); result != VK_SUCCESS) {
-        fail(err, vk_error("vkBeginCommandBuffer", result));
+        fail(err, vk_error("vkBeginCommandBuffer"_str, result));
         return -1;
     }
 
@@ -505,7 +507,7 @@ int Producer::upload_into_(VkImage target, rstd::uint32_t target_width,
         VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, to_foreign);
 
     if (VkResult result = cmd_.End(); result != VK_SUCCESS) {
-        fail(err, vk_error("vkEndCommandBuffer", result));
+        fail(err, vk_error("vkEndCommandBuffer"_str, result));
         return -1;
     }
 
@@ -518,7 +520,7 @@ int Producer::upload_into_(VkImage target, rstd::uint32_t target_width,
     submit_info.signalSemaphoreCount = 1;
     submit_info.pSignalSemaphores    = &raw_semaphore;
     if (VkResult result = queue_.Submit(submit_info, *done_fence_); result != VK_SUCCESS) {
-        fail(err, vk_error("vkQueueSubmit", result));
+        fail(err, vk_error("vkQueueSubmit"_str, result));
         return -1;
     }
     fence_pending_ = true;
@@ -529,7 +531,7 @@ int Producer::upload_into_(VkImage target, rstd::uint32_t target_width,
     fd_info.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
     int sync_fd        = -1;
     if (VkResult result = device_.GetSemaphoreFdKHR(fd_info, &sync_fd); result != VK_SUCCESS) {
-        fail(err, vk_error("vkGetSemaphoreFdKHR", result));
+        fail(err, vk_error("vkGetSemaphoreFdKHR"_str, result));
         return -1;
     }
     return sync_fd;
