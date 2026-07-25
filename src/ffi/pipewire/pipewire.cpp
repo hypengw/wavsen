@@ -59,6 +59,7 @@ void load_once(LoadState& state) {
     WAVSEN_LOAD(pw_thread_loop_start);
     WAVSEN_LOAD(pw_thread_loop_stop);
     WAVSEN_LOAD(pw_thread_loop_unlock);
+    WAVSEN_LOAD(pw_loop_invoke);
     WAVSEN_LOAD(pw_properties_new);
     WAVSEN_LOAD(pw_properties_set);
     WAVSEN_LOAD(pw_properties_setf);

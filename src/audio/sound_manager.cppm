@@ -30,9 +30,8 @@ public:
     virtual void set_listener_position(float /*x*/, float /*y*/, float /*z*/) {}
 };
 
-// Owns the output audio device and mounted streams. Mixing happens in the
-// audio thread via the device's data callback. Mute / volume are atomic
-// so UI threads can poke them without locks.
+// Main-loop-owned playback policy. The AudioDevice backend owns native
+// resources and emits events that the caller must relay back to this owner.
 class SoundManager {
 public:
     explicit SoundManager(AudioClientIdentity identity = {});
@@ -43,7 +42,9 @@ public:
     void mount(std::unique_ptr<SoundStream>);
     void unmount_all();
 
-    auto init() -> bool;
+    void activate(AudioDeviceEventSink);
+    void on_device_event(AudioDeviceEvent);
+    void shutdown();
     auto set_identity(AudioClientIdentity identity) -> bool;
     auto is_inited() const -> bool;
     void play();

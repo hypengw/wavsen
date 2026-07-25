@@ -58,17 +58,19 @@ private:
 
 class AvPlayer::Impl {
 public:
-    explicit Impl(AudioClientIdentity identity): device(std::move(identity)) {}
+    explicit Impl(AudioClientIdentity identity_) { desired.identity = std::move(identity_); }
 
     ~Impl() {
         // The audio callback borrows decoder_ptr, so it must stop before the decoder is destroyed.
-        device.uninit();
-        device.unmount_all();
+        device.shutdown();
+        device.wait_stopped();
         decoder_ptr = nullptr;
         decoder_storage.reset();
     }
 
     AudioDevice                    device;
+    AudioDeviceDesiredState        desired;
+    std::uint64_t                  stream_revision {};
     StreamDecoder*                 decoder_ptr = nullptr;
     std::unique_ptr<StreamDecoder> decoder_storage;
 
@@ -100,11 +102,8 @@ auto AvPlayer::open(ByteStream src, bool open_device, AudioClientIdentity identi
         .channels    = 2,
         .sample_rate = 48000,
     };
-    if (open_device && ! p->impl_->device.init()) {
+    if (open_device && ! p->open_device()) {
         return rstd::Err(AvPlayerError { "audio device init failed" });
-    }
-    if (p->impl_->device.is_inited()) {
-        desc = p->impl_->device.desc();
     }
 
     p->impl_->decoder_storage = std::make_unique<StreamDecoder>();
@@ -128,43 +127,46 @@ auto AvPlayer::open(ByteStream src, bool open_device, AudioClientIdentity identi
                                                     [dev]() {
                                                        return dev->stream_position_frames();
                                                     });
-    p->impl_->device.mount(std::move(channel));
+    if (! p->impl_->device.mount(std::move(channel), p->impl_->stream_revision)) {
+        return rstd::Err(AvPlayerError { "audio device stream mount failed" });
+    }
 
     return rstd::Ok(std::move(p));
 }
 
 bool AvPlayer::open_device() {
-    if (impl_->device.is_inited()) return true;
-    if (! impl_->device.init()) {
-        return false;
-    }
+    if (impl_->desired.active) return true;
+    ++impl_->desired.generation;
+    impl_->desired.active = true;
+    if (! impl_->device.apply(impl_->desired)) return false;
     impl_->anchored.store(false, std::memory_order_release);
     impl_->needs_reanchor.store(true, std::memory_order_release);
     impl_->device_pos_at_anchor.store(0, std::memory_order_relaxed);
-    if (! impl_->paused.load(std::memory_order_relaxed)) {
-        impl_->device.start();
-    }
     return true;
 }
 
 void AvPlayer::close_device() {
-    if (! impl_->device.is_inited()) return;
-    impl_->device.uninit();
+    if (! impl_->desired.active) return;
+    ++impl_->desired.generation;
+    impl_->desired.active = false;
+    (void)impl_->device.apply(impl_->desired);
     impl_->anchored.store(false, std::memory_order_release);
     impl_->needs_reanchor.store(true, std::memory_order_release);
     impl_->device_pos_at_anchor.store(0, std::memory_order_relaxed);
 }
 
-bool AvPlayer::is_device_open() const { return impl_->device.is_inited(); }
+bool AvPlayer::is_device_open() const { return impl_->desired.active; }
 
 void AvPlayer::play() {
     impl_->paused.store(false, std::memory_order_relaxed);
-    impl_->device.start();
+    impl_->desired.playing = true;
+    if (impl_->desired.active) (void)impl_->device.apply(impl_->desired);
 }
 
 void AvPlayer::pause() {
-    impl_->device.stop();
     impl_->paused.store(true, std::memory_order_relaxed);
+    impl_->desired.playing = false;
+    if (impl_->desired.active) (void)impl_->device.apply(impl_->desired);
 }
 
 bool AvPlayer::is_paused() const { return impl_->paused.load(std::memory_order_relaxed); }
@@ -173,20 +175,23 @@ void AvPlayer::seek_to_start() { seek_to(0.0); }
 
 void AvPlayer::seek_to(double seconds) {
     const bool was_playing = ! is_paused();
-    impl_->device.stop();
+    impl_->desired.playing = false;
+    if (impl_->desired.active) (void)impl_->device.apply(impl_->desired);
     if (impl_->decoder_ptr) {
         impl_->decoder_ptr->seek_to(seconds);
     }
     impl_->anchored.store(false, std::memory_order_release);
     impl_->needs_reanchor.store(true, std::memory_order_release);
     impl_->device_pos_at_anchor.store(0, std::memory_order_relaxed);
-    if (was_playing && impl_->device.is_inited()) {
-        impl_->device.start();
+    if (was_playing && impl_->desired.active) {
+        impl_->desired.playing = true;
+        (void)impl_->device.apply(impl_->desired);
     }
 }
 
 double AvPlayer::current_time_seconds() const {
-    if (! impl_->device.is_inited()) {
+    if (impl_->device.state() != AudioDeviceState::ReadyPaused &&
+        impl_->device.state() != AudioDeviceState::ReadyPlaying) {
         return std::numeric_limits<double>::quiet_NaN();
     }
     if (! impl_->anchored.load(std::memory_order_acquire)) {
@@ -203,12 +208,21 @@ double AvPlayer::current_time_seconds() const {
     return pts0 + static_cast<double>(played - base) / static_cast<double>(sr);
 }
 
-void  AvPlayer::set_volume(float v) { impl_->device.set_volume(v); }
-void  AvPlayer::set_muted(bool m) { impl_->device.set_muted(m); }
-float AvPlayer::volume_scale() const { return impl_->device.volume_scale(); }
-void  AvPlayer::set_volume_scale(float v) { impl_->device.set_volume_scale(v); }
+void AvPlayer::set_volume(float v) {
+    impl_->desired.volume = v;
+    if (impl_->desired.active) (void)impl_->device.apply(impl_->desired);
+}
+void AvPlayer::set_muted(bool m) {
+    impl_->desired.muted = m;
+    if (impl_->desired.active) (void)impl_->device.apply(impl_->desired);
+}
+float AvPlayer::volume_scale() const { return impl_->desired.volume_scale; }
+void  AvPlayer::set_volume_scale(float v) { set_volume_scale(v, 0); }
 void  AvPlayer::set_volume_scale(float v, std::uint32_t fade_ms) {
-    impl_->device.set_volume_scale(v, fade_ms);
+    impl_->desired.volume_scale = v;
+    ++impl_->desired.volume_scale_revision;
+    impl_->desired.volume_scale_fade_ms = fade_ms;
+    if (impl_->desired.active) (void)impl_->device.apply(impl_->desired);
 }
 
 bool AvPlayer::is_eof() const { return impl_->decoder_ptr && impl_->decoder_ptr->is_eof(); }

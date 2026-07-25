@@ -49,6 +49,7 @@ using ::pa_timing_info;
 using ::pa_usec_t;
 
 struct Api {
+    decltype(&::pa_mainloop_api_once)           pa_mainloop_api_once {};
     decltype(&::pa_threaded_mainloop_free)      pa_threaded_mainloop_free {};
     decltype(&::pa_threaded_mainloop_get_api)   pa_threaded_mainloop_get_api {};
     decltype(&::pa_threaded_mainloop_in_thread) pa_threaded_mainloop_in_thread {};

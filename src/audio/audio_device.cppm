@@ -40,37 +40,56 @@ public:
     virtual void pass_desc(const DeviceDesc&)                               = 0;
 };
 
+enum class AudioDeviceState : std::uint8_t
+{
+    Idle,
+    Connecting,
+    ReadyPaused,
+    ReadyPlaying,
+    Failed,
+    Stopped,
+};
+
+struct AudioDeviceEvent {
+    std::uint64_t    generation {};
+    AudioDeviceState state { AudioDeviceState::Idle };
+    std::string      error;
+};
+
+using AudioDeviceEventSink = std::function<void(AudioDeviceEvent)>;
+
+struct AudioDeviceDesiredState {
+    std::uint64_t       generation {};
+    bool                active {};
+    bool                playing {};
+    AudioClientIdentity identity;
+    float               volume { 1.0f };
+    bool                muted {};
+    float               volume_scale { 1.0f };
+    std::uint64_t       volume_scale_revision {};
+    std::uint32_t       volume_scale_fade_ms {};
+};
+
 class AudioDevice {
 public:
-    explicit AudioDevice(AudioClientIdentity identity = {});
+    AudioDevice();
     ~AudioDevice();
     AudioDevice(const AudioDevice&)            = delete;
     AudioDevice& operator=(const AudioDevice&) = delete;
 
-    auto init() -> bool;
-    auto set_identity(AudioClientIdentity identity) -> bool;
-    void uninit();
-    auto is_inited() const -> bool;
+    void set_event_sink(AudioDeviceEventSink);
+    auto apply(AudioDeviceDesiredState) -> bool;
+    auto mount(std::unique_ptr<IPullChannel>, std::uint64_t stream_revision) -> bool;
+    auto unmount_all(std::uint64_t stream_revision) -> bool;
+    void shutdown();
+    void wait_stopped();
 
-    void start();
-    void stop();
-
-    void mount(std::unique_ptr<IPullChannel>);
-    void unmount_all();
-
-    auto volume() const -> float;
-    auto muted() const -> bool;
-    void set_volume(float v);
-    void set_muted(bool m);
-    auto volume_scale() const -> float;
-    void set_volume_scale(float v);
-    void set_volume_scale(float v, std::uint32_t fade_ms);
-
+    auto state() const -> AudioDeviceState;
     auto desc() const -> DeviceDesc;
 
     // Frames the audio device has actually played back since the stream
-    // was created. Used by AvPlayer as the master clock for A/V sync.
-    // Returns 0 before init() / on query failure / before primed.
+    // was created. The backend thread publishes this cached value so callers
+    // never enter the native audio API from another thread.
     auto stream_position_frames() const -> std::uint64_t;
 
 private:

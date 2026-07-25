@@ -16,7 +16,7 @@ struct AvPlayerError {
 
 // Single-stream audio playback aimed at A/V sync. Owns its own
 // AudioDevice (independent of any SoundManager) so it can expose a
-// stable master clock derived from pw_stream_get_time_n.
+// stable master clock published by the backend thread.
 //
 // Threading: open/play/pause/seek_to_start/set_volume/set_muted are all
 // callable from the main thread. current_time_seconds is lock-free and

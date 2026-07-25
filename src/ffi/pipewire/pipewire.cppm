@@ -69,6 +69,8 @@ struct Api {
     decltype(&::pw_thread_loop_stop)     pw_thread_loop_stop {};
     decltype(&::pw_thread_loop_unlock)   pw_thread_loop_unlock {};
 
+    decltype(&::pw_loop_invoke) pw_loop_invoke {};
+
     decltype(&::pw_properties_new)  pw_properties_new {};
     decltype(&::pw_properties_set)  pw_properties_set {};
     decltype(&::pw_properties_setf) pw_properties_setf {};

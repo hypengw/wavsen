@@ -22,7 +22,8 @@ namespace
 {
 
 std::once_flag g_pw_init_once;
-void           ensure_pw_init(const pipewire_ffi::Api& api) {
+
+void ensure_pw_init(const pipewire_ffi::Api& api) {
     std::call_once(g_pw_init_once, [&api] {
         api.pw_init(nullptr, nullptr);
     });
@@ -32,54 +33,261 @@ constexpr std::uint32_t kDefaultRate     = 48000;
 constexpr std::uint32_t kDefaultChannels = 2;
 constexpr std::uint32_t kQuantum         = 1024;
 
-float clamp_volume_scale(float v) {
-    if (! std::isfinite(v) || v < 0.0f) return 0.0f;
-    if (v > 1.0f) return 1.0f;
-    return v;
+float clamp_volume_scale(float value) {
+    if (! std::isfinite(value) || value < 0.0f) return 0.0f;
+    if (value > 1.0f) return 1.0f;
+    return value;
 }
+
+enum class DeviceCommandKind : std::uint8_t
+{
+    Apply,
+    Mount,
+    UnmountAll,
+    Shutdown,
+};
+
+struct DeviceCommand {
+    DeviceCommandKind             kind { DeviceCommandKind::Apply };
+    AudioDeviceDesiredState       desired;
+    std::unique_ptr<IPullChannel> channel;
+    std::uint64_t                 stream_revision {};
+};
+
+struct CommandQueue {
+    rstd::prelude::Vec<DeviceCommand> pending;
+    bool                              scheduled {};
+    bool                              accepting { true };
+    bool                              shutdown_queued {};
+};
 
 } // namespace
 
 class AudioDevice::Impl {
 public:
-    explicit Impl(AudioClientIdentity identity): identity_(std::move(identity)) {}
-
-    ~Impl() { uninit(); }
-
-    bool set_identity(AudioClientIdentity identity) {
-        if (is_inited()) return false;
-        identity_ = std::move(identity);
-        return true;
-    }
-
-    bool init() {
-        if (is_inited()) return true;
-
-        const auto stream_name = identity_.playback_stream_name();
-        if (! stream_name) {
-            rstd::log::error("wavsen::audio: invalid audio client component");
-            return false;
-        }
-
+    Impl()
+        : commands_(CommandQueue {}),
+          event_sink_(AudioDeviceEventSink {}),
+          shutdown_complete_(false),
+          shutdown_cv_(rstd::sync::Condvar::make()) {
         api_ = pipewire_ffi::load();
         if (! api_) {
             rstd::log::error("wavsen::audio: failed to load PipeWire: {}",
                              pipewire_ffi::load_error());
-            return false;
+            return;
         }
         ensure_pw_init(*api_);
 
         loop_ = api_->pw_thread_loop_new("wavsen-audio", nullptr);
         if (! loop_) {
             rstd::log::error("wavsen::audio: pw_thread_loop_new failed");
-            return false;
+            return;
         }
-
         if (api_->pw_thread_loop_start(loop_) < 0) {
             rstd::log::error("wavsen::audio: pw_thread_loop_start failed");
             api_->pw_thread_loop_destroy(loop_);
             loop_ = nullptr;
-            return false;
+        }
+    }
+
+    ~Impl() {
+        shutdown();
+        wait_stopped();
+        if (loop_) {
+            api_->pw_thread_loop_stop(loop_);
+            api_->pw_thread_loop_destroy(loop_);
+            loop_ = nullptr;
+        }
+    }
+
+    void set_event_sink(AudioDeviceEventSink sink) {
+        auto current = event_sink_.lock().unwrap_unchecked();
+        *current     = std::move(sink);
+    }
+
+    bool apply(AudioDeviceDesiredState desired) {
+        return enqueue(DeviceCommand {
+            .kind    = DeviceCommandKind::Apply,
+            .desired = std::move(desired),
+        });
+    }
+
+    bool mount(std::unique_ptr<IPullChannel> channel, std::uint64_t stream_revision) {
+        if (! channel) return false;
+        return enqueue(DeviceCommand {
+            .kind            = DeviceCommandKind::Mount,
+            .channel         = std::move(channel),
+            .stream_revision = stream_revision,
+        });
+    }
+
+    bool unmount_all(std::uint64_t stream_revision) {
+        return enqueue(DeviceCommand {
+            .kind            = DeviceCommandKind::UnmountAll,
+            .stream_revision = stream_revision,
+        });
+    }
+
+    void shutdown() {
+        if (! loop_) {
+            mark_shutdown_complete();
+            return;
+        }
+
+        bool schedule = false;
+        {
+            auto commands = commands_.lock().unwrap_unchecked();
+            if (commands->shutdown_queued) return;
+            commands->shutdown_queued = true;
+            commands->accepting       = false;
+            commands->pending.push(DeviceCommand { .kind = DeviceCommandKind::Shutdown });
+            if (! commands->scheduled) {
+                commands->scheduled = true;
+                schedule            = true;
+            }
+        }
+        if (schedule && ! schedule_commands()) mark_shutdown_complete();
+    }
+
+    void wait_stopped() {
+        if (! loop_) return;
+        auto complete = shutdown_complete_.lock().unwrap_unchecked();
+        shutdown_cv_.wait_while(complete, [](bool value) {
+            return ! value;
+        });
+    }
+
+    AudioDeviceState state() const { return state_.load(std::memory_order_acquire); }
+    DeviceDesc       desc() const { return desc_; }
+    std::uint64_t    stream_position_frames() const {
+        return stream_position_frames_.load(std::memory_order_relaxed);
+    }
+
+private:
+    bool enqueue(DeviceCommand command) {
+        if (! loop_) return false;
+
+        bool schedule = false;
+        {
+            auto commands = commands_.lock().unwrap_unchecked();
+            if (! commands->accepting) return false;
+            commands->pending.push(std::move(command));
+            if (! commands->scheduled) {
+                commands->scheduled = true;
+                schedule            = true;
+            }
+        }
+        return ! schedule || schedule_commands();
+    }
+
+    bool schedule_commands() {
+        const int result = api_->pw_loop_invoke(
+            api_->pw_thread_loop_get_loop(loop_), &Impl::on_commands, 0, nullptr, 0, false, this);
+        if (result >= 0) return true;
+
+        auto commands       = commands_.lock().unwrap_unchecked();
+        commands->scheduled = false;
+        rstd::log::error("wavsen::audio: pw_loop_invoke failed: {}", result);
+        return false;
+    }
+
+    static int on_commands(::spa_loop* /*loop*/, bool /*async*/, std::uint32_t /*seq*/,
+                           const void* /*data*/, std::size_t /*size*/, void* user) {
+        static_cast<Impl*>(user)->drain_commands();
+        return 0;
+    }
+
+    void drain_commands() {
+        for (;;) {
+            rstd::prelude::Vec<DeviceCommand> batch;
+            {
+                auto commands = commands_.lock().unwrap_unchecked();
+                if (commands->pending.is_empty()) {
+                    commands->scheduled = false;
+                    return;
+                }
+                batch             = std::move(commands->pending);
+                commands->pending = rstd::prelude::Vec<DeviceCommand>();
+            }
+
+            for (auto& command : batch) process(std::move(command));
+        }
+    }
+
+    void process(DeviceCommand command) {
+        switch (command.kind) {
+        case DeviceCommandKind::Apply: apply_desired(std::move(command.desired)); break;
+        case DeviceCommandKind::Mount:
+            if (command.stream_revision < stream_revision_) return;
+            stream_revision_ = command.stream_revision;
+            if (stream_) command.channel->pass_desc(desc_);
+            channels_.push_back(std::move(command.channel));
+            break;
+        case DeviceCommandKind::UnmountAll:
+            if (command.stream_revision < stream_revision_) return;
+            stream_revision_ = command.stream_revision;
+            channels_.clear();
+            break;
+        case DeviceCommandKind::Shutdown:
+            shutting_down_ = true;
+            cleanup_device();
+            channels_.clear();
+            emit_state(AudioDeviceState::Stopped);
+            mark_shutdown_complete();
+            break;
+        }
+    }
+
+    void apply_desired(AudioDeviceDesiredState desired) {
+        if (shutting_down_) return;
+
+        const bool generation_changed = desired.generation != desired_.generation;
+        if (generation_changed) cleanup_device();
+        desired_ = std::move(desired);
+        apply_gain_state();
+
+        if (! desired_.active) {
+            cleanup_device();
+            emit_state(AudioDeviceState::Idle);
+            return;
+        }
+        if (! stream_) {
+            start_stream();
+            return;
+        }
+        apply_playing();
+    }
+
+    void apply_gain_state() {
+        volume_ = desired_.volume;
+        muted_  = desired_.muted;
+        if (desired_.volume_scale_revision == volume_scale_revision_) return;
+
+        volume_scale_revision_ = desired_.volume_scale_revision;
+        const float target     = clamp_volume_scale(desired_.volume_scale);
+        if (desired_.volume_scale_fade_ms == 0) {
+            volume_scale_             = target;
+            volume_scale_target_      = target;
+            volume_scale_step_        = 0.0f;
+            volume_scale_frames_left_ = 0;
+            return;
+        }
+
+        auto fade_frames =
+            static_cast<std::uint64_t>(desc_.sample_rate) * desired_.volume_scale_fade_ms / 1000ULL;
+        if (fade_frames == 0) fade_frames = 1;
+        if (fade_frames > 0xffffffffULL) fade_frames = 0xffffffffULL;
+        volume_scale_target_      = target;
+        volume_scale_frames_left_ = static_cast<std::uint32_t>(fade_frames);
+        volume_scale_step_ =
+            (target - volume_scale_) / static_cast<float>(volume_scale_frames_left_);
+    }
+
+    void start_stream() {
+        const auto stream_name = desired_.identity.playback_stream_name();
+        if (! stream_name) {
+            fail("invalid audio client component");
+            return;
         }
 
         static const ::pw_stream_events stream_events = {
@@ -97,219 +305,118 @@ public:
             .trigger_done  = nullptr,
         };
 
-        api_->pw_thread_loop_lock(loop_);
-
-        auto* props = api_->pw_properties_new(PW_KEY_MEDIA_TYPE,
-                                              "Audio",
-                                              PW_KEY_MEDIA_CATEGORY,
-                                              "Playback",
-                                              PW_KEY_MEDIA_ROLE,
-                                              identity_.media_role.c_str(),
-                                              PW_KEY_APP_NAME,
-                                              identity_.application_name.c_str(),
-                                              PW_KEY_APP_ID,
-                                              identity_.application_id.c_str(),
-                                              PW_KEY_NODE_NAME,
-                                              stream_name->c_str(),
-                                              PW_KEY_NODE_DESCRIPTION,
-                                              identity_.media_name.c_str(),
-                                              nullptr);
-        if (! props) {
-            api_->pw_thread_loop_unlock(loop_);
-            rstd::log::error("wavsen::audio: pw_properties_new failed");
-            api_->pw_thread_loop_stop(loop_);
-            api_->pw_thread_loop_destroy(loop_);
-            loop_ = nullptr;
-            return false;
+        auto* properties = api_->pw_properties_new(PW_KEY_MEDIA_TYPE,
+                                                   "Audio",
+                                                   PW_KEY_MEDIA_CATEGORY,
+                                                   "Playback",
+                                                   PW_KEY_MEDIA_ROLE,
+                                                   desired_.identity.media_role.c_str(),
+                                                   PW_KEY_APP_NAME,
+                                                   desired_.identity.application_name.c_str(),
+                                                   PW_KEY_APP_ID,
+                                                   desired_.identity.application_id.c_str(),
+                                                   PW_KEY_NODE_NAME,
+                                                   stream_name->c_str(),
+                                                   PW_KEY_NODE_DESCRIPTION,
+                                                   desired_.identity.media_name.c_str(),
+                                                   nullptr);
+        if (! properties) {
+            fail("pw_properties_new failed");
+            return;
         }
-        api_->pw_properties_setf(props, PW_KEY_NODE_LATENCY, "%u/%u", kQuantum, kDefaultRate);
-        api_->pw_properties_setf(props, PW_KEY_NODE_RATE, "1/%u", kDefaultRate);
+        api_->pw_properties_setf(properties, PW_KEY_NODE_LATENCY, "%u/%u", kQuantum, kDefaultRate);
+        api_->pw_properties_setf(properties, PW_KEY_NODE_RATE, "1/%u", kDefaultRate);
 
         stream_ = api_->pw_stream_new_simple(api_->pw_thread_loop_get_loop(loop_),
                                              stream_name->c_str(),
-                                             props,
+                                             properties,
                                              &stream_events,
                                              this);
         if (! stream_) {
-            api_->pw_thread_loop_unlock(loop_);
-            rstd::log::error("wavsen::audio: pw_stream_new_simple failed");
-            api_->pw_thread_loop_stop(loop_);
-            api_->pw_thread_loop_destroy(loop_);
-            loop_ = nullptr;
-            return false;
+            fail("pw_stream_new_simple failed");
+            return;
         }
 
         std::uint8_t    pod_buffer[1024];
-        spa_pod_builder b {};
-        b.data = pod_buffer;
-        b.size = sizeof(pod_buffer);
+        spa_pod_builder builder {};
+        builder.data = pod_buffer;
+        builder.size = sizeof(pod_buffer);
 
         spa_audio_info_raw info {};
         info.format   = SPA_AUDIO_FORMAT_F32_LE;
         info.rate     = kDefaultRate;
         info.channels = kDefaultChannels;
 
-        const spa_pod* params[1];
-        params[0] = spa_format_audio_raw_build(&b, SPA_PARAM_EnumFormat, &info);
-
-        const auto flags = static_cast<pw_stream_flags>(
-            PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS | PW_STREAM_FLAG_RT_PROCESS);
-
+        const spa_pod* params[] = {
+            spa_format_audio_raw_build(&builder, SPA_PARAM_EnumFormat, &info),
+        };
+        const auto flags =
+            static_cast<pw_stream_flags>(PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS |
+                                         PW_STREAM_FLAG_RT_PROCESS | PW_STREAM_FLAG_INACTIVE);
         if (api_->pw_stream_connect(stream_, PW_DIRECTION_OUTPUT, PW_ID_ANY, flags, params, 1) <
             0) {
-            rstd::log::error("wavsen::audio: pw_stream_connect failed");
-            api_->pw_stream_destroy(stream_);
-            stream_ = nullptr;
-            api_->pw_thread_loop_unlock(loop_);
-            api_->pw_thread_loop_stop(loop_);
-            api_->pw_thread_loop_destroy(loop_);
-            loop_ = nullptr;
-            return false;
+            cleanup_device();
+            fail("pw_stream_connect failed");
+            return;
         }
 
-        api_->pw_thread_loop_unlock(loop_);
+        for (auto& channel : channels_) channel->pass_desc(desc_);
+        emit_state(AudioDeviceState::Connecting);
+    }
 
-        desc_ = { kDefaultChannels, kDefaultRate };
+    void apply_playing() {
+        if (! stream_) return;
+        if (api_->pw_stream_set_active(stream_, desired_.playing) < 0) {
+            fail("pw_stream_set_active failed");
+        }
+    }
 
+    void cleanup_device() {
+        if (! stream_) return;
+        api_->pw_stream_destroy(stream_);
+        stream_ = nullptr;
+        stream_position_frames_.store(0, std::memory_order_relaxed);
+    }
+
+    void fail(std::string error) {
+        rstd::log::error("wavsen::audio: {}", error);
+        emit_state(AudioDeviceState::Failed, std::move(error));
+    }
+
+    void emit_state(AudioDeviceState state, std::string error = {}) {
+        state_.store(state, std::memory_order_release);
+        AudioDeviceEventSink sink;
         {
-            std::lock_guard<std::mutex> lk(channels_mu_);
-            for (auto& c : channels_) {
-                c->pass_desc(desc_);
-            }
+            auto current = event_sink_.lock().unwrap_unchecked();
+            sink         = *current;
         }
-
-        rstd::log::info("wavsen::audio: pipewire device inited ({} ch @ {} Hz)",
-                        desc_.channels,
-                        desc_.sample_rate);
-        return true;
+        if (sink) sink(AudioDeviceEvent { desired_.generation, state, std::move(error) });
     }
 
-    void uninit() {
-        if (stream_) {
-            api_->pw_thread_loop_lock(loop_);
-            api_->pw_stream_destroy(stream_);
-            stream_ = nullptr;
-            api_->pw_thread_loop_unlock(loop_);
-        }
-        if (loop_) {
-            api_->pw_thread_loop_stop(loop_);
-            api_->pw_thread_loop_destroy(loop_);
-            loop_ = nullptr;
-        }
+    void mark_shutdown_complete() {
+        auto complete = shutdown_complete_.lock().unwrap_unchecked();
+        if (*complete) return;
+        *complete = true;
+        shutdown_cv_.notify_all();
     }
 
-    bool is_inited() const { return loop_ != nullptr && stream_ != nullptr; }
-
-    void start() {
-        if (! stream_) return;
-        api_->pw_thread_loop_lock(loop_);
-        api_->pw_stream_set_active(stream_, true);
-        api_->pw_thread_loop_unlock(loop_);
-    }
-
-    void stop() {
-        if (! stream_) return;
-        api_->pw_thread_loop_lock(loop_);
-        api_->pw_stream_set_active(stream_, false);
-        api_->pw_thread_loop_unlock(loop_);
-    }
-
-    void mount(std::unique_ptr<IPullChannel> ch) {
-        if (is_inited()) {
-            ch->pass_desc(desc_);
-        }
-        std::lock_guard<std::mutex> lk(channels_mu_);
-        channels_.push_back(std::move(ch));
-    }
-
-    void unmount_all() {
-        std::lock_guard<std::mutex> lk(channels_mu_);
-        channels_.clear();
-    }
-
-    DeviceDesc desc() const { return desc_; }
-
-    float volume() const { return volume_.load(std::memory_order_relaxed); }
-    bool  muted() const { return muted_.load(std::memory_order_relaxed); }
-    void  set_volume(float v) { volume_.store(v, std::memory_order_relaxed); }
-    void  set_muted(bool m) { muted_.store(m, std::memory_order_relaxed); }
-    float volume_scale() const { return volume_scale_.load(std::memory_order_relaxed); }
-    void  set_volume_scale(float v) {
-        v = clamp_volume_scale(v);
-        volume_scale_epoch_.fetch_add(1, std::memory_order_acq_rel);
-        volume_scale_target_.store(v, std::memory_order_relaxed);
-        volume_scale_step_.store(0.0f, std::memory_order_relaxed);
-        volume_scale_frames_left_.store(0, std::memory_order_relaxed);
-        volume_scale_.store(v, std::memory_order_relaxed);
-        volume_scale_epoch_.fetch_add(1, std::memory_order_release);
-    }
-    void set_volume_scale(float v, std::uint32_t fade_ms) {
-        v = clamp_volume_scale(v);
-        if (fade_ms == 0) {
-            set_volume_scale(v);
-            return;
-        }
-        const auto rate          = desc_.sample_rate != 0 ? desc_.sample_rate : kDefaultRate;
-        auto       fade_frames64 = static_cast<std::uint64_t>(rate) * fade_ms / 1000ULL;
-        if (fade_frames64 == 0) {
-            set_volume_scale(v);
-            return;
-        }
-        if (fade_frames64 > 0xffffffffULL) fade_frames64 = 0xffffffffULL;
-        const auto fade_frames = static_cast<std::uint32_t>(fade_frames64);
-        const auto current     = volume_scale_.load(std::memory_order_relaxed);
-        if (current == v) {
-            set_volume_scale(v);
+    void apply_output_gain(float* output, std::uint32_t frames) {
+        if (volume_scale_frames_left_ == 0) {
+            const float gain          = volume_ * volume_scale_;
+            const auto  total_samples = static_cast<std::size_t>(frames) * desc_.channels;
+            for (std::size_t index = 0; index < total_samples; ++index) output[index] *= gain;
             return;
         }
 
-        volume_scale_epoch_.fetch_add(1, std::memory_order_acq_rel);
-        volume_scale_target_.store(v, std::memory_order_relaxed);
-        volume_scale_step_.store((v - current) / static_cast<float>(fade_frames),
-                                 std::memory_order_relaxed);
-        volume_scale_frames_left_.store(fade_frames, std::memory_order_relaxed);
-        volume_scale_epoch_.fetch_add(1, std::memory_order_release);
-    }
-
-    std::uint64_t stream_position_frames() const {
-        if (! stream_) return 0;
-        pw_time t {};
-        if (api_->pw_stream_get_time_n(stream_, &t, sizeof(t)) < 0) return 0;
-        if (t.ticks <= static_cast<std::uint64_t>(t.delay)) return 0;
-        return t.ticks - static_cast<std::uint64_t>(t.delay);
-    }
-
-private:
-    void apply_output_gain(float* out_f, std::uint32_t n_frames, std::uint32_t channels) {
-        const float volume = volume_.load(std::memory_order_relaxed);
-        auto        left   = volume_scale_frames_left_.load(std::memory_order_relaxed);
-        if (left == 0) {
-            const float gain          = volume * volume_scale_.load(std::memory_order_relaxed);
-            const auto  total_samples = static_cast<std::size_t>(n_frames) * channels;
-            for (std::size_t i = 0; i < total_samples; ++i) {
-                out_f[i] *= gain;
+        for (std::uint32_t frame = 0; frame < frames; ++frame) {
+            const float gain = volume_ * volume_scale_;
+            const auto  base = static_cast<std::size_t>(frame) * desc_.channels;
+            for (std::uint32_t channel = 0; channel < desc_.channels; ++channel) {
+                output[base + channel] *= gain;
             }
-            return;
-        }
-
-        const auto  epoch  = volume_scale_epoch_.load(std::memory_order_acquire);
-        const float step   = volume_scale_step_.load(std::memory_order_relaxed);
-        const float target = volume_scale_target_.load(std::memory_order_relaxed);
-        float       scale  = volume_scale_.load(std::memory_order_relaxed);
-        for (std::uint32_t frame = 0; frame < n_frames; ++frame) {
-            const float gain = volume * scale;
-            const auto  base = static_cast<std::size_t>(frame) * channels;
-            for (std::uint32_t ch = 0; ch < channels; ++ch) {
-                out_f[base + ch] *= gain;
-            }
-            if (left > 0) {
-                --left;
-                scale = left == 0 ? target : scale + step;
-            }
-        }
-        if ((epoch & 1u) == 0 && volume_scale_epoch_.load(std::memory_order_acquire) == epoch) {
-            volume_scale_.store(scale, std::memory_order_relaxed);
-            volume_scale_frames_left_.store(left, std::memory_order_relaxed);
+            --volume_scale_frames_left_;
+            volume_scale_ = volume_scale_frames_left_ == 0 ? volume_scale_target_
+                                                           : volume_scale_ + volume_scale_step_;
         }
     }
 
@@ -317,113 +424,125 @@ private:
         auto* self = static_cast<Impl*>(user);
         if (! self->stream_) return;
 
-        pw_buffer* b = self->api_->pw_stream_dequeue_buffer(self->stream_);
-        if (! b) return;
+        pw_time time {};
+        if (self->api_->pw_stream_get_time_n(self->stream_, &time, sizeof(time)) >= 0 &&
+            time.ticks > static_cast<std::uint64_t>(time.delay)) {
+            self->stream_position_frames_.store(time.ticks - static_cast<std::uint64_t>(time.delay),
+                                                std::memory_order_relaxed);
+        }
 
-        auto* sb = b->buffer;
-        if (! sb || sb->n_datas == 0 || ! sb->datas[0].data) {
-            self->api_->pw_stream_queue_buffer(self->stream_, b);
+        pw_buffer* buffer = self->api_->pw_stream_dequeue_buffer(self->stream_);
+        if (! buffer) return;
+        auto* spa_buffer = buffer->buffer;
+        if (! spa_buffer || spa_buffer->n_datas == 0 || ! spa_buffer->datas[0].data) {
+            self->api_->pw_stream_queue_buffer(self->stream_, buffer);
             return;
         }
 
-        const auto channels = self->desc_.channels;
-        const auto stride   = channels * static_cast<std::uint32_t>(sizeof(float));
-        auto*      out_f    = static_cast<float*>(sb->datas[0].data);
-
-        std::uint32_t n_frames = sb->datas[0].maxsize / stride;
-        if (b->requested != 0) {
-            const auto req = static_cast<std::uint32_t>(b->requested);
-            if (req < n_frames) n_frames = req;
+        const auto    stride = self->desc_.channels * static_cast<std::uint32_t>(sizeof(float));
+        auto*         output = static_cast<float*>(spa_buffer->datas[0].data);
+        std::uint32_t frames = spa_buffer->datas[0].maxsize / stride;
+        if (buffer->requested != 0) {
+            const auto requested = static_cast<std::uint32_t>(buffer->requested);
+            if (requested < frames) frames = requested;
         }
 
-        const auto total_samples = static_cast<std::size_t>(n_frames) * channels;
-        std::memset(out_f, 0, total_samples * sizeof(float));
-
-        if (! self->muted_.load(std::memory_order_relaxed)) {
-            std::vector<float> scratch(total_samples);
-
-            {
-                std::lock_guard<std::mutex> lk(self->channels_mu_);
-                for (auto& ch : self->channels_) {
-                    std::memset(scratch.data(), 0, total_samples * sizeof(float));
-                    const auto produced         = ch->next_pcm(scratch.data(), n_frames);
-                    const auto produced_samples = static_cast<std::size_t>(produced) * channels;
-                    for (std::size_t i = 0; i < produced_samples; ++i) {
-                        out_f[i] += scratch[i];
-                    }
+        const auto sample_count = static_cast<std::size_t>(frames) * self->desc_.channels;
+        std::memset(output, 0, sample_count * sizeof(float));
+        if (! self->muted_) {
+            self->scratch_.resize(sample_count);
+            for (auto& channel : self->channels_) {
+                std::memset(self->scratch_.data(), 0, sample_count * sizeof(float));
+                const auto produced = channel->next_pcm(self->scratch_.data(), frames);
+                const auto produced_samples =
+                    static_cast<std::size_t>(produced) * self->desc_.channels;
+                for (std::size_t index = 0; index < produced_samples; ++index) {
+                    output[index] += self->scratch_[index];
                 }
             }
-            self->apply_output_gain(out_f, n_frames, channels);
+            self->apply_output_gain(output, frames);
         }
 
-        sb->datas[0].chunk->offset = 0;
-        sb->datas[0].chunk->stride = static_cast<std::int32_t>(stride);
-        sb->datas[0].chunk->size   = n_frames * stride;
-
-        self->api_->pw_stream_queue_buffer(self->stream_, b);
+        spa_buffer->datas[0].chunk->offset = 0;
+        spa_buffer->datas[0].chunk->stride = static_cast<std::int32_t>(stride);
+        spa_buffer->datas[0].chunk->size   = frames * stride;
+        self->api_->pw_stream_queue_buffer(self->stream_, buffer);
     }
 
-    static void on_state_changed(void* /*user*/, ::pw_stream_state /*old*/, ::pw_stream_state state,
-                                 const char* error) {
+    static void on_state_changed(void*             user, ::pw_stream_state /*old_state*/,
+                                 ::pw_stream_state state, const char* error) {
+        auto* self = static_cast<Impl*>(user);
         switch (state) {
         case PW_STREAM_STATE_ERROR:
-            rstd::log::error("wavsen::audio: stream ERROR{}",
-                             error ? std::string(": ") + error : std::string {});
+            self->fail(error ? std::string(error) : std::string("PipeWire stream failed"));
             break;
-        case PW_STREAM_STATE_UNCONNECTED:
-            rstd::log::debug("wavsen::audio: stream UNCONNECTED");
+        case PW_STREAM_STATE_CONNECTING: self->emit_state(AudioDeviceState::Connecting); break;
+        case PW_STREAM_STATE_PAUSED:
+            if (! self->desired_.active) break;
+            if (self->desired_.playing)
+                self->apply_playing();
+            else
+                self->emit_state(AudioDeviceState::ReadyPaused);
             break;
-        case PW_STREAM_STATE_CONNECTING:
-            rstd::log::debug("wavsen::audio: stream CONNECTING");
+        case PW_STREAM_STATE_STREAMING:
+            if (! self->desired_.active) break;
+            if (! self->desired_.playing)
+                self->apply_playing();
+            else
+                self->emit_state(AudioDeviceState::ReadyPlaying);
             break;
-        case PW_STREAM_STATE_PAUSED: rstd::log::debug("wavsen::audio: stream PAUSED"); break;
-        case PW_STREAM_STATE_STREAMING: rstd::log::debug("wavsen::audio: stream STREAMING"); break;
+        case PW_STREAM_STATE_UNCONNECTED: break;
         }
     }
 
     const pipewire_ffi::Api* api_    = nullptr;
     ::pw_thread_loop*        loop_   = nullptr;
     ::pw_stream*             stream_ = nullptr;
-    DeviceDesc               desc_ {};
-    AudioClientIdentity      identity_;
 
-    std::mutex                                 channels_mu_;
+    AudioDeviceDesiredState desired_;
+    DeviceDesc              desc_ { kDefaultChannels, kDefaultRate };
+    std::uint64_t           stream_revision_ {};
+    std::uint64_t           volume_scale_revision_ {};
+    bool                    shutting_down_ {};
+
     std::vector<std::unique_ptr<IPullChannel>> channels_;
+    std::vector<float>                         scratch_;
 
-    std::atomic<float>         volume_ { 1.0f };
-    std::atomic<float>         volume_scale_ { 1.0f };
-    std::atomic<float>         volume_scale_target_ { 1.0f };
-    std::atomic<float>         volume_scale_step_ { 0.0f };
-    std::atomic<std::uint32_t> volume_scale_frames_left_ { 0 };
-    std::atomic<std::uint32_t> volume_scale_epoch_ { 0 };
-    std::atomic<bool>          muted_ { false };
+    float         volume_ { 1.0f };
+    float         volume_scale_ { 1.0f };
+    float         volume_scale_target_ { 1.0f };
+    float         volume_scale_step_ {};
+    std::uint32_t volume_scale_frames_left_ {};
+    bool          muted_ {};
+
+    rstd::sync::Mutex<CommandQueue>         commands_;
+    rstd::sync::Mutex<AudioDeviceEventSink> event_sink_;
+    rstd::sync::Mutex<bool>                 shutdown_complete_;
+    rstd::sync::Condvar                     shutdown_cv_;
+    std::atomic<AudioDeviceState>           state_ { AudioDeviceState::Idle };
+    std::atomic<std::uint64_t>              stream_position_frames_ {};
 };
 
-AudioDevice::AudioDevice(AudioClientIdentity identity)
-    : impl_(std::make_unique<Impl>(std::move(identity))) {}
+AudioDevice::AudioDevice(): impl_(std::make_unique<Impl>()) {}
 AudioDevice::~AudioDevice() = default;
 
-bool AudioDevice::init() { return impl_->init(); }
-bool AudioDevice::set_identity(AudioClientIdentity identity) {
-    return impl_->set_identity(std::move(identity));
+void AudioDevice::set_event_sink(AudioDeviceEventSink sink) {
+    impl_->set_event_sink(std::move(sink));
 }
-void  AudioDevice::uninit() { impl_->uninit(); }
-bool  AudioDevice::is_inited() const { return impl_->is_inited(); }
-void  AudioDevice::start() { impl_->start(); }
-void  AudioDevice::stop() { impl_->stop(); }
-void  AudioDevice::mount(std::unique_ptr<IPullChannel> ch) { impl_->mount(std::move(ch)); }
-void  AudioDevice::unmount_all() { impl_->unmount_all(); }
-float AudioDevice::volume() const { return impl_->volume(); }
-bool  AudioDevice::muted() const { return impl_->muted(); }
-void  AudioDevice::set_volume(float v) { impl_->set_volume(v); }
-void  AudioDevice::set_muted(bool m) { impl_->set_muted(m); }
-float AudioDevice::volume_scale() const { return impl_->volume_scale(); }
-void  AudioDevice::set_volume_scale(float v) { impl_->set_volume_scale(v); }
-void  AudioDevice::set_volume_scale(float v, std::uint32_t fade_ms) {
-    impl_->set_volume_scale(v, fade_ms);
+bool AudioDevice::apply(AudioDeviceDesiredState desired) {
+    return impl_->apply(std::move(desired));
 }
-DeviceDesc    AudioDevice::desc() const { return impl_->desc(); }
-std::uint64_t AudioDevice::stream_position_frames() const {
+bool AudioDevice::mount(std::unique_ptr<IPullChannel> channel, std::uint64_t stream_revision) {
+    return impl_->mount(std::move(channel), stream_revision);
+}
+bool AudioDevice::unmount_all(std::uint64_t stream_revision) {
+    return impl_->unmount_all(stream_revision);
+}
+void             AudioDevice::shutdown() { impl_->shutdown(); }
+void             AudioDevice::wait_stopped() { impl_->wait_stopped(); }
+AudioDeviceState AudioDevice::state() const { return impl_->state(); }
+DeviceDesc       AudioDevice::desc() const { return impl_->desc(); }
+std::uint64_t    AudioDevice::stream_position_frames() const {
     return impl_->stream_position_frames();
 }
 

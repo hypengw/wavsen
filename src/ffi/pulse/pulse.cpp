@@ -50,6 +50,7 @@ void load_once(LoadState& state) {
         rstd::mem::memcpy(&state.api.symbol, &address, rstd::usize(sizeof(address)));            \
     } while (false)
 
+    WAVSEN_LOAD(pa_mainloop_api_once);
     WAVSEN_LOAD(pa_threaded_mainloop_free);
     WAVSEN_LOAD(pa_threaded_mainloop_get_api);
     WAVSEN_LOAD(pa_threaded_mainloop_in_thread);
