@@ -1,17 +1,15 @@
 module;
 
 #include <chrono>
-#include <cstring>
-
-#include "audio_capture_dsp.hpp"
+#include <complex>
 
 module wavsen.audio;
 
-import rstd.cppstd;
 import rstd;
 import rstd.log;
 import pipewire;
 import :capture;
+import wavsen.audio.capture_dsp;
 
 namespace wavsen::audio
 {
@@ -23,16 +21,9 @@ namespace pipewire_ffi = wavsen::ffi::pipewire;
 namespace
 {
 
-std::once_flag g_pw_init_once_capture;
-void           ensure_pw_init(const pipewire_ffi::Api& api) {
-    std::call_once(g_pw_init_once_capture, [&api] {
-        api.pw_init(nullptr, nullptr);
-    });
-}
-
-constexpr std::uint32_t kDefaultRate     = 48000;
-constexpr std::uint32_t kDefaultChannels = 2;
-constexpr std::uint32_t kQuantum         = 1024;
+constexpr rstd::uint32_t kDefaultRate     = 48000;
+constexpr rstd::uint32_t kDefaultChannels = 2;
+constexpr rstd::uint32_t kQuantum         = 1024;
 
 } // namespace
 
@@ -43,14 +34,12 @@ public:
     bool init() {
         if (is_inited()) return true;
 
-        api_ = pipewire_ffi::load();
+        api_ = pipewire_ffi::initialize();
         if (! api_) {
             rstd::log::error("wavsen::audio: capture failed to load PipeWire: {}",
                              pipewire_ffi::load_error());
             return false;
         }
-        ensure_pw_init(*api_);
-
         loop_ = api_->pw_thread_loop_new("wavsen-capture", nullptr);
         if (! loop_) {
             rstd::log::error("wavsen::audio: capture pw_thread_loop_new failed");
@@ -109,7 +98,7 @@ public:
             return false;
         }
 
-        std::uint8_t                  pod_buffer[1024];
+        rstd::uint8_t                 pod_buffer[1024];
         pipewire_ffi::spa_pod_builder b {};
         b.data = pod_buffer;
         b.size = sizeof(pod_buffer);
@@ -167,15 +156,15 @@ public:
 
     bool snapshot(AudioSpectrum& out) const {
         for (int attempt = 0; attempt < 16; ++attempt) {
-            const std::uint32_t s1 = seq_.load(std::memory_order_acquire);
+            const rstd::uint32_t s1 = seq_.load(rstd::sync::atomic::Ordering::Acquire);
             if (s1 == 0) {
                 out.clear();
                 return false;
             }
             if (s1 & 1u) continue;
             AudioSpectrum tmp;
-            std::memcpy(&tmp, &published_, sizeof(AudioSpectrum));
-            const std::uint32_t s2 = seq_.load(std::memory_order_acquire);
+            rstd::mem::memcpy(&tmp, &published_, usize(sizeof(AudioSpectrum)));
+            const rstd::uint32_t s2 = seq_.load(rstd::sync::atomic::Ordering::Acquire);
             if (s1 == s2) {
                 out = tmp;
                 return true;
@@ -201,14 +190,14 @@ private:
 
         auto&      d        = sb->datas[0];
         const auto stride   = d.chunk->stride > 0
-                                  ? static_cast<std::uint32_t>(d.chunk->stride)
-                                  : kDefaultChannels * static_cast<std::uint32_t>(sizeof(float));
-        const auto channels = stride / static_cast<std::uint32_t>(sizeof(float));
-        const std::uint32_t offset = d.chunk->offset % d.maxsize;
-        const std::uint32_t bytes  = std::min(d.chunk->size, d.maxsize - offset);
-        const auto*         src =
-            reinterpret_cast<const float*>(static_cast<const std::uint8_t*>(d.data) + offset);
-        const std::uint32_t n_frames = bytes / stride;
+                                  ? static_cast<rstd::uint32_t>(d.chunk->stride)
+                                  : kDefaultChannels * static_cast<rstd::uint32_t>(sizeof(float));
+        const auto channels = stride / static_cast<rstd::uint32_t>(sizeof(float));
+        const rstd::uint32_t offset = d.chunk->offset % d.maxsize;
+        const rstd::uint32_t bytes  = rstd::cmp::min(d.chunk->size, d.maxsize - offset);
+        const auto*          src =
+            reinterpret_cast<const float*>(static_cast<const rstd::uint8_t*>(d.data) + offset);
+        const rstd::uint32_t n_frames = bytes / stride;
 
         self->ingest(src, n_frames, channels);
 
@@ -220,7 +209,7 @@ private:
         switch (state) {
         case pipewire_ffi::stream_state_error:
             rstd::log::error("wavsen::audio: capture stream ERROR{}",
-                             error ? std::string(": ") + error : std::string {});
+                             error ? rstd::format(": {}", error) : String {});
             break;
         case pipewire_ffi::stream_state_unconnected:
             rstd::log::debug("wavsen::audio: capture stream UNCONNECTED");
@@ -237,14 +226,14 @@ private:
         }
     }
 
-    void ingest(const float* src, std::uint32_t n_frames, std::uint32_t channels) {
-        for (std::uint32_t f = 0; f < n_frames; ++f) {
-            const std::uint32_t base  = f * channels;
-            const float         left  = channels > 0 ? src[base] : 0.f;
-            const float         right = channels > 1 ? src[base + 1] : left;
-            ring_left_[ring_head_]    = left;
-            ring_right_[ring_head_]   = right;
-            ring_head_                = (ring_head_ + 1) % dsp::kFftSize;
+    void ingest(const float* src, rstd::uint32_t n_frames, rstd::uint32_t channels) {
+        for (rstd::uint32_t f = 0; f < n_frames; ++f) {
+            const rstd::uint32_t base      = f * channels;
+            const float          left      = channels > 0 ? src[base] : 0.f;
+            const float          right     = channels > 1 ? src[base + 1] : left;
+            ring_left_[usize(ring_head_)]  = left;
+            ring_right_[usize(ring_head_)] = right;
+            ring_head_                     = (ring_head_ + 1) % dsp::kFftSize;
             if (samples_filled_ < dsp::kFftSize) ++samples_filled_;
             ++samples_since_fft_;
         }
@@ -252,13 +241,13 @@ private:
         if (samples_filled_ < dsp::kFftSize || samples_since_fft_ < dsp::kHopSize) return;
         samples_since_fft_ = 0;
 
-        std::array<std::complex<float>, dsp::kFftSize> buf_left;
-        std::array<std::complex<float>, dsp::kFftSize> buf_right;
-        for (std::size_t i = 0; i < dsp::kFftSize; ++i) {
-            const std::size_t idx = (ring_head_ + i) % dsp::kFftSize;
-            const float       w   = dsp::hann_window(i, dsp::kFftSize);
-            buf_left[i]           = std::complex<float>(ring_left_[idx] * w, 0.f);
-            buf_right[i]          = std::complex<float>(ring_right_[idx] * w, 0.f);
+        rstd::array<std::complex<float>, dsp::kFftSize> buf_left;
+        rstd::array<std::complex<float>, dsp::kFftSize> buf_right;
+        for (rstd::size_t i = 0; i < dsp::kFftSize; ++i) {
+            const rstd::size_t idx = (ring_head_ + i) % dsp::kFftSize;
+            const float        w   = dsp::hann_window(i, dsp::kFftSize);
+            buf_left[usize(i)]     = std::complex<float>(ring_left_[usize(idx)] * w, 0.0f);
+            buf_right[usize(i)]    = std::complex<float>(ring_right_[usize(idx)] * w, 0.0f);
         }
 
         dsp::fft_inplace(buf_left.data(), dsp::kFftSize);
@@ -271,39 +260,39 @@ private:
         const auto bands  = dsp::smooth_spectrum(raw, smoothed_, dt_sec);
 
         AudioSpectrum out {};
-        for (std::size_t k = 0; k < dsp::kNumBins; ++k) {
+        for (rstd::size_t k = 0; k < dsp::kNumBins; ++k) {
             const auto index   = usize(k);
-            out.left[index]    = f32(bands.left[k]);
-            out.right[index]   = f32(bands.right[k]);
-            out.average[index] = f32(bands.average[k]);
-            out.bins[index]    = f32(bands.average[k]);
+            out.left[index]    = f32(bands.left[index]);
+            out.right[index]   = f32(bands.right[index]);
+            out.average[index] = f32(bands.average[index]);
+            out.bins[index]    = f32(bands.average[index]);
         }
         out.publish_ms = i64(std::chrono::duration_cast<std::chrono::milliseconds>(
                                  std::chrono::steady_clock::now().time_since_epoch())
                                  .count());
 
-        seq_.fetch_add(1, std::memory_order_release);
-        std::memcpy(&published_, &out, sizeof(AudioSpectrum));
-        seq_.fetch_add(1, std::memory_order_release);
+        seq_.fetch_add(1, rstd::sync::atomic::Ordering::Release);
+        rstd::mem::memcpy(&published_, &out, usize(sizeof(AudioSpectrum)));
+        seq_.fetch_add(1, rstd::sync::atomic::Ordering::Release);
     }
 
     const pipewire_ffi::Api*      api_    = nullptr;
     pipewire_ffi::pw_thread_loop* loop_   = nullptr;
     pipewire_ffi::pw_stream*      stream_ = nullptr;
 
-    std::array<float, dsp::kFftSize> ring_left_ {};
-    std::array<float, dsp::kFftSize> ring_right_ {};
-    std::size_t                      ring_head_         = 0;
-    std::size_t                      samples_filled_    = 0;
-    std::size_t                      samples_since_fft_ = 0;
-    dsp::BandLayout                  band_layout_ { dsp::make_we_layout(kDefaultRate) };
-    dsp::SpectrumBands               smoothed_ {};
+    rstd::array<float, dsp::kFftSize> ring_left_ {};
+    rstd::array<float, dsp::kFftSize> ring_right_ {};
+    rstd::size_t                      ring_head_         = 0;
+    rstd::size_t                      samples_filled_    = 0;
+    rstd::size_t                      samples_since_fft_ = 0;
+    dsp::BandLayout                   band_layout_ { dsp::make_we_layout(kDefaultRate) };
+    dsp::SpectrumBands                smoothed_ {};
 
-    mutable std::atomic<std::uint32_t> seq_ { 0 };
-    AudioSpectrum                      published_ {};
+    mutable rstd::sync::atomic::Atomic<rstd::uint32_t> seq_ { 0 };
+    AudioSpectrum                                      published_ {};
 };
 
-AudioCapture::AudioCapture(): impl_(std::make_unique<Impl>()) {}
+AudioCapture::AudioCapture(): impl_(Box<Impl>::make()) {}
 AudioCapture::~AudioCapture() = default;
 
 bool AudioCapture::init() { return impl_->init(); }

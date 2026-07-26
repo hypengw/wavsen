@@ -20,20 +20,20 @@ using namespace rstd::prelude;
 namespace
 {
 
-constexpr std::size_t kAvioBuf = 32 * 1024;
+constexpr rstd::size_t kAvioBuf = 32 * 1024;
 
-int avio_read_cb(void* opaque, std::uint8_t* buf, int sz) {
+int avio_read_cb(void* opaque, rstd::uint8_t* buf, int sz) {
     auto* source = static_cast<ByteStream*>(opaque);
     auto  bytes  = rstd::mut_ref<rstd::byte[]>::from_raw_parts(reinterpret_cast<rstd::byte*>(buf),
                                                                rstd::usize(sz));
     auto  r      = (*source)->read(rstd::as_u8_slice_mut(bytes));
     if (r.is_err()) return AVERROR_EOF;
-    auto n = std::move(r).unwrap();
+    auto n = rstd::move(r).unwrap();
     if (n == rstd::usize()) return AVERROR_EOF;
     return static_cast<int>(n.to_primitive());
 }
 
-std::int64_t avio_seek_cb(void* opaque, std::int64_t off, int whence) {
+rstd::int64_t avio_seek_cb(void* opaque, rstd::int64_t off, int whence) {
     auto* source = static_cast<ByteStream*>(opaque);
     if (whence == AVSEEK_SIZE) return -1;
     rstd::io::SeekFrom from = (whence == rstd::cppstd::SEEK_FROM_START)
@@ -43,7 +43,7 @@ std::int64_t avio_seek_cb(void* opaque, std::int64_t off, int whence) {
                                          : rstd::io::SeekFrom::from_end(rstd::i64(off)));
     auto               r    = (*source)->seek(from);
     if (r.is_err()) return -1;
-    return static_cast<std::int64_t>(std::move(r).unwrap().to_primitive());
+    return static_cast<rstd::int64_t>(rstd::move(r).unwrap().to_primitive());
 }
 
 } // namespace
@@ -57,7 +57,7 @@ public:
         src_.insert(rstd::move(src));
         target_ = target;
 
-        avio_buf_ = static_cast<std::uint8_t*>(av_malloc(kAvioBuf));
+        avio_buf_ = static_cast<rstd::uint8_t*>(av_malloc(kAvioBuf));
         if (! avio_buf_) {
             rstd::log::error("wavsen::audio: av_malloc avio buffer failed");
             return false;
@@ -143,7 +143,7 @@ public:
     auto next_pcm(void* dst, u32 frames) -> u64 {
         if (cctx_ == nullptr || swr_ == nullptr) return u64();
 
-        auto*      out      = static_cast<std::uint8_t*>(dst);
+        auto*      out      = static_cast<rstd::uint8_t*>(dst);
         const auto bps      = usize(sizeof(float)) * usize(target_.channels.to_primitive());
         auto       produced = u32();
 
@@ -151,10 +151,10 @@ public:
             // Flush any leftover from prior decode round.
             if (pending_frames_ > u32()) {
                 const auto take = (frames - produced).min(pending_frames_);
-                std::memcpy(out + (usize(produced.to_primitive()) * bps).to_primitive(),
-                            pending_buf_.data() +
-                                (usize(pending_offset_.to_primitive()) * bps).to_primitive(),
-                            (usize(take.to_primitive()) * bps).to_primitive());
+                rstd::mem::memcpy(out + (usize(produced.to_primitive()) * bps).to_primitive(),
+                                  pending_buf_.data() +
+                                      (usize(pending_offset_.to_primitive()) * bps).to_primitive(),
+                                  usize(take.to_primitive()) * bps);
                 produced += take;
                 pending_offset_ += take;
                 pending_frames_ -= take;
@@ -168,19 +168,19 @@ public:
             }
 
             // Resample the new frame into pending_buf_.
-            const std::int64_t max_out = swr_get_out_samples(swr_, frame_->nb_samples);
+            const rstd::int64_t max_out = swr_get_out_samples(swr_, frame_->nb_samples);
             if (max_out <= 0) continue;
 
-            const auto need_bytes = usize(static_cast<std::size_t>(max_out)) * bps;
-            if (pending_buf_.size() < need_bytes.to_primitive()) {
-                pending_buf_.resize(need_bytes.to_primitive());
+            const auto need_bytes = usize(static_cast<rstd::size_t>(max_out)) * bps;
+            if (pending_buf_.len() < need_bytes) {
+                pending_buf_.resize(need_bytes, 0u);
             }
-            std::uint8_t* out_ptr = pending_buf_.data();
-            const int     converted =
+            rstd::uint8_t* out_ptr = pending_buf_.data();
+            const int      converted =
                 swr_convert(swr_,
                             &out_ptr,
                             static_cast<int>(max_out),
-                            const_cast<const std::uint8_t**>(frame_->extended_data),
+                            const_cast<const rstd::uint8_t**>(frame_->extended_data),
                             frame_->nb_samples);
             if (converted < 0) {
                 rstd::log::warn("wavsen::audio: swr_convert error");
@@ -197,7 +197,7 @@ public:
         if (! fmt_ctx_ || stream_idx_ < 0) return false;
         const AVStream* st = fmt_ctx_->streams[stream_idx_];
         const auto      tb = st->time_base;
-        const auto      ts = static_cast<std::int64_t>(seconds.to_primitive() / ffi::av_q2d(tb));
+        const auto      ts = static_cast<rstd::int64_t>(seconds.to_primitive() / ffi::av_q2d(tb));
         if (av_seek_frame(fmt_ctx_, stream_idx_, ts, AVSEEK_FLAG_BACKWARD) < 0) {
             rstd::log::warn("wavsen::audio: av_seek_frame failed");
             return false;
@@ -322,7 +322,7 @@ private:
     rstd::Option<ByteStream> src_;
     DeviceDesc               target_ {};
 
-    std::uint8_t*    avio_buf_   = nullptr;
+    rstd::uint8_t*   avio_buf_   = nullptr;
     AVIOContext*     avio_       = nullptr;
     AVFormatContext* fmt_ctx_    = nullptr;
     AVCodecContext*  cctx_       = nullptr;
@@ -331,20 +331,20 @@ private:
     AVFrame*         frame_      = nullptr;
     int              stream_idx_ = -1;
 
-    std::vector<std::uint8_t> pending_buf_;
-    u32                       pending_offset_;
-    u32                       pending_frames_;
-    bool                      eof_ {};
-    f64                       last_pts_seconds_;
+    Vec<rstd::uint8_t> pending_buf_;
+    u32                pending_offset_;
+    u32                pending_frames_;
+    bool               eof_ {};
+    f64                last_pts_seconds_;
 };
 
-StreamDecoder::StreamDecoder(): impl_(std::make_unique<Impl>()) {}
+StreamDecoder::StreamDecoder(): impl_(Box<Impl>::make()) {}
 StreamDecoder::~StreamDecoder()                                   = default;
 StreamDecoder::StreamDecoder(StreamDecoder&&) noexcept            = default;
 StreamDecoder& StreamDecoder::operator=(StreamDecoder&&) noexcept = default;
 
 bool StreamDecoder::open(ByteStream src, const DeviceDesc& target) {
-    return impl_->open(std::move(src), target);
+    return impl_->open(rstd::move(src), target);
 }
 
 void StreamDecoder::retarget(const DeviceDesc& target) { impl_->retarget(target); }
@@ -364,7 +364,7 @@ namespace
 // CubebDevice pulls PCM through next_pcm in the audio thread.
 class DecoderStream : public SoundStream {
 public:
-    explicit DecoderStream(StreamDecoder dec): dec_(std::move(dec)) {}
+    explicit DecoderStream(StreamDecoder dec): dec_(rstd::move(dec)) {}
 
     auto next_pcm(void* dst, u32 frames) -> u64 override { return dec_.next_pcm(dst, frames); }
     void pass_desc(const Desc& d) override { dec_.retarget({ d.channels, d.sample_rate }); }
@@ -377,10 +377,10 @@ private:
 
 auto make_stream(ByteStream source, const SoundStream::Desc& desc) -> std::unique_ptr<SoundStream> {
     StreamDecoder dec;
-    if (! dec.open(std::move(source), { desc.channels, desc.sample_rate })) {
+    if (! dec.open(rstd::move(source), { desc.channels, desc.sample_rate })) {
         return nullptr;
     }
-    return std::make_unique<DecoderStream>(std::move(dec));
+    return std::make_unique<DecoderStream>(rstd::move(dec));
 }
 
 } // namespace wavsen::audio

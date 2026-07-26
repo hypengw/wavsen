@@ -55,8 +55,9 @@ target_sources(wavsen_decode PRIVATE
 target_link_libraries(wavsen_decode
     PUBLIC
         rstd::rstd
-        rstd.cppstd
         wavsen::ffi::ffmpeg
+    PRIVATE
+        rstd.cppstd
 )
 set_target_properties(wavsen_decode PROPERTIES CXX_SCAN_FOR_MODULES ON)
 
@@ -142,6 +143,7 @@ target_sources(wavsen_audio
 target_sources(wavsen_audio
     PRIVATE FILE_SET wavsen_audio_internal_modules TYPE CXX_MODULES FILES
         src/audio/audio_gain.cppm
+        src/audio/audio_capture_dsp.cppm
 )
 target_sources(wavsen_audio PRIVATE
     src/audio/stream_decoder.cpp
@@ -181,9 +183,11 @@ if(WAVSEN_BUILD_TESTS)
         tests/audio_capture_dsp_tests.cpp
     )
     target_compile_features(wavsen_audio_capture_dsp_tests PRIVATE cxx_std_20)
-    target_include_directories(wavsen_audio_capture_dsp_tests PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/audio
+    target_sources(wavsen_audio_capture_dsp_tests
+        PRIVATE FILE_SET CXX_MODULES FILES
+            src/audio/audio_capture_dsp.cppm
     )
+    target_link_libraries(wavsen_audio_capture_dsp_tests PRIVATE rstd::rstd)
     add_test(NAME wavsen_audio_capture_dsp_tests
              COMMAND wavsen_audio_capture_dsp_tests)
 

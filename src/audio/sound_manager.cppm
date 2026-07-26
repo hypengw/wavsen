@@ -63,7 +63,7 @@ public:
 
 private:
     class Impl;
-    std::unique_ptr<Impl> impl_;
+    Box<Impl> impl_;
 };
 
 } // namespace wavsen::audio

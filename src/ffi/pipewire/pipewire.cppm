@@ -91,7 +91,7 @@ struct Api {
     decltype(&::pw_stream_state_as_string) pw_stream_state_as_string {};
 };
 
-auto load() noexcept -> const Api*;
+auto initialize() -> const Api*;
 auto load_error() noexcept -> rstd::ref<rstd::str>;
 auto format_audio_raw_build(spa_pod_builder* builder, rstd::uint32_t id,
                             const spa_audio_info_raw* info) noexcept -> spa_pod*;

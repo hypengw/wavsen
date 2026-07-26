@@ -16,7 +16,7 @@ namespace
 // Adapter exposing a SoundStream to AudioDevice's IPullChannel interface.
 class StreamPullChannel : public IPullChannel {
 public:
-    explicit StreamPullChannel(std::unique_ptr<SoundStream> ss): ss_(std::move(ss)) {}
+    explicit StreamPullChannel(std::unique_ptr<SoundStream> ss): ss_(rstd::move(ss)) {}
 
     auto next_pcm(void* dst, u32 frames) -> u64 override { return ss_->next_pcm(dst, frames); }
     void pass_desc(const DeviceDesc& d) override { ss_->pass_desc({ d.channels, d.sample_rate }); }
@@ -29,7 +29,7 @@ private:
 
 class SoundManager::Impl {
 public:
-    explicit Impl(AudioClientIdentity identity_): identity(std::move(identity_)) {}
+    explicit Impl(AudioClientIdentity identity_): identity(rstd::move(identity_)) {}
 
     void apply(u32 fade_ms = u32()) {
         if (! activated || shutting_down) return;
@@ -37,7 +37,7 @@ public:
             .generation            = generation,
             .active                = ! muted,
             .playing               = playing,
-            .identity              = identity,
+            .identity              = identity.clone(),
             .volume                = volume,
             .muted                 = false,
             .volume_scale          = volume_scale,
@@ -61,12 +61,12 @@ public:
 };
 
 SoundManager::SoundManager(AudioClientIdentity identity)
-    : impl_(std::make_unique<Impl>(std::move(identity))) {}
+    : impl_(Box<Impl>::make(rstd::move(identity))) {}
 SoundManager::~SoundManager() = default;
 
 void SoundManager::mount(std::unique_ptr<SoundStream> ss) {
     if (! ss) return;
-    (void)impl_->device.mount(std::make_unique<StreamPullChannel>(std::move(ss)),
+    (void)impl_->device.mount(std::make_unique<StreamPullChannel>(rstd::move(ss)),
                               impl_->stream_revision);
 }
 
@@ -77,7 +77,7 @@ void SoundManager::unmount_all() {
 
 void SoundManager::activate(AudioDeviceEventSink sink) {
     if (impl_->activated || impl_->shutting_down) return;
-    impl_->device.set_event_sink(std::move(sink));
+    impl_->device.set_event_sink(rstd::move(sink));
     impl_->activated = true;
     ++impl_->generation;
     impl_->apply();
@@ -96,7 +96,7 @@ void SoundManager::shutdown() {
 
 bool SoundManager::set_identity(AudioClientIdentity identity) {
     if (impl_->shutting_down) return false;
-    impl_->identity = std::move(identity);
+    impl_->identity = rstd::move(identity);
     if (impl_->activated) ++impl_->generation;
     impl_->apply();
     return true;

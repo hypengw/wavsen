@@ -1,6 +1,5 @@
 export module wavsen.decode;
 
-import rstd.cppstd;
 import rstd;
 
 export namespace wavsen::decode
@@ -8,7 +7,7 @@ export namespace wavsen::decode
 
 using namespace rstd::prelude;
 
-enum class ErrorKind : std::int32_t
+enum class ErrorKind : rstd::int32_t
 {
     InvalidArgs,
     OpenFailed,
@@ -20,15 +19,15 @@ enum class ErrorKind : std::int32_t
 };
 
 struct Error {
-    ErrorKind   kind;
-    std::string message;
+    ErrorKind kind;
+    String    message;
 };
 
 struct RgbaImage {
-    std::vector<std::uint8_t> data;
-    u32                       width;
-    u32                       height;
-    u32                       stride;
+    Vec<rstd::uint8_t> data;
+    u32                width;
+    u32                height;
+    u32                stride;
 };
 
 struct ThumbOptions {
@@ -38,7 +37,6 @@ struct ThumbOptions {
     bool prefer_keyframe { true };
 };
 
-auto extract_thumbnail(std::string_view path, const ThumbOptions& opts)
-    -> rstd::Result<RgbaImage, Error>;
+auto extract_thumbnail(ref<str> path, const ThumbOptions& opts) -> Result<RgbaImage, Error>;
 
 } // namespace wavsen::decode

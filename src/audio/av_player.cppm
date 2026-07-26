@@ -1,6 +1,5 @@
 export module wavsen.audio:av_sync;
 
-import rstd.cppstd;
 import rstd;
 import :byte_stream;
 import :core;
@@ -13,7 +12,7 @@ using namespace rstd::prelude;
 // Error type for AvPlayer::open. Mirrors the small-string Error pattern
 // used elsewhere in wavsen (no rich type — just a printable reason).
 struct AvPlayerError {
-    std::string message;
+    String message;
 };
 
 // Single-stream audio playback aimed at A/V sync. Owns its own
@@ -24,13 +23,15 @@ struct AvPlayerError {
 // callable from the main thread. current_time_seconds is lock-free and
 // safe to call from any thread (e.g. from inside a Presenter callback).
 class AvPlayer {
-public:
-    static auto open(ByteStream src) -> rstd::Result<std::unique_ptr<AvPlayer>, AvPlayerError>;
-    static auto open(ByteStream src, bool open_device)
-        -> rstd::Result<std::unique_ptr<AvPlayer>, AvPlayerError>;
-    static auto open(ByteStream src, bool open_device, AudioClientIdentity identity)
-        -> rstd::Result<std::unique_ptr<AvPlayer>, AvPlayerError>;
+    struct ConstructionKey {};
 
+public:
+    static auto open(ByteStream src) -> Result<Box<AvPlayer>, AvPlayerError>;
+    static auto open(ByteStream src, bool open_device) -> Result<Box<AvPlayer>, AvPlayerError>;
+    static auto open(ByteStream src, bool open_device, AudioClientIdentity identity)
+        -> Result<Box<AvPlayer>, AvPlayerError>;
+
+    explicit AvPlayer(ConstructionKey, AudioClientIdentity identity);
     ~AvPlayer();
     AvPlayer(const AvPlayer&)            = delete;
     AvPlayer& operator=(const AvPlayer&) = delete;
@@ -66,9 +67,8 @@ public:
     bool is_eof() const;
 
 private:
-    explicit AvPlayer(AudioClientIdentity identity);
     class Impl;
-    std::unique_ptr<Impl> impl_;
+    Box<Impl> impl_;
 };
 
 } // namespace wavsen::audio

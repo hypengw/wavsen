@@ -383,7 +383,7 @@ Option<rstd::boxed::Box<Producer>> Producer::build_(u32 width, u32 height,
 
     auto memory_requirements = self->device_.GetBufferMemoryRequirements(*self->staging_buf_);
     auto memory_properties   = self->phys_.GetMemoryProperties().memoryProperties;
-    rstd::uint32_t host_type = std::numeric_limits<rstd::uint32_t>::max();
+    rstd::uint32_t host_type = u32::MAX.to_primitive();
     for (rstd::uint32_t i = 0; i < memory_properties.memoryTypeCount; ++i) {
         auto flags = memory_properties.memoryTypes[i].propertyFlags;
         if ((memory_requirements.memoryTypeBits & (1u << i)) &&
@@ -393,7 +393,7 @@ Option<rstd::boxed::Box<Producer>> Producer::build_(u32 width, u32 height,
             break;
         }
     }
-    if (host_type == std::numeric_limits<rstd::uint32_t>::max()) {
+    if (host_type == u32::MAX.to_primitive()) {
         fail(err, "no HOST_VISIBLE|COHERENT memory type for staging"_str);
         return None();
     }

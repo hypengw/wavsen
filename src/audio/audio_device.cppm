@@ -4,6 +4,7 @@ import rstd.cppstd;
 import rstd;
 
 using namespace rstd::prelude;
+using namespace rstd::literals;
 
 export namespace wavsen::audio
 {
@@ -15,21 +16,32 @@ struct DeviceDesc {
 };
 
 struct AudioClientIdentity {
-    std::string application_name { "wavsen" };
-    std::string application_id { "org.wavsen" };
-    std::string stream_prefix { "wavsen." };
-    std::string component { "audio" };
-    std::string media_name { "wavsen audio output" };
-    std::string media_role { "music" };
+    String application_name { String::make("wavsen"_str) };
+    String application_id { String::make("org.wavsen"_str) };
+    String stream_prefix { String::make("wavsen."_str) };
+    String component { String::make("audio"_str) };
+    String media_name { String::make("wavsen audio output"_str) };
+    String media_role { String::make("music"_str) };
 
-    auto playback_stream_name() const -> std::optional<std::string> {
-        if (component.empty()) return std::nullopt;
-        for (const char value : component) {
-            const bool valid =
-                (value >= 'a' && value <= 'z') || (value >= '0' && value <= '9') || value == '-';
-            if (! valid) return std::nullopt;
+    auto clone() const -> AudioClientIdentity {
+        return {
+            .application_name = application_name.clone(),
+            .application_id   = application_id.clone(),
+            .stream_prefix    = stream_prefix.clone(),
+            .component        = component.clone(),
+            .media_name       = media_name.clone(),
+            .media_role       = media_role.clone(),
+        };
+    }
+
+    auto playback_stream_name() const -> Option<String> {
+        if (component.is_empty()) return None();
+        for (const auto value : component) {
+            const bool valid = (value >= u8('a') && value <= u8('z')) ||
+                               (value >= u8('0') && value <= u8('9')) || value == u8('-');
+            if (! valid) return None();
         }
-        return stream_prefix + component + ".playback";
+        return Some(rstd::format("{}{}.playback", stream_prefix, component));
     }
 };
 
@@ -43,7 +55,7 @@ public:
     virtual void pass_desc(const DeviceDesc&)           = 0;
 };
 
-enum class AudioDeviceState : std::uint8_t
+enum class AudioDeviceState : rstd::uint8_t
 {
     Idle,
     Connecting,
@@ -56,7 +68,7 @@ enum class AudioDeviceState : std::uint8_t
 struct AudioDeviceEvent {
     u64              generation;
     AudioDeviceState state { AudioDeviceState::Idle };
-    std::string      error;
+    String           error;
 };
 
 using AudioDeviceEventSink = std::function<void(AudioDeviceEvent)>;
@@ -71,6 +83,20 @@ struct AudioDeviceDesiredState {
     f32                 volume_scale { f32(1.0f) };
     u64                 volume_scale_revision;
     u32                 volume_scale_fade_ms;
+
+    auto clone() const -> AudioDeviceDesiredState {
+        return {
+            .generation            = generation,
+            .active                = active,
+            .playing               = playing,
+            .identity              = identity.clone(),
+            .volume                = volume,
+            .muted                 = muted,
+            .volume_scale          = volume_scale,
+            .volume_scale_revision = volume_scale_revision,
+            .volume_scale_fade_ms  = volume_scale_fade_ms,
+        };
+    }
 };
 
 class AudioDevice {
@@ -97,7 +123,7 @@ public:
 
 private:
     class Impl;
-    std::unique_ptr<Impl> impl_;
+    Box<Impl> impl_;
 };
 
 } // namespace wavsen::audio

@@ -19,11 +19,11 @@ namespace pulse_ffi = wavsen::ffi::pulse;
 namespace
 {
 
-constexpr std::uint32_t kDefaultRate     = 48000;
-constexpr std::uint32_t kDefaultChannels = 2;
-constexpr std::uint32_t kQuantum         = 1024;
+constexpr rstd::uint32_t kDefaultRate     = 48000;
+constexpr rstd::uint32_t kDefaultChannels = 2;
+constexpr rstd::uint32_t kQuantum         = 1024;
 
-enum class DeviceCommandKind : std::uint8_t
+enum class DeviceCommandKind : rstd::uint8_t
 {
     Apply,
     Mount,
@@ -86,13 +86,13 @@ public:
 
     void set_event_sink(AudioDeviceEventSink sink) {
         auto current = event_sink_.lock().unwrap_unchecked();
-        *current     = std::move(sink);
+        *current     = rstd::move(sink);
     }
 
     bool apply(AudioDeviceDesiredState desired) {
         return enqueue(DeviceCommand {
             .kind    = DeviceCommandKind::Apply,
-            .desired = std::move(desired),
+            .desired = rstd::move(desired),
         });
     }
 
@@ -100,7 +100,7 @@ public:
         if (! channel) return false;
         return enqueue(DeviceCommand {
             .kind            = DeviceCommandKind::Mount,
-            .channel         = std::move(channel),
+            .channel         = rstd::move(channel),
             .stream_revision = stream_revision,
         });
     }
@@ -141,10 +141,10 @@ public:
         });
     }
 
-    AudioDeviceState state() const { return state_.load(std::memory_order_acquire); }
+    AudioDeviceState state() const { return state_.load(rstd::sync::atomic::Ordering::Acquire); }
     DeviceDesc       desc() const { return desc_; }
     auto             stream_position_frames() const -> u64 {
-        return stream_position_frames_.load(std::memory_order_relaxed);
+        return stream_position_frames_.load(rstd::sync::atomic::Ordering::Relaxed);
     }
 
 private:
@@ -155,7 +155,7 @@ private:
         {
             auto commands = commands_.lock().unwrap_unchecked();
             if (! commands->accepting) return false;
-            commands->pending.push(std::move(command));
+            commands->pending.push(rstd::move(command));
             if (! commands->scheduled) {
                 commands->scheduled = true;
                 schedule            = true;
@@ -185,26 +185,26 @@ private:
                     commands->scheduled = false;
                     return;
                 }
-                batch             = std::move(commands->pending);
+                batch             = rstd::move(commands->pending);
                 commands->pending = rstd::prelude::Vec<DeviceCommand>();
             }
 
             for (auto& command : batch) {
-                process(std::move(command));
+                process(rstd::move(command));
             }
         }
     }
 
     void process(DeviceCommand command) {
         switch (command.kind) {
-        case DeviceCommandKind::Apply: apply_desired(std::move(command.desired)); break;
+        case DeviceCommandKind::Apply: apply_desired(rstd::move(command.desired)); break;
         case DeviceCommandKind::Mount:
             if (command.stream_revision < stream_revision_) return;
             stream_revision_ = command.stream_revision;
             if (stream_ && api_->pa_stream_get_state(stream_) == pulse_ffi::stream_ready) {
                 command.channel->pass_desc(desc_);
             }
-            channels_.push_back(std::move(command.channel));
+            channels_.push(rstd::move(command.channel));
             break;
         case DeviceCommandKind::UnmountAll:
             if (command.stream_revision < stream_revision_) return;
@@ -226,7 +226,7 @@ private:
 
         const bool generation_changed = desired.generation != desired_.generation;
         if (generation_changed) cleanup_device();
-        desired_ = std::move(desired);
+        desired_ = rstd::move(desired);
         apply_gain_state();
 
         if (! desired_.active) {
@@ -259,22 +259,23 @@ private:
             return;
         }
 
+        auto application_name =
+            rstd::ffi::CString::make(desired_.identity.application_name.clone()).unwrap();
+        auto application_id =
+            rstd::ffi::CString::make(desired_.identity.application_id.clone()).unwrap();
         auto* properties = api_->pa_proplist_new();
         if (! properties ||
-            api_->pa_proplist_sets(properties,
-                                   pulse_ffi::prop_application_name,
-                                   desired_.identity.application_name.c_str()) < 0 ||
-            api_->pa_proplist_sets(properties,
-                                   pulse_ffi::prop_application_id,
-                                   desired_.identity.application_id.c_str()) < 0) {
+            api_->pa_proplist_sets(
+                properties, pulse_ffi::prop_application_name, application_name.as_ptr()) < 0 ||
+            api_->pa_proplist_sets(
+                properties, pulse_ffi::prop_application_id, application_id.as_ptr()) < 0) {
             if (properties) api_->pa_proplist_free(properties);
             fail("failed to build PulseAudio context properties");
             return;
         }
 
-        ctx_ = api_->pa_context_new_with_proplist(api_->pa_threaded_mainloop_get_api(loop_),
-                                                  desired_.identity.application_name.c_str(),
-                                                  properties);
+        ctx_ = api_->pa_context_new_with_proplist(
+            api_->pa_threaded_mainloop_get_api(loop_), application_name.as_ptr(), properties);
         api_->pa_proplist_free(properties);
         if (! ctx_) {
             fail("pa_context_new failed");
@@ -282,10 +283,10 @@ private:
         }
         api_->pa_context_set_state_callback(ctx_, &Impl::on_context_state, this);
         if (api_->pa_context_connect(ctx_, nullptr, pulse_ffi::context_noflags, nullptr) < 0) {
-            std::string error = "pa_context_connect failed: ";
-            error += api_->pa_strerror(api_->pa_context_errno(ctx_));
+            auto error = rstd::format("pa_context_connect failed: {}",
+                                      api_->pa_strerror(api_->pa_context_errno(ctx_)));
             cleanup_device();
-            fail(std::move(error));
+            fail(rstd::move(error));
             return;
         }
         emit_state(AudioDeviceState::Connecting);
@@ -302,58 +303,62 @@ private:
         pulse_ffi::pa_sample_spec sample_spec {};
         sample_spec.format   = pulse_ffi::sample_float32le;
         sample_spec.rate     = kDefaultRate;
-        sample_spec.channels = static_cast<std::uint8_t>(kDefaultChannels);
+        sample_spec.channels = static_cast<rstd::uint8_t>(kDefaultChannels);
 
         pulse_ffi::pa_channel_map channel_map {};
         api_->pa_channel_map_init_stereo(&channel_map);
 
-        auto* properties = api_->pa_proplist_new();
+        auto application_name =
+            rstd::ffi::CString::make(desired_.identity.application_name.clone()).unwrap();
+        auto application_id =
+            rstd::ffi::CString::make(desired_.identity.application_id.clone()).unwrap();
+        auto  media_name = rstd::ffi::CString::make(desired_.identity.media_name.clone()).unwrap();
+        auto  media_role = rstd::ffi::CString::make(desired_.identity.media_role.clone()).unwrap();
+        auto  stream_name_c = rstd::ffi::CString::make(stream_name->clone()).unwrap();
+        auto* properties    = api_->pa_proplist_new();
         if (! properties ||
-            api_->pa_proplist_sets(properties,
-                                   pulse_ffi::prop_application_name,
-                                   desired_.identity.application_name.c_str()) < 0 ||
-            api_->pa_proplist_sets(properties,
-                                   pulse_ffi::prop_application_id,
-                                   desired_.identity.application_id.c_str()) < 0 ||
             api_->pa_proplist_sets(
-                properties, pulse_ffi::prop_media_name, desired_.identity.media_name.c_str()) < 0 ||
+                properties, pulse_ffi::prop_application_name, application_name.as_ptr()) < 0 ||
             api_->pa_proplist_sets(
-                properties, pulse_ffi::prop_media_role, desired_.identity.media_role.c_str()) < 0) {
+                properties, pulse_ffi::prop_application_id, application_id.as_ptr()) < 0 ||
+            api_->pa_proplist_sets(properties, pulse_ffi::prop_media_name, media_name.as_ptr()) <
+                0 ||
+            api_->pa_proplist_sets(properties, pulse_ffi::prop_media_role, media_role.as_ptr()) <
+                0) {
             if (properties) api_->pa_proplist_free(properties);
             fail("failed to build PulseAudio stream properties");
             return;
         }
 
         stream_ = api_->pa_stream_new_with_proplist(
-            ctx_, stream_name->c_str(), &sample_spec, &channel_map, properties);
+            ctx_, stream_name_c.as_ptr(), &sample_spec, &channel_map, properties);
         api_->pa_proplist_free(properties);
         if (! stream_) {
-            std::string error = "pa_stream_new failed: ";
-            error += api_->pa_strerror(api_->pa_context_errno(ctx_));
-            fail(std::move(error));
+            fail(rstd::format("pa_stream_new failed: {}",
+                              api_->pa_strerror(api_->pa_context_errno(ctx_))));
             return;
         }
 
         api_->pa_stream_set_state_callback(stream_, &Impl::on_stream_state, this);
         api_->pa_stream_set_write_callback(stream_, &Impl::on_write, this);
 
-        const auto frame_bytes = kDefaultChannels * static_cast<std::uint32_t>(sizeof(float));
+        const auto frame_bytes = kDefaultChannels * static_cast<rstd::uint32_t>(sizeof(float));
         pulse_ffi::pa_buffer_attr buffer_attr {};
-        buffer_attr.maxlength = static_cast<std::uint32_t>(-1);
+        buffer_attr.maxlength = static_cast<rstd::uint32_t>(-1);
         buffer_attr.tlength   = kQuantum * frame_bytes * 4;
-        buffer_attr.prebuf    = static_cast<std::uint32_t>(-1);
+        buffer_attr.prebuf    = static_cast<rstd::uint32_t>(-1);
         buffer_attr.minreq    = kQuantum * frame_bytes;
-        buffer_attr.fragsize  = static_cast<std::uint32_t>(-1);
+        buffer_attr.fragsize  = static_cast<rstd::uint32_t>(-1);
 
         const auto flags = static_cast<pulse_ffi::pa_stream_flags_t>(
             pulse_ffi::stream_adjust_latency | pulse_ffi::stream_auto_timing_update |
             pulse_ffi::stream_interpolate_timing | pulse_ffi::stream_start_corked);
         if (api_->pa_stream_connect_playback(
                 stream_, nullptr, &buffer_attr, flags, nullptr, nullptr) < 0) {
-            std::string error = "pa_stream_connect_playback failed: ";
-            error += api_->pa_strerror(api_->pa_context_errno(ctx_));
+            auto error = rstd::format("pa_stream_connect_playback failed: {}",
+                                      api_->pa_strerror(api_->pa_context_errno(ctx_)));
             cleanup_stream();
-            fail(std::move(error));
+            fail(rstd::move(error));
         }
     }
 
@@ -361,9 +366,8 @@ private:
         if (! stream_ || api_->pa_stream_get_state(stream_) != pulse_ffi::stream_ready) return;
         auto* operation = api_->pa_stream_cork(stream_, desired_.playing ? 0 : 1, nullptr, nullptr);
         if (! operation) {
-            std::string error = "pa_stream_cork failed: ";
-            error += api_->pa_strerror(api_->pa_context_errno(ctx_));
-            fail(std::move(error));
+            fail(rstd::format("pa_stream_cork failed: {}",
+                              api_->pa_strerror(api_->pa_context_errno(ctx_))));
             return;
         }
         api_->pa_operation_unref(operation);
@@ -378,7 +382,7 @@ private:
         api_->pa_stream_disconnect(stream_);
         api_->pa_stream_unref(stream_);
         stream_ = nullptr;
-        stream_position_frames_.store(u64(), std::memory_order_relaxed);
+        stream_position_frames_.store(u64(), rstd::sync::atomic::Ordering::Relaxed);
     }
 
     void cleanup_device() {
@@ -390,19 +394,23 @@ private:
         ctx_ = nullptr;
     }
 
-    void fail(std::string error) {
+    void fail(String error) {
         rstd::log::error("wavsen::audio: {}", error);
-        emit_state(AudioDeviceState::Failed, std::move(error));
+        emit_state(AudioDeviceState::Failed, rstd::move(error));
     }
 
-    void emit_state(AudioDeviceState state, std::string error = {}) {
-        state_.store(state, std::memory_order_release);
+    void fail(const char* error) {
+        fail(String::make(rstd::ffi::CStr::from_ptr(error).to_str().unwrap()));
+    }
+
+    void emit_state(AudioDeviceState state, String error = {}) {
+        state_.store(state, rstd::sync::atomic::Ordering::Release);
         AudioDeviceEventSink sink;
         {
             auto current = event_sink_.lock().unwrap_unchecked();
             sink         = *current;
         }
-        if (sink) sink(AudioDeviceEvent { desired_.generation, state, std::move(error) });
+        if (sink) sink(AudioDeviceEvent { desired_.generation, state, rstd::move(error) });
     }
 
     void mark_shutdown_complete() {
@@ -412,7 +420,7 @@ private:
         shutdown_cv_.notify_all();
     }
 
-    void apply_output_gain(float* output, std::uint32_t frames) {
+    void apply_output_gain(float* output, rstd::uint32_t frames) {
         volume_scale_.apply(
             rstd::mut_ref<float[]>::from_raw_parts(
                 output, rstd::usize(frames) * rstd::usize(desc_.channels.to_primitive())),
@@ -426,9 +434,9 @@ private:
         switch (self->api_->pa_context_get_state(context)) {
         case pulse_ffi::context_ready: self->start_stream(); break;
         case pulse_ffi::context_failed: {
-            std::string error = "PulseAudio context failed: ";
-            error += self->api_->pa_strerror(self->api_->pa_context_errno(context));
-            self->fail(std::move(error));
+            self->fail(
+                rstd::format("PulseAudio context failed: {}",
+                             self->api_->pa_strerror(self->api_->pa_context_errno(context))));
             break;
         }
         case pulse_ffi::context_terminated:
@@ -451,9 +459,9 @@ private:
                             self->desc_.sample_rate);
             break;
         case pulse_ffi::stream_failed: {
-            std::string error = "PulseAudio stream failed: ";
-            error += self->api_->pa_strerror(self->api_->pa_context_errno(self->ctx_));
-            self->fail(std::move(error));
+            self->fail(
+                rstd::format("PulseAudio stream failed: {}",
+                             self->api_->pa_strerror(self->api_->pa_context_errno(self->ctx_))));
             break;
         }
         case pulse_ffi::stream_terminated:
@@ -472,11 +480,11 @@ private:
         if (self->api_->pa_stream_get_time(stream, &usec) >= 0) {
             self->stream_position_frames_.store(
                 u64(usec) * u64(self->desc_.sample_rate.to_primitive()) / u64(1'000'000),
-                std::memory_order_relaxed);
+                rstd::sync::atomic::Ordering::Relaxed);
         }
 
         const auto channel_count = self->desc_.channels.to_primitive();
-        const auto stride        = channel_count * static_cast<std::uint32_t>(sizeof(float));
+        const auto stride        = channel_count * static_cast<rstd::uint32_t>(sizeof(float));
         size_t     remaining     = bytes;
         while (remaining > 0) {
             void*  buffer = nullptr;
@@ -486,20 +494,21 @@ private:
                 return;
             }
 
-            const auto frames       = static_cast<std::uint32_t>(wanted / stride);
-            const auto sample_count = static_cast<std::size_t>(frames) * channel_count;
+            const auto frames       = static_cast<rstd::uint32_t>(wanted / stride);
+            const auto sample_count = static_cast<rstd::size_t>(frames) * channel_count;
             auto*      output       = static_cast<float*>(buffer);
-            std::memset(output, 0, sample_count * sizeof(float));
+            rstd::mem::memset(output, u8(), usize(sample_count * sizeof(float)));
 
             if (! self->muted_) {
-                self->scratch_.resize(sample_count);
+                self->scratch_.resize(usize(sample_count), 0.0f);
                 for (auto& channel : self->channels_) {
-                    std::memset(self->scratch_.data(), 0, sample_count * sizeof(float));
+                    rstd::mem::memset(
+                        self->scratch_.data(), u8(), usize(sample_count * sizeof(float)));
                     const auto produced = channel->next_pcm(self->scratch_.data(), u32(frames));
                     const auto produced_samples =
-                        static_cast<std::size_t>(produced.to_primitive()) * channel_count;
-                    for (std::size_t index = 0; index < produced_samples; ++index) {
-                        output[index] += self->scratch_[index];
+                        static_cast<rstd::size_t>(produced.to_primitive()) * channel_count;
+                    for (rstd::size_t index = 0; index < produced_samples; ++index) {
+                        output[index] += self->scratch_[usize(index)];
                     }
                 }
                 self->apply_output_gain(output, frames);
@@ -526,32 +535,32 @@ private:
     u64                     volume_scale_revision_;
     bool                    shutting_down_ {};
 
-    std::vector<std::unique_ptr<IPullChannel>> channels_;
-    std::vector<float>                         scratch_;
+    Vec<std::unique_ptr<IPullChannel>> channels_;
+    Vec<float>                         scratch_;
 
     f32                     volume_ { f32(1.0f) };
     detail::VolumeScaleRamp volume_scale_;
     bool                    muted_ {};
 
-    rstd::sync::Mutex<CommandQueue>         commands_;
-    rstd::sync::Mutex<AudioDeviceEventSink> event_sink_;
-    rstd::sync::Mutex<bool>                 shutdown_complete_;
-    rstd::sync::Condvar                     shutdown_cv_;
-    std::atomic<AudioDeviceState>           state_ { AudioDeviceState::Idle };
-    std::atomic<u64>                        stream_position_frames_ { u64() };
+    rstd::sync::Mutex<CommandQueue>              commands_;
+    rstd::sync::Mutex<AudioDeviceEventSink>      event_sink_;
+    rstd::sync::Mutex<bool>                      shutdown_complete_;
+    rstd::sync::Condvar                          shutdown_cv_;
+    rstd::sync::atomic::Atomic<AudioDeviceState> state_ { AudioDeviceState::Idle };
+    rstd::sync::atomic::Atomic<u64>              stream_position_frames_ { u64() };
 };
 
-AudioDevice::AudioDevice(): impl_(std::make_unique<Impl>()) {}
+AudioDevice::AudioDevice(): impl_(Box<Impl>::make()) {}
 AudioDevice::~AudioDevice() = default;
 
 void AudioDevice::set_event_sink(AudioDeviceEventSink sink) {
-    impl_->set_event_sink(std::move(sink));
+    impl_->set_event_sink(rstd::move(sink));
 }
 bool AudioDevice::apply(AudioDeviceDesiredState desired) {
-    return impl_->apply(std::move(desired));
+    return impl_->apply(rstd::move(desired));
 }
 bool AudioDevice::mount(std::unique_ptr<IPullChannel> channel, u64 stream_revision) {
-    return impl_->mount(std::move(channel), stream_revision);
+    return impl_->mount(rstd::move(channel), stream_revision);
 }
 bool AudioDevice::unmount_all(u64 stream_revision) { return impl_->unmount_all(stream_revision); }
 void AudioDevice::shutdown() { impl_->shutdown(); }

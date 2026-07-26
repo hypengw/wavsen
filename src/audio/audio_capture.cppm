@@ -1,6 +1,5 @@
 export module wavsen.audio:capture;
 
-import rstd.cppstd;
 import rstd;
 
 export namespace wavsen::audio
@@ -50,7 +49,7 @@ public:
 
 private:
     class Impl;
-    std::unique_ptr<Impl> impl_;
+    Box<Impl> impl_;
 };
 
 } // namespace wavsen::audio

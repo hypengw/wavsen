@@ -13,25 +13,18 @@ namespace wavsen::audio
 {
 
 using namespace rstd::prelude;
+using namespace rstd::literals;
 
 namespace pipewire_ffi = wavsen::ffi::pipewire;
 
 namespace
 {
 
-std::once_flag g_pw_init_once;
+constexpr rstd::uint32_t kDefaultRate     = 48000;
+constexpr rstd::uint32_t kDefaultChannels = 2;
+constexpr rstd::uint32_t kQuantum         = 1024;
 
-void ensure_pw_init(const pipewire_ffi::Api& api) {
-    std::call_once(g_pw_init_once, [&api] {
-        api.pw_init(nullptr, nullptr);
-    });
-}
-
-constexpr std::uint32_t kDefaultRate     = 48000;
-constexpr std::uint32_t kDefaultChannels = 2;
-constexpr std::uint32_t kQuantum         = 1024;
-
-enum class DeviceCommandKind : std::uint8_t
+enum class DeviceCommandKind : rstd::uint8_t
 {
     Apply,
     Mount,
@@ -62,14 +55,12 @@ public:
           event_sink_(AudioDeviceEventSink {}),
           shutdown_complete_(false),
           shutdown_cv_(rstd::sync::Condvar::make()) {
-        api_ = pipewire_ffi::load();
+        api_ = pipewire_ffi::initialize();
         if (! api_) {
             rstd::log::error("wavsen::audio: failed to load PipeWire: {}",
                              pipewire_ffi::load_error());
             return;
         }
-        ensure_pw_init(*api_);
-
         loop_ = api_->pw_thread_loop_new("wavsen-audio", nullptr);
         if (! loop_) {
             rstd::log::error("wavsen::audio: pw_thread_loop_new failed");
@@ -94,13 +85,13 @@ public:
 
     void set_event_sink(AudioDeviceEventSink sink) {
         auto current = event_sink_.lock().unwrap_unchecked();
-        *current     = std::move(sink);
+        *current     = rstd::move(sink);
     }
 
     bool apply(AudioDeviceDesiredState desired) {
         return enqueue(DeviceCommand {
             .kind    = DeviceCommandKind::Apply,
-            .desired = std::move(desired),
+            .desired = rstd::move(desired),
         });
     }
 
@@ -108,7 +99,7 @@ public:
         if (! channel) return false;
         return enqueue(DeviceCommand {
             .kind            = DeviceCommandKind::Mount,
-            .channel         = std::move(channel),
+            .channel         = rstd::move(channel),
             .stream_revision = stream_revision,
         });
     }
@@ -149,10 +140,10 @@ public:
         });
     }
 
-    AudioDeviceState state() const { return state_.load(std::memory_order_acquire); }
+    AudioDeviceState state() const { return state_.load(rstd::sync::atomic::Ordering::Acquire); }
     DeviceDesc       desc() const { return desc_; }
     auto             stream_position_frames() const -> u64 {
-        return stream_position_frames_.load(std::memory_order_relaxed);
+        return stream_position_frames_.load(rstd::sync::atomic::Ordering::Relaxed);
     }
 
 private:
@@ -163,7 +154,7 @@ private:
         {
             auto commands = commands_.lock().unwrap_unchecked();
             if (! commands->accepting) return false;
-            commands->pending.push(std::move(command));
+            commands->pending.push(rstd::move(command));
             if (! commands->scheduled) {
                 commands->scheduled = true;
                 schedule            = true;
@@ -183,8 +174,8 @@ private:
         return false;
     }
 
-    static int on_commands(pipewire_ffi::spa_loop* /*loop*/, bool /*async*/, std::uint32_t /*seq*/,
-                           const void* /*data*/, std::size_t /*size*/, void* user) {
+    static int on_commands(pipewire_ffi::spa_loop* /*loop*/, bool /*async*/, rstd::uint32_t /*seq*/,
+                           const void* /*data*/, rstd::size_t /*size*/, void* user) {
         static_cast<Impl*>(user)->drain_commands();
         return 0;
     }
@@ -198,22 +189,22 @@ private:
                     commands->scheduled = false;
                     return;
                 }
-                batch             = std::move(commands->pending);
+                batch             = rstd::move(commands->pending);
                 commands->pending = rstd::prelude::Vec<DeviceCommand>();
             }
 
-            for (auto& command : batch) process(std::move(command));
+            for (auto& command : batch) process(rstd::move(command));
         }
     }
 
     void process(DeviceCommand command) {
         switch (command.kind) {
-        case DeviceCommandKind::Apply: apply_desired(std::move(command.desired)); break;
+        case DeviceCommandKind::Apply: apply_desired(rstd::move(command.desired)); break;
         case DeviceCommandKind::Mount:
             if (command.stream_revision < stream_revision_) return;
             stream_revision_ = command.stream_revision;
             if (stream_) command.channel->pass_desc(desc_);
-            channels_.push_back(std::move(command.channel));
+            channels_.push(rstd::move(command.channel));
             break;
         case DeviceCommandKind::UnmountAll:
             if (command.stream_revision < stream_revision_) return;
@@ -235,7 +226,7 @@ private:
 
         const bool generation_changed = desired.generation != desired_.generation;
         if (generation_changed) cleanup_device();
-        desired_ = std::move(desired);
+        desired_ = rstd::move(desired);
         apply_gain_state();
 
         if (! desired_.active) {
@@ -282,20 +273,27 @@ private:
             .trigger_done  = nullptr,
         };
 
+        auto media_role = rstd::ffi::CString::make(desired_.identity.media_role.clone()).unwrap();
+        auto application_name =
+            rstd::ffi::CString::make(desired_.identity.application_name.clone()).unwrap();
+        auto application_id =
+            rstd::ffi::CString::make(desired_.identity.application_id.clone()).unwrap();
+        auto  stream_name_c = rstd::ffi::CString::make(stream_name->clone()).unwrap();
+        auto  media_name = rstd::ffi::CString::make(desired_.identity.media_name.clone()).unwrap();
         auto* properties = api_->pw_properties_new(pipewire_ffi::key_media_type,
                                                    "Audio",
                                                    pipewire_ffi::key_media_category,
                                                    "Playback",
                                                    pipewire_ffi::key_media_role,
-                                                   desired_.identity.media_role.c_str(),
+                                                   media_role.as_ptr(),
                                                    pipewire_ffi::key_app_name,
-                                                   desired_.identity.application_name.c_str(),
+                                                   application_name.as_ptr(),
                                                    pipewire_ffi::key_app_id,
-                                                   desired_.identity.application_id.c_str(),
+                                                   application_id.as_ptr(),
                                                    pipewire_ffi::key_node_name,
-                                                   stream_name->c_str(),
+                                                   stream_name_c.as_ptr(),
                                                    pipewire_ffi::key_node_description,
-                                                   desired_.identity.media_name.c_str(),
+                                                   media_name.as_ptr(),
                                                    nullptr);
         if (! properties) {
             fail("pw_properties_new failed");
@@ -306,7 +304,7 @@ private:
         api_->pw_properties_setf(properties, pipewire_ffi::key_node_rate, "1/%u", kDefaultRate);
 
         stream_ = api_->pw_stream_new_simple(api_->pw_thread_loop_get_loop(loop_),
-                                             stream_name->c_str(),
+                                             stream_name_c.as_ptr(),
                                              properties,
                                              &stream_events,
                                              this);
@@ -315,7 +313,7 @@ private:
             return;
         }
 
-        std::uint8_t                  pod_buffer[1024];
+        rstd::uint8_t                 pod_buffer[1024];
         pipewire_ffi::spa_pod_builder builder {};
         builder.data = pod_buffer;
         builder.size = sizeof(pod_buffer);
@@ -354,22 +352,26 @@ private:
         if (! stream_) return;
         api_->pw_stream_destroy(stream_);
         stream_ = nullptr;
-        stream_position_frames_.store(u64(), std::memory_order_relaxed);
+        stream_position_frames_.store(u64(), rstd::sync::atomic::Ordering::Relaxed);
     }
 
-    void fail(std::string error) {
+    void fail(String error) {
         rstd::log::error("wavsen::audio: {}", error);
-        emit_state(AudioDeviceState::Failed, std::move(error));
+        emit_state(AudioDeviceState::Failed, rstd::move(error));
     }
 
-    void emit_state(AudioDeviceState state, std::string error = {}) {
-        state_.store(state, std::memory_order_release);
+    void fail(const char* error) {
+        fail(String::make(rstd::ffi::CStr::from_ptr(error).to_str().unwrap()));
+    }
+
+    void emit_state(AudioDeviceState state, String error = {}) {
+        state_.store(state, rstd::sync::atomic::Ordering::Release);
         AudioDeviceEventSink sink;
         {
             auto current = event_sink_.lock().unwrap_unchecked();
             sink         = *current;
         }
-        if (sink) sink(AudioDeviceEvent { desired_.generation, state, std::move(error) });
+        if (sink) sink(AudioDeviceEvent { desired_.generation, state, rstd::move(error) });
     }
 
     void mark_shutdown_complete() {
@@ -379,7 +381,7 @@ private:
         shutdown_cv_.notify_all();
     }
 
-    void apply_output_gain(float* output, std::uint32_t frames) {
+    void apply_output_gain(float* output, rstd::uint32_t frames) {
         volume_scale_.apply(
             rstd::mut_ref<float[]>::from_raw_parts(
                 output, rstd::usize(frames) * rstd::usize(desc_.channels.to_primitive())),
@@ -393,10 +395,10 @@ private:
 
         pipewire_ffi::pw_time time {};
         if (self->api_->pw_stream_get_time_n(self->stream_, &time, sizeof(time)) >= 0 &&
-            time.ticks > static_cast<std::uint64_t>(time.delay)) {
+            time.ticks > static_cast<rstd::uint64_t>(time.delay)) {
             self->stream_position_frames_.store(
-                u64(time.ticks - static_cast<std::uint64_t>(time.delay)),
-                std::memory_order_relaxed);
+                u64(time.ticks - static_cast<rstd::uint64_t>(time.delay)),
+                rstd::sync::atomic::Ordering::Relaxed);
         }
 
         pipewire_ffi::pw_buffer* buffer = self->api_->pw_stream_dequeue_buffer(self->stream_);
@@ -407,33 +409,33 @@ private:
             return;
         }
 
-        const auto    channel_count = self->desc_.channels.to_primitive();
-        const auto    stride        = channel_count * static_cast<std::uint32_t>(sizeof(float));
-        auto*         output        = static_cast<float*>(spa_buffer->datas[0].data);
-        std::uint32_t frames        = spa_buffer->datas[0].maxsize / stride;
+        const auto     channel_count = self->desc_.channels.to_primitive();
+        const auto     stride        = channel_count * static_cast<rstd::uint32_t>(sizeof(float));
+        auto*          output        = static_cast<float*>(spa_buffer->datas[0].data);
+        rstd::uint32_t frames        = spa_buffer->datas[0].maxsize / stride;
         if (buffer->requested != 0) {
-            const auto requested = static_cast<std::uint32_t>(buffer->requested);
+            const auto requested = static_cast<rstd::uint32_t>(buffer->requested);
             if (requested < frames) frames = requested;
         }
 
-        const auto sample_count = static_cast<std::size_t>(frames) * channel_count;
-        std::memset(output, 0, sample_count * sizeof(float));
+        const auto sample_count = static_cast<rstd::size_t>(frames) * channel_count;
+        rstd::mem::memset(output, u8(), usize(sample_count * sizeof(float)));
         if (! self->muted_) {
-            self->scratch_.resize(sample_count);
+            self->scratch_.resize(usize(sample_count), 0.0f);
             for (auto& channel : self->channels_) {
-                std::memset(self->scratch_.data(), 0, sample_count * sizeof(float));
+                rstd::mem::memset(self->scratch_.data(), u8(), usize(sample_count * sizeof(float)));
                 const auto produced = channel->next_pcm(self->scratch_.data(), u32(frames));
                 const auto produced_samples =
-                    static_cast<std::size_t>(produced.to_primitive()) * channel_count;
-                for (std::size_t index = 0; index < produced_samples; ++index) {
-                    output[index] += self->scratch_[index];
+                    static_cast<rstd::size_t>(produced.to_primitive()) * channel_count;
+                for (rstd::size_t index = 0; index < produced_samples; ++index) {
+                    output[index] += self->scratch_[usize(index)];
                 }
             }
             self->apply_output_gain(output, frames);
         }
 
         spa_buffer->datas[0].chunk->offset = 0;
-        spa_buffer->datas[0].chunk->stride = static_cast<std::int32_t>(stride);
+        spa_buffer->datas[0].chunk->stride = static_cast<rstd::int32_t>(stride);
         spa_buffer->datas[0].chunk->size   = frames * stride;
         self->api_->pw_stream_queue_buffer(self->stream_, buffer);
     }
@@ -443,7 +445,8 @@ private:
         auto* self = static_cast<Impl*>(user);
         switch (state) {
         case pipewire_ffi::stream_state_error:
-            self->fail(error ? std::string(error) : std::string("PipeWire stream failed"));
+            self->fail(error ? String::make(rstd::ffi::CStr::from_ptr(error).to_str().unwrap())
+                             : String::make("PipeWire stream failed"_str));
             break;
         case pipewire_ffi::stream_state_connecting:
             self->emit_state(AudioDeviceState::Connecting);
@@ -476,32 +479,32 @@ private:
     u64                     volume_scale_revision_;
     bool                    shutting_down_ {};
 
-    std::vector<std::unique_ptr<IPullChannel>> channels_;
-    std::vector<float>                         scratch_;
+    Vec<std::unique_ptr<IPullChannel>> channels_;
+    Vec<float>                         scratch_;
 
     f32                     volume_ { f32(1.0f) };
     detail::VolumeScaleRamp volume_scale_;
     bool                    muted_ {};
 
-    rstd::sync::Mutex<CommandQueue>         commands_;
-    rstd::sync::Mutex<AudioDeviceEventSink> event_sink_;
-    rstd::sync::Mutex<bool>                 shutdown_complete_;
-    rstd::sync::Condvar                     shutdown_cv_;
-    std::atomic<AudioDeviceState>           state_ { AudioDeviceState::Idle };
-    std::atomic<u64>                        stream_position_frames_ { u64() };
+    rstd::sync::Mutex<CommandQueue>              commands_;
+    rstd::sync::Mutex<AudioDeviceEventSink>      event_sink_;
+    rstd::sync::Mutex<bool>                      shutdown_complete_;
+    rstd::sync::Condvar                          shutdown_cv_;
+    rstd::sync::atomic::Atomic<AudioDeviceState> state_ { AudioDeviceState::Idle };
+    rstd::sync::atomic::Atomic<u64>              stream_position_frames_ { u64() };
 };
 
-AudioDevice::AudioDevice(): impl_(std::make_unique<Impl>()) {}
+AudioDevice::AudioDevice(): impl_(Box<Impl>::make()) {}
 AudioDevice::~AudioDevice() = default;
 
 void AudioDevice::set_event_sink(AudioDeviceEventSink sink) {
-    impl_->set_event_sink(std::move(sink));
+    impl_->set_event_sink(rstd::move(sink));
 }
 bool AudioDevice::apply(AudioDeviceDesiredState desired) {
-    return impl_->apply(std::move(desired));
+    return impl_->apply(rstd::move(desired));
 }
 bool AudioDevice::mount(std::unique_ptr<IPullChannel> channel, u64 stream_revision) {
-    return impl_->mount(std::move(channel), stream_revision);
+    return impl_->mount(rstd::move(channel), stream_revision);
 }
 bool AudioDevice::unmount_all(u64 stream_revision) { return impl_->unmount_all(stream_revision); }
 void AudioDevice::shutdown() { impl_->shutdown(); }

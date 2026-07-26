@@ -56,7 +56,7 @@ public:
 
 private:
     class Impl;
-    std::unique_ptr<Impl> impl_;
+    Box<Impl> impl_;
 };
 
 // Construct a libav*-backed SoundStream from a byte source. Decodes any

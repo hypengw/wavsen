@@ -177,9 +177,8 @@ AVPixelFormat get_format_prefer_vaapi(AVCodecContext* cctx, const AVPixelFormat*
 AVBufferRef* make_vaapi_hwdevice(const rstd::string::String& render_node, Error* err) {
     AVBufferRef* hwd           = nullptr;
     auto         render_node_c = rstd::ffi::CString::make(render_node.clone()).unwrap();
-    const char*  dev =
-        render_node.is_empty() ? nullptr : reinterpret_cast<const char*>(render_node_c.as_ref().p);
-    int rc = av_hwdevice_ctx_create(&hwd, AV_HWDEVICE_TYPE_VAAPI, dev, nullptr, 0);
+    const char*  dev           = render_node.is_empty() ? nullptr : render_node_c.as_ptr();
+    int          rc = av_hwdevice_ctx_create(&hwd, AV_HWDEVICE_TYPE_VAAPI, dev, nullptr, 0);
     if (rc < 0 || ! hwd) {
         fail(err,
              render_node.is_empty()
@@ -349,7 +348,7 @@ bool probe_native_impl(ref<str> path, u32* native_width, u32* native_height, Err
     *native_height            = u32();
     AVFormatContext* raw_fmt  = nullptr;
     auto             path_c   = rstd::ffi::CString::make(rstd::string::String::make(path)).unwrap();
-    auto             path_raw = reinterpret_cast<const char*>(path_c.as_ref().p);
+    auto             path_raw = path_c.as_ptr();
     if (int rc = avformat_open_input(&raw_fmt, path_raw, nullptr, nullptr); rc < 0) {
         fail(err, rstd::format("avformat_open_input: {}", av_err_str(rc).as_str()));
         return false;
@@ -655,7 +654,7 @@ auto VideoDecoder::build_internal(InputSpec input, u32 target_width, u32 target_
         }
     } else {
         auto input_path     = rstd::ffi::CString::make(rstd::move(input.path)).unwrap();
-        auto input_path_raw = reinterpret_cast<const char*>(input_path.as_ref().p);
+        auto input_path_raw = input_path.as_ptr();
         if (int rc = avformat_open_input(&raw_fmt, input_path_raw, nullptr, nullptr); rc < 0) {
             fail(err, rstd::format("avformat_open_input: {}", av_err_str(rc).as_str()));
             return None();
