@@ -139,6 +139,10 @@ target_sources(wavsen_audio
         # aggregator must come last (depends on the partitions above)
         src/audio/audio.cppm
 )
+target_sources(wavsen_audio
+    PRIVATE FILE_SET wavsen_audio_internal_modules TYPE CXX_MODULES FILES
+        src/audio/audio_gain.cppm
+)
 target_sources(wavsen_audio PRIVATE
     src/audio/stream_decoder.cpp
     src/audio/sound_manager.cpp
@@ -182,4 +186,16 @@ if(WAVSEN_BUILD_TESTS)
     )
     add_test(NAME wavsen_audio_capture_dsp_tests
              COMMAND wavsen_audio_capture_dsp_tests)
+
+    add_executable(wavsen_audio_gain_tests
+        tests/audio_gain_tests.cpp
+    )
+    target_compile_features(wavsen_audio_gain_tests PRIVATE cxx_std_20)
+    target_sources(wavsen_audio_gain_tests
+        PRIVATE FILE_SET CXX_MODULES FILES
+            src/audio/audio_gain.cppm
+    )
+    target_link_libraries(wavsen_audio_gain_tests PRIVATE rstd::rstd)
+    add_test(NAME wavsen_audio_gain_tests
+             COMMAND wavsen_audio_gain_tests)
 endif()

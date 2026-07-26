@@ -1,6 +1,5 @@
 module;
 
-#include <cmath>
 #include <pipewire/pipewire.h>
 #include <spa/param/audio/format-utils.h>
 #include <spa/utils/result.h>
@@ -11,6 +10,7 @@ import rstd.cppstd;
 import rstd;
 import rstd.log;
 import pipewire;
+import wavsen.audio.gain;
 import :core;
 
 namespace wavsen::audio
@@ -32,12 +32,6 @@ void ensure_pw_init(const pipewire_ffi::Api& api) {
 constexpr std::uint32_t kDefaultRate     = 48000;
 constexpr std::uint32_t kDefaultChannels = 2;
 constexpr std::uint32_t kQuantum         = 1024;
-
-float clamp_volume_scale(float value) {
-    if (! std::isfinite(value) || value < 0.0f) return 0.0f;
-    if (value > 1.0f) return 1.0f;
-    return value;
-}
 
 enum class DeviceCommandKind : std::uint8_t
 {
@@ -264,23 +258,9 @@ private:
         if (desired_.volume_scale_revision == volume_scale_revision_) return;
 
         volume_scale_revision_ = desired_.volume_scale_revision;
-        const float target     = clamp_volume_scale(desired_.volume_scale);
-        if (desired_.volume_scale_fade_ms == 0) {
-            volume_scale_             = target;
-            volume_scale_target_      = target;
-            volume_scale_step_        = 0.0f;
-            volume_scale_frames_left_ = 0;
-            return;
-        }
-
-        auto fade_frames =
-            static_cast<std::uint64_t>(desc_.sample_rate) * desired_.volume_scale_fade_ms / 1000ULL;
-        if (fade_frames == 0) fade_frames = 1;
-        if (fade_frames > 0xffffffffULL) fade_frames = 0xffffffffULL;
-        volume_scale_target_      = target;
-        volume_scale_frames_left_ = static_cast<std::uint32_t>(fade_frames);
-        volume_scale_step_ =
-            (target - volume_scale_) / static_cast<float>(volume_scale_frames_left_);
+        volume_scale_.redirect(rstd::f32(desired_.volume_scale),
+                               rstd::u32(desc_.sample_rate),
+                               rstd::u32(desired_.volume_scale_fade_ms));
     }
 
     void start_stream() {
@@ -401,23 +381,10 @@ private:
     }
 
     void apply_output_gain(float* output, std::uint32_t frames) {
-        if (volume_scale_frames_left_ == 0) {
-            const float gain          = volume_ * volume_scale_;
-            const auto  total_samples = static_cast<std::size_t>(frames) * desc_.channels;
-            for (std::size_t index = 0; index < total_samples; ++index) output[index] *= gain;
-            return;
-        }
-
-        for (std::uint32_t frame = 0; frame < frames; ++frame) {
-            const float gain = volume_ * volume_scale_;
-            const auto  base = static_cast<std::size_t>(frame) * desc_.channels;
-            for (std::uint32_t channel = 0; channel < desc_.channels; ++channel) {
-                output[base + channel] *= gain;
-            }
-            --volume_scale_frames_left_;
-            volume_scale_ = volume_scale_frames_left_ == 0 ? volume_scale_target_
-                                                           : volume_scale_ + volume_scale_step_;
-        }
+        volume_scale_.apply(rstd::mut_ref<float[]>::from_raw_parts(
+                                output, rstd::usize(frames) * rstd::usize(desc_.channels)),
+                            rstd::u32(desc_.channels),
+                            rstd::f32(volume_));
     }
 
     static void on_process(void* user) {
@@ -508,12 +475,9 @@ private:
     std::vector<std::unique_ptr<IPullChannel>> channels_;
     std::vector<float>                         scratch_;
 
-    float         volume_ { 1.0f };
-    float         volume_scale_ { 1.0f };
-    float         volume_scale_target_ { 1.0f };
-    float         volume_scale_step_ {};
-    std::uint32_t volume_scale_frames_left_ {};
-    bool          muted_ {};
+    float                   volume_ { 1.0f };
+    detail::VolumeScaleRamp volume_scale_;
+    bool                    muted_ {};
 
     rstd::sync::Mutex<CommandQueue>         commands_;
     rstd::sync::Mutex<AudioDeviceEventSink> event_sink_;
