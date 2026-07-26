@@ -6,6 +6,8 @@ import rstd;
 export namespace wavsen::decode
 {
 
+using namespace rstd::prelude;
+
 enum class ErrorKind : std::int32_t
 {
     InvalidArgs,
@@ -24,16 +26,16 @@ struct Error {
 
 struct RgbaImage {
     std::vector<std::uint8_t> data;
-    std::uint32_t             width  = 0;
-    std::uint32_t             height = 0;
-    std::uint32_t             stride = 0;
+    u32                       width;
+    u32                       height;
+    u32                       stride;
 };
 
 struct ThumbOptions {
-    std::uint32_t max_edge        = 512;
-    double        seek_seconds    = 1.0;
-    double        seek_fraction   = 0.10;
-    bool          prefer_keyframe = true;
+    u32  max_edge { 512 };
+    f64  seek_seconds { 1.0 };
+    f64  seek_fraction { 0.10 };
+    bool prefer_keyframe { true };
 };
 
 auto extract_thumbnail(std::string_view path, const ThumbOptions& opts)

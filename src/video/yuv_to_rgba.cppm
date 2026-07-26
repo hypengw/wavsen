@@ -45,8 +45,8 @@ enum class ConvertTarget : rstd::uint32_t
 
 struct ConversionSubmission {
     VkImage                          target { VK_NULL_HANDLE };
-    rstd::uint32_t                   width { 0 };
-    rstd::uint32_t                   height { 0 };
+    u32                              width {};
+    u32                              height {};
     ConvertTarget                    target_kind { ConvertTarget::BridgeForeign };
     VkImageLayout                    final_layout { VK_IMAGE_LAYOUT_UNDEFINED };
     rstd::uint32_t                   final_queue_family { VK_QUEUE_FAMILY_IGNORED };
@@ -56,8 +56,8 @@ struct ConversionSubmission {
     int                              sync_fd { -1 };
 
     bool submitted() const noexcept {
-        return target != VK_NULL_HANDLE && width != 0 && height != 0 && content_revision != u64() &&
-               readiness.valid() && execution_dependency.valid() &&
+        return target != VK_NULL_HANDLE && width != u32() && height != u32() &&
+               content_revision != u64() && readiness.valid() && execution_dependency.valid() &&
                execution_dependency.completion == readiness;
     }
 
@@ -89,18 +89,16 @@ public:
     YuvToRgba& operator=(const YuvToRgba&) = delete;
 
     static auto create(VkInstance instance, VkPhysicalDevice phys, VkDevice device,
-                       rstd::uint32_t queue_family, VkQueue queue, rstd::uint32_t max_w,
-                       rstd::uint32_t max_h) -> Result<rstd::boxed::Box<YuvToRgba>, Error>;
+                       u32 queue_family, VkQueue queue, u32 max_w, u32 max_h)
+        -> Result<rstd::boxed::Box<YuvToRgba>, Error>;
 
-    auto convert_nv12(VkImage dst, rstd::uint32_t dst_w, rstd::uint32_t dst_h,
-                      const rstd::uint8_t* nv12, usize nv12_size, const ColorMatrix& cm)
-        -> rstd::Result<int, Error>;
-    auto convert_nv12(VkImage dst, rstd::uint32_t dst_w, rstd::uint32_t dst_h,
-                      const rstd::uint8_t* nv12, usize nv12_size, const ColorMatrix& cm,
-                      ConvertTarget target) -> rstd::Result<int, Error>;
-    auto submit_nv12(VkImage dst, rstd::uint32_t dst_w, rstd::uint32_t dst_h,
-                     const rstd::uint8_t* nv12, usize nv12_size, const ColorMatrix& cm,
-                     ConvertTarget target) -> rstd::Result<ConversionSubmission, Error>;
+    auto convert_nv12(VkImage dst, u32 dst_w, u32 dst_h, const rstd::uint8_t* nv12, usize nv12_size,
+                      const ColorMatrix& cm) -> rstd::Result<int, Error>;
+    auto convert_nv12(VkImage dst, u32 dst_w, u32 dst_h, const rstd::uint8_t* nv12, usize nv12_size,
+                      const ColorMatrix& cm, ConvertTarget target) -> rstd::Result<int, Error>;
+    auto submit_nv12(VkImage dst, u32 dst_w, u32 dst_h, const rstd::uint8_t* nv12, usize nv12_size,
+                     const ColorMatrix& cm, ConvertTarget target)
+        -> rstd::Result<ConversionSubmission, Error>;
 
     struct VkFrameImports {
         VkImage         y_image;
@@ -113,19 +111,18 @@ public:
         VkImageLayout*  uv_layout_in_out;
         rstd::uint32_t* y_qf_in_out;
         rstd::uint32_t* uv_qf_in_out;
-        rstd::uint32_t  src_w;
-        rstd::uint32_t  src_h;
+        u32             src_w;
+        u32             src_h;
         // 8 → R8 / R8G8 image views (NV12). 16 → R16 / R16G16 (P010 / P016).
-        rstd::uint32_t bit_depth;
+        u32 bit_depth;
     };
-    auto convert_av_vk_frame(const VkFrameImports& imports, VkImage dst, rstd::uint32_t dst_w,
-                             rstd::uint32_t dst_h, const ColorMatrix& cm)
+    auto convert_av_vk_frame(const VkFrameImports& imports, VkImage dst, u32 dst_w, u32 dst_h,
+                             const ColorMatrix& cm) -> rstd::Result<int, Error>;
+    auto convert_av_vk_frame(const VkFrameImports& imports, VkImage dst, u32 dst_w, u32 dst_h,
+                             const ColorMatrix& cm, ConvertTarget target)
         -> rstd::Result<int, Error>;
-    auto convert_av_vk_frame(const VkFrameImports& imports, VkImage dst, rstd::uint32_t dst_w,
-                             rstd::uint32_t dst_h, const ColorMatrix& cm, ConvertTarget target)
-        -> rstd::Result<int, Error>;
-    auto submit_av_vk_frame(const VkFrameImports& imports, VkImage dst, rstd::uint32_t dst_w,
-                            rstd::uint32_t dst_h, const ColorMatrix& cm, ConvertTarget target)
+    auto submit_av_vk_frame(const VkFrameImports& imports, VkImage dst, u32 dst_w, u32 dst_h,
+                            const ColorMatrix& cm, ConvertTarget target)
         -> rstd::Result<ConversionSubmission, Error>;
 
     /* Zero-copy VAAPI path: imports the DrmFrameView's dma-buf fds as
@@ -133,13 +130,12 @@ public:
      * runs the same nv12_to_rgba.comp into `dst`. The transient
      * VkImage / VkDeviceMemory / fd dups live until the *next*
      * convert_drm_prime call returns (cycled via last_drm_*). */
-    auto convert_drm_prime(const DrmFrameView& drm, VkImage dst, rstd::uint32_t dst_w,
-                           rstd::uint32_t dst_h, const ColorMatrix& cm) -> rstd::Result<int, Error>;
-    auto convert_drm_prime(const DrmFrameView& drm, VkImage dst, rstd::uint32_t dst_w,
-                           rstd::uint32_t dst_h, const ColorMatrix& cm, ConvertTarget target)
-        -> rstd::Result<int, Error>;
-    auto submit_drm_prime(const DrmFrameView& drm, VkImage dst, rstd::uint32_t dst_w,
-                          rstd::uint32_t dst_h, const ColorMatrix& cm, ConvertTarget target)
+    auto convert_drm_prime(const DrmFrameView& drm, VkImage dst, u32 dst_w, u32 dst_h,
+                           const ColorMatrix& cm) -> rstd::Result<int, Error>;
+    auto convert_drm_prime(const DrmFrameView& drm, VkImage dst, u32 dst_w, u32 dst_h,
+                           const ColorMatrix& cm, ConvertTarget target) -> rstd::Result<int, Error>;
+    auto submit_drm_prime(const DrmFrameView& drm, VkImage dst, u32 dst_w, u32 dst_h,
+                          const ColorMatrix& cm, ConvertTarget target)
         -> rstd::Result<ConversionSubmission, Error>;
 
     vvk::CompletionObservation   poll_completion() const noexcept;
@@ -148,9 +144,8 @@ public:
     Option<vvk::SubmissionToken> last_submission_readiness() const noexcept;
 
 private:
-    bool init(VkInstance instance, VkPhysicalDevice phys, VkDevice device,
-              rstd::uint32_t queue_family, VkQueue queue, rstd::uint32_t max_w,
-              rstd::uint32_t max_h, Error* err);
+    bool init(VkInstance instance, VkPhysicalDevice phys, VkDevice device, u32 queue_family,
+              VkQueue queue, u32 max_w, u32 max_h, Error* err);
     int  convert_nv12_(VkImage dst, rstd::uint32_t dst_w, rstd::uint32_t dst_h,
                        const rstd::uint8_t* nv12, usize nv12_size, const ColorMatrix& cm,
                        ConvertTarget target, Error* err);
@@ -160,8 +155,8 @@ private:
     int  convert_drm_prime_(const DrmFrameView& drm, VkImage dst, rstd::uint32_t dst_w,
                             rstd::uint32_t dst_h, const ColorMatrix& cm, ConvertTarget target,
                             Error* err);
-    void publish_submission(VkImage dst, rstd::uint32_t dst_w, rstd::uint32_t dst_h,
-                            ConvertTarget target, u64 completion_value);
+    void publish_submission(VkImage dst, u32 dst_w, u32 dst_h, ConvertTarget target,
+                            u64 completion_value);
 
     vvk::InstanceDispatch instance_dispatch_;
     vvk::DeviceDispatch   device_dispatch_;
@@ -169,10 +164,10 @@ private:
     vvk::PhysicalDevice   phys_;
     vvk::Device           device_;
     vvk::Queue            queue_;
-    rstd::uint32_t        queue_family_ { 0 };
+    u32                   queue_family_ {};
 
-    rstd::uint32_t max_w_ { 0 };
-    rstd::uint32_t max_h_ { 0 };
+    u32 max_w_ {};
+    u32 max_h_ {};
 
     vvk::ShaderModule        shader_;
     vvk::DescriptorSetLayout dsl_;

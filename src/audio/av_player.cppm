@@ -8,6 +8,8 @@ import :core;
 export namespace wavsen::audio
 {
 
+using namespace rstd::prelude;
+
 // Error type for AvPlayer::open. Mirrors the small-string Error pattern
 // used elsewhere in wavsen (no rich type — just a printable reason).
 struct AvPlayerError {
@@ -45,19 +47,19 @@ public:
     // after the video decoder seeks back to the start. The clock will
     // re-anchor on the next data callback.
     void seek_to_start();
-    void seek_to(double seconds);
+    void seek_to(f64 seconds);
 
     // PTS in seconds of the audio sample currently being played by the
     // device. Returns NaN before the device is primed; the caller should
     // treat NaN as "fall back to wall-clock pacing".
-    double current_time_seconds() const;
+    auto current_time_seconds() const -> f64;
 
     // 0..1 linear gain. Atomic; safe from any thread.
-    void set_volume(float v);
+    void set_volume(f32 value);
     void set_muted(bool m);
-    auto volume_scale() const -> float;
-    void set_volume_scale(float v);
-    void set_volume_scale(float v, std::uint32_t fade_ms);
+    auto volume_scale() const -> f32;
+    void set_volume_scale(f32 value);
+    void set_volume_scale(f32 value, u32 fade_ms);
 
     // True once the decoder reached EOF *and* the device has had time
     // to drain the last enqueued frames.

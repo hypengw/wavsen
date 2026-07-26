@@ -15,6 +15,8 @@ import swresample;
 namespace wavsen::audio
 {
 
+using namespace rstd::prelude;
+
 namespace
 {
 
@@ -134,23 +136,25 @@ public:
         }
         setup_resampler();
         // Drop any pending resampled frames; the new format is incompatible.
-        pending_offset_ = 0;
-        pending_frames_ = 0;
+        pending_offset_ = u32();
+        pending_frames_ = u32();
     }
 
-    std::uint64_t next_pcm(void* dst, std::uint32_t frames) {
-        if (cctx_ == nullptr || swr_ == nullptr) return 0;
+    auto next_pcm(void* dst, u32 frames) -> u64 {
+        if (cctx_ == nullptr || swr_ == nullptr) return u64();
 
-        auto*         out      = static_cast<std::uint8_t*>(dst);
-        const auto    bps      = sizeof(float) * target_.channels;
-        std::uint32_t produced = 0;
+        auto*      out      = static_cast<std::uint8_t*>(dst);
+        const auto bps      = usize(sizeof(float)) * usize(target_.channels.to_primitive());
+        auto       produced = u32();
 
         while (produced < frames) {
             // Flush any leftover from prior decode round.
-            if (pending_frames_ > 0) {
-                const auto take = std::min<std::uint32_t>(frames - produced, pending_frames_);
-                std::memcpy(
-                    out + produced * bps, pending_buf_.data() + pending_offset_ * bps, take * bps);
+            if (pending_frames_ > u32()) {
+                const auto take = (frames - produced).min(pending_frames_);
+                std::memcpy(out + (usize(produced.to_primitive()) * bps).to_primitive(),
+                            pending_buf_.data() +
+                                (usize(pending_offset_.to_primitive()) * bps).to_primitive(),
+                            (usize(take.to_primitive()) * bps).to_primitive());
                 produced += take;
                 pending_offset_ += take;
                 pending_frames_ -= take;
@@ -167,9 +171,9 @@ public:
             const std::int64_t max_out = swr_get_out_samples(swr_, frame_->nb_samples);
             if (max_out <= 0) continue;
 
-            const std::size_t need_bytes = static_cast<std::size_t>(max_out) * bps;
-            if (pending_buf_.size() < need_bytes) {
-                pending_buf_.resize(need_bytes);
+            const auto need_bytes = usize(static_cast<std::size_t>(max_out)) * bps;
+            if (pending_buf_.size() < need_bytes.to_primitive()) {
+                pending_buf_.resize(need_bytes.to_primitive());
             }
             std::uint8_t* out_ptr = pending_buf_.data();
             const int     converted =
@@ -182,18 +186,18 @@ public:
                 rstd::log::warn("wavsen::audio: swr_convert error");
                 continue;
             }
-            pending_offset_ = 0;
-            pending_frames_ = static_cast<std::uint32_t>(converted);
+            pending_offset_ = u32();
+            pending_frames_ = u32(converted);
         }
 
-        return produced;
+        return u64(produced.to_primitive());
     }
 
-    bool seek_to(double seconds) {
+    bool seek_to(f64 seconds) {
         if (! fmt_ctx_ || stream_idx_ < 0) return false;
         const AVStream* st = fmt_ctx_->streams[stream_idx_];
         const auto      tb = st->time_base;
-        const auto      ts = static_cast<std::int64_t>(seconds / ffi::av_q2d(tb));
+        const auto      ts = static_cast<std::int64_t>(seconds.to_primitive() / ffi::av_q2d(tb));
         if (av_seek_frame(fmt_ctx_, stream_idx_, ts, AVSEEK_FLAG_BACKWARD) < 0) {
             rstd::log::warn("wavsen::audio: av_seek_frame failed");
             return false;
@@ -201,22 +205,18 @@ public:
         if (cctx_) avcodec_flush_buffers(cctx_);
         if (swr_) swr_free(&swr_);
         setup_resampler();
-        pending_offset_   = 0;
-        pending_frames_   = 0;
+        pending_offset_   = u32();
+        pending_frames_   = u32();
         eof_              = false;
         last_pts_seconds_ = seconds;
         return true;
     }
 
-    double current_pts_seconds() const { return last_pts_seconds_; }
-    bool   is_eof() const { return eof_; }
+    auto current_pts_seconds() const -> f64 { return last_pts_seconds_; }
+    bool is_eof() const { return eof_; }
 
-    std::uint32_t sample_rate() const {
-        return cctx_ ? static_cast<std::uint32_t>(cctx_->sample_rate) : 0;
-    }
-    std::uint32_t channels() const {
-        return cctx_ ? static_cast<std::uint32_t>(cctx_->ch_layout.nb_channels) : 0;
-    }
+    auto sample_rate() const -> u32 { return cctx_ ? u32(cctx_->sample_rate) : u32(); }
+    auto channels() const -> u32 { return cctx_ ? u32(cctx_->ch_layout.nb_channels) : u32(); }
 
 private:
     bool pull_decoded_frame() {
@@ -228,8 +228,8 @@ private:
                                      ? frame_->best_effort_timestamp
                                      : frame_->pts;
                 if (pts != AV_NOPTS_VALUE && fmt_ctx_ && stream_idx_ >= 0) {
-                    last_pts_seconds_ = static_cast<double>(pts) *
-                                        ffi::av_q2d(fmt_ctx_->streams[stream_idx_]->time_base);
+                    last_pts_seconds_ = f64(static_cast<double>(pts) *
+                                            ffi::av_q2d(fmt_ctx_->streams[stream_idx_]->time_base));
                 }
                 return true;
             }
@@ -265,7 +265,7 @@ private:
 
     bool setup_resampler() {
         AVChannelLayout out_layout {};
-        av_channel_layout_default(&out_layout, static_cast<int>(target_.channels));
+        av_channel_layout_default(&out_layout, static_cast<int>(target_.channels.to_primitive()));
 
         AVChannelLayout in_layout {};
         if (cctx_->ch_layout.order != AV_CHANNEL_ORDER_UNSPEC) {
@@ -277,7 +277,7 @@ private:
         if (swr_alloc_set_opts2(&swr_,
                                 &out_layout,
                                 AV_SAMPLE_FMT_FLT,
-                                static_cast<int>(target_.sample_rate),
+                                static_cast<int>(target_.sample_rate.to_primitive()),
                                 &in_layout,
                                 cctx_->sample_fmt,
                                 cctx_->sample_rate,
@@ -313,10 +313,10 @@ private:
         }
         avio_buf_ = nullptr;
         (void)src_.take();
-        pending_offset_   = 0;
-        pending_frames_   = 0;
+        pending_offset_   = u32();
+        pending_frames_   = u32();
         eof_              = false;
-        last_pts_seconds_ = 0.0;
+        last_pts_seconds_ = f64();
     }
 
     rstd::Option<ByteStream> src_;
@@ -332,10 +332,10 @@ private:
     int              stream_idx_ = -1;
 
     std::vector<std::uint8_t> pending_buf_;
-    std::uint32_t             pending_offset_   = 0;
-    std::uint32_t             pending_frames_   = 0;
-    bool                      eof_              = false;
-    double                    last_pts_seconds_ = 0.0;
+    u32                       pending_offset_;
+    u32                       pending_frames_;
+    bool                      eof_ {};
+    f64                       last_pts_seconds_;
 };
 
 StreamDecoder::StreamDecoder(): impl_(std::make_unique<Impl>()) {}
@@ -349,15 +349,13 @@ bool StreamDecoder::open(ByteStream src, const DeviceDesc& target) {
 
 void StreamDecoder::retarget(const DeviceDesc& target) { impl_->retarget(target); }
 
-std::uint64_t StreamDecoder::next_pcm(void* dst, std::uint32_t frames) {
-    return impl_->next_pcm(dst, frames);
-}
+auto StreamDecoder::next_pcm(void* dst, u32 frames) -> u64 { return impl_->next_pcm(dst, frames); }
 
-bool          StreamDecoder::seek_to(double s) { return impl_->seek_to(s); }
-double        StreamDecoder::current_pts_seconds() const { return impl_->current_pts_seconds(); }
-bool          StreamDecoder::is_eof() const { return impl_->is_eof(); }
-std::uint32_t StreamDecoder::sample_rate() const { return impl_->sample_rate(); }
-std::uint32_t StreamDecoder::channels() const { return impl_->channels(); }
+bool StreamDecoder::seek_to(f64 seconds) { return impl_->seek_to(seconds); }
+auto StreamDecoder::current_pts_seconds() const -> f64 { return impl_->current_pts_seconds(); }
+bool StreamDecoder::is_eof() const { return impl_->is_eof(); }
+auto StreamDecoder::sample_rate() const -> u32 { return impl_->sample_rate(); }
+auto StreamDecoder::channels() const -> u32 { return impl_->channels(); }
 
 namespace
 {
@@ -368,9 +366,7 @@ class DecoderStream : public SoundStream {
 public:
     explicit DecoderStream(StreamDecoder dec): dec_(std::move(dec)) {}
 
-    auto next_pcm(void* dst, std::uint32_t frames) -> std::uint64_t override {
-        return dec_.next_pcm(dst, frames);
-    }
+    auto next_pcm(void* dst, u32 frames) -> u64 override { return dec_.next_pcm(dst, frames); }
     void pass_desc(const Desc& d) override { dec_.retarget({ d.channels, d.sample_rate }); }
 
 private:

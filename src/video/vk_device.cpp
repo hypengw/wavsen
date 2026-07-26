@@ -45,16 +45,14 @@ Producer::~Producer() {
     if (staging_map_ && staging_mem_) staging_mem_.Unmap();
 }
 
-auto Producer::create(rstd::uint32_t width, rstd::uint32_t height)
-    -> Result<rstd::boxed::Box<Producer>, Error> {
+auto Producer::create(u32 width, u32 height) -> Result<rstd::boxed::Box<Producer>, Error> {
     Error err;
     auto  producer = build_(width, height, None(), &err);
     if (producer.is_none()) return Err(rstd::move(err));
     return Ok(rstd::move(producer).unwrap());
 }
 
-auto Producer::create_with_render_node(rstd::uint32_t width, rstd::uint32_t height,
-                                       ref<str> render_node)
+auto Producer::create_with_render_node(u32 width, u32 height, ref<str> render_node)
     -> Result<rstd::boxed::Box<Producer>, Error> {
     Error            err;
     Option<ref<str>> pinned_node = render_node.is_empty() ? None() : Some(render_node);
@@ -98,9 +96,9 @@ auto Producer::from_external(ExternalDeviceInfo info) -> Result<rstd::boxed::Box
     return Ok(rstd::move(self));
 }
 
-Option<rstd::boxed::Box<Producer>> Producer::build_(rstd::uint32_t width, rstd::uint32_t height,
+Option<rstd::boxed::Box<Producer>> Producer::build_(u32 width, u32 height,
                                                     Option<ref<str>> render_node, Error* err) {
-    if (width == 0 || height == 0) {
+    if (width == u32() || height == u32()) {
         fail(err, "Producer: width/height must be non-zero"_str);
         return None();
     }
@@ -122,7 +120,7 @@ Option<rstd::boxed::Box<Producer>> Producer::build_(rstd::uint32_t width, rstd::
     app.sType                   = VK_STRUCTURE_TYPE_APPLICATION_INFO;
     app.pApplicationName        = "wavsen-video";
     app.apiVersion              = VK_API_VERSION_1_3;
-    self->instance_api_version_ = VK_API_VERSION_1_3;
+    self->instance_api_version_ = u32(VK_API_VERSION_1_3);
     if (VkResult result = vvk::Instance::Create(self->instance_,
                                                 app,
                                                 {},
@@ -221,15 +219,15 @@ Option<rstd::boxed::Box<Producer>> Producer::build_(rstd::uint32_t width, rstd::
     bool picked_queue = false;
     for (usize i {}; i < queue_properties.len(); ++i) {
         QueueFamily queue_family {
-            .index      = rstd::as_cast<rstd::uint32_t>(i),
+            .index      = rstd::as_cast<u32>(i),
             .flags      = queue_properties[i].queueFlags,
-            .video_caps = 0,
+            .video_caps = u32(),
         };
         self->queue_families_.push(rstd::move(queue_family));
         if (! picked_queue &&
             (queue_properties[i].queueFlags &
              (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT))) {
-            self->queue_family_ = rstd::as_cast<rstd::uint32_t>(i);
+            self->queue_family_ = rstd::as_cast<u32>(i);
             picked_queue        = true;
         }
     }
@@ -244,7 +242,7 @@ Option<rstd::boxed::Box<Producer>> Producer::build_(rstd::uint32_t width, rstd::
     for (const auto& queue_family : self->queue_families_) {
         VkDeviceQueueCreateInfo queue_info {};
         queue_info.sType            = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-        queue_info.queueFamilyIndex = queue_family.index;
+        queue_info.queueFamilyIndex = queue_family.index.to_primitive();
         queue_info.queueCount       = 1;
         queue_info.pQueuePriorities = &default_priority;
         queue_infos.push(rstd::move(queue_info));
@@ -302,7 +300,7 @@ Option<rstd::boxed::Box<Producer>> Producer::build_(rstd::uint32_t width, rstd::
         fail(err, "Producer: failed to load Vulkan device dispatch"_str);
         return None();
     }
-    self->queue_ = self->device_.GetQueue(self->queue_family_);
+    self->queue_ = self->device_.GetQueue(self->queue_family_.to_primitive());
 
     VkPhysicalDeviceIDProperties id_properties {};
     id_properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES;
@@ -317,11 +315,11 @@ Option<rstd::boxed::Box<Producer>> Producer::build_(rstd::uint32_t width, rstd::
     rstd::mem::memcpy(self->driver_uuid_, id_properties.driverUUID, usize(16));
     self->have_uuid_ = true;
     if (have_drm_extension && drm_properties.hasRender) {
-        self->drm_render_major_ = drm_properties.renderMajor;
-        self->drm_render_minor_ = drm_properties.renderMinor;
+        self->drm_render_major_ = u32(drm_properties.renderMajor);
+        self->drm_render_minor_ = u32(drm_properties.renderMinor);
     }
 
-    if (self->drm_render_minor_ != 0) {
+    if (self->drm_render_minor_ != u32()) {
         for (int i = 128; i < 192; ++i) {
             auto path    = rstd::path::PathBuf::from(rstd::format("/dev/dri/renderD{}", i));
             auto options = rstd::fs::File::options();
@@ -336,7 +334,7 @@ Option<rstd::boxed::Box<Producer>> Producer::build_(rstd::uint32_t width, rstd::
     VkCommandPoolCreateInfo pool_info {};
     pool_info.sType            = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     pool_info.flags            = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-    pool_info.queueFamilyIndex = self->queue_family_;
+    pool_info.queueFamilyIndex = self->queue_family_.to_primitive();
     if (VkResult result = self->device_.CreateCommandPool(pool_info, self->cmd_pool_);
         result != VK_SUCCESS) {
         fail(err, vk_error("vkCreateCommandPool"_str, result));
@@ -370,7 +368,8 @@ Option<rstd::boxed::Box<Producer>> Producer::build_(rstd::uint32_t width, rstd::
         return None();
     }
 
-    self->staging_size_ = static_cast<VkDeviceSize>(width) * height * 4;
+    self->staging_size_ = static_cast<VkDeviceSize>(width.to_primitive()) *
+                          static_cast<VkDeviceSize>(height.to_primitive()) * 4;
     VkBufferCreateInfo buffer_info {};
     buffer_info.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     buffer_info.size        = self->staging_size_;
@@ -422,18 +421,16 @@ Option<rstd::boxed::Box<Producer>> Producer::build_(rstd::uint32_t width, rstd::
     return Some(rstd::move(self));
 }
 
-auto Producer::upload_into(VkImage target, rstd::uint32_t target_width,
-                           rstd::uint32_t target_height, const rstd::uint8_t* data, usize size)
-    -> Result<int, Error> {
+auto Producer::upload_into(VkImage target, u32 target_width, u32 target_height,
+                           const rstd::uint8_t* data, usize size) -> Result<int, Error> {
     Error err;
     int   fd = upload_into_(target, target_width, target_height, data, size, &err);
     if (fd < 0) return Err(rstd::move(err));
     return Ok(fd);
 }
 
-int Producer::upload_into_(VkImage target, rstd::uint32_t target_width,
-                           rstd::uint32_t target_height, const rstd::uint8_t* data, usize size,
-                           Error* err) {
+int Producer::upload_into_(VkImage target, u32 target_width, u32 target_height,
+                           const rstd::uint8_t* data, usize size, Error* err) {
     if (target == VK_NULL_HANDLE) {
         fail(err, "upload_into: target VkImage is null"_str);
         return -1;
@@ -491,7 +488,7 @@ int Producer::upload_into_(VkImage target, rstd::uint32_t target_width,
     VkBufferImageCopy copy {};
     copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     copy.imageSubresource.layerCount = 1;
-    copy.imageExtent                 = { target_width, target_height, 1 };
+    copy.imageExtent = { target_width.to_primitive(), target_height.to_primitive(), 1 };
     cmd_.CopyBufferToImage(*staging_buf_, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, copy);
 
     VkImageMemoryBarrier to_foreign {};
@@ -499,7 +496,7 @@ int Producer::upload_into_(VkImage target, rstd::uint32_t target_width,
     to_foreign.srcAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT;
     to_foreign.oldLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     to_foreign.newLayout           = VK_IMAGE_LAYOUT_GENERAL;
-    to_foreign.srcQueueFamilyIndex = queue_family_;
+    to_foreign.srcQueueFamilyIndex = queue_family_.to_primitive();
     to_foreign.dstQueueFamilyIndex = VK_QUEUE_FAMILY_FOREIGN_EXT;
     to_foreign.image               = target;
     to_foreign.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };

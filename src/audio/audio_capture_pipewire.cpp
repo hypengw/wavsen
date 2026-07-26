@@ -19,6 +19,8 @@ import :capture;
 namespace wavsen::audio
 {
 
+using namespace rstd::prelude;
+
 namespace pipewire_ffi = wavsen::ffi::pipewire;
 
 namespace
@@ -268,14 +270,15 @@ private:
 
         AudioSpectrum out {};
         for (std::size_t k = 0; k < dsp::kNumBins; ++k) {
-            out.left[k]    = bands.left[k];
-            out.right[k]   = bands.right[k];
-            out.average[k] = bands.average[k];
-            out.bins[k]    = bands.average[k];
+            const auto index   = usize(k);
+            out.left[index]    = f32(bands.left[k]);
+            out.right[index]   = f32(bands.right[k]);
+            out.average[index] = f32(bands.average[k]);
+            out.bins[index]    = f32(bands.average[k]);
         }
-        out.publish_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                             std::chrono::steady_clock::now().time_since_epoch())
-                             .count();
+        out.publish_ms = i64(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                 std::chrono::steady_clock::now().time_since_epoch())
+                                 .count());
 
         seq_.fetch_add(1, std::memory_order_release);
         std::memcpy(&published_, &out, sizeof(AudioSpectrum));

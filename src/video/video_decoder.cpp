@@ -88,17 +88,17 @@ auto av_err_str(int rc) -> rstd::string::String;
 /* Translate FFmpeg's colorspace/range enums into our ColorSpace /
  * ColorRange ints (which the public Nv12Frame / VkFrameView carry).
  * Unknowns default to BT.709 limited — the most common case. */
-rstd::uint32_t map_colorspace(int cs) {
+u32 map_colorspace(int cs) {
     switch (cs) {
-    case AVCOL_SPC_BT709: return 0;
+    case AVCOL_SPC_BT709: return u32();
     case AVCOL_SPC_BT470BG: // PAL / BT.601 625
-    case AVCOL_SPC_SMPTE170M: return 1;
-    case AVCOL_SPC_BT2020_NCL: return 2;
-    case AVCOL_SPC_BT2020_CL: return 2;
-    default: return 0;
+    case AVCOL_SPC_SMPTE170M: return u32(1);
+    case AVCOL_SPC_BT2020_NCL: return u32(2);
+    case AVCOL_SPC_BT2020_CL: return u32(2);
+    default: return u32();
     }
 }
-rstd::uint32_t map_range(int r) { return (r == AVCOL_RANGE_JPEG) ? 1u : 0u; }
+u32 map_range(int r) { return r == AVCOL_RANGE_JPEG ? u32(1) : u32(); }
 
 /* `get_format` callback: prefer AV_PIX_FMT_VULKAN whenever the codec
  * offers it; fall back to whatever FFmpeg picks by default otherwise.
@@ -224,10 +224,11 @@ AVBufferRef* make_shared_vulkan_hwdevice(const Producer& vk, Error* err) {
         const auto& q = qfs[i];
         if (vctx->nb_qf >= static_cast<int>(sizeof(vctx->qf) / sizeof(vctx->qf[0]))) break;
         AVVulkanDeviceQueueFamily entry {};
-        entry.idx               = static_cast<int>(q.index);
-        entry.num               = 1;
-        entry.flags             = static_cast<VkQueueFlagBits>(q.flags);
-        entry.video_caps        = static_cast<VkVideoCodecOperationFlagBitsKHR>(q.video_caps);
+        entry.idx   = static_cast<int>(q.index.to_primitive());
+        entry.num   = 1;
+        entry.flags = static_cast<VkQueueFlagBits>(q.flags);
+        entry.video_caps =
+            static_cast<VkVideoCodecOperationFlagBitsKHR>(q.video_caps.to_primitive());
         vctx->qf[vctx->nb_qf++] = entry;
     }
 
@@ -308,8 +309,8 @@ VideoDecoder::StateOwner::~StateOwner() {
 namespace
 {
 
-bool ensure_sws(VideoDecoder::State& st, int src_w, int src_h, AVPixelFormat src_fmt,
-                rstd::uint32_t target_w, rstd::uint32_t target_h) {
+bool ensure_sws(VideoDecoder::State& st, int src_w, int src_h, AVPixelFormat src_fmt, u32 target_w,
+                u32 target_h) {
     if (st.sws && st.sws_src_w == src_w && st.sws_src_h == src_h && st.sws_src_fmt == src_fmt) {
         return true;
     }
@@ -317,8 +318,8 @@ bool ensure_sws(VideoDecoder::State& st, int src_w, int src_h, AVPixelFormat src
     st.sws.reset(sws_getContext(src_w,
                                 src_h,
                                 src_fmt,
-                                static_cast<int>(target_w),
-                                static_cast<int>(target_h),
+                                static_cast<int>(target_w.to_primitive()),
+                                static_cast<int>(target_h.to_primitive()),
                                 AV_PIX_FMT_NV12,
                                 SWS_BICUBIC,
                                 nullptr,
@@ -343,10 +344,9 @@ bool seek_to_start(VideoDecoder::State& st) {
 
 namespace
 {
-bool probe_native_impl(ref<str> path, rstd::uint32_t* native_width, rstd::uint32_t* native_height,
-                       Error* err) {
-    *native_width             = 0;
-    *native_height            = 0;
+bool probe_native_impl(ref<str> path, u32* native_width, u32* native_height, Error* err) {
+    *native_width             = u32();
+    *native_height            = u32();
     AVFormatContext* raw_fmt  = nullptr;
     auto             path_c   = rstd::ffi::CString::make(rstd::string::String::make(path)).unwrap();
     auto             path_raw = reinterpret_cast<const char*>(path_c.as_ref().p);
@@ -369,8 +369,8 @@ bool probe_native_impl(ref<str> path, rstd::uint32_t* native_width, rstd::uint32
         fail(err, "video stream has invalid native dimensions"_str);
         return false;
     }
-    *native_width  = static_cast<rstd::uint32_t>(par->width);
-    *native_height = static_cast<rstd::uint32_t>(par->height);
+    *native_width  = u32(static_cast<rstd::uint32_t>(par->width));
+    *native_height = u32(static_cast<rstd::uint32_t>(par->height));
     return true;
 }
 } // namespace
@@ -394,15 +394,15 @@ rstd::int64_t avio_seek_shim(void* opaque, rstd::int64_t offset, int whence) {
 VideoDecoder::~VideoDecoder() = default;
 
 auto VideoDecoder::probe_native(ref<str> path) -> Result<ProbeResult, Error> {
-    Error          err;
-    rstd::uint32_t width  = 0;
-    rstd::uint32_t height = 0;
+    Error err;
+    u32   width;
+    u32   height;
     if (! probe_native_impl(path, &width, &height, &err)) return Err(rstd::move(err));
     return Ok(ProbeResult { width, height });
 }
 
-auto VideoDecoder::open(ref<str> path, rstd::uint32_t target_width, rstd::uint32_t target_height,
-                        bool loop) -> Result<rstd::boxed::Box<VideoDecoder>, Error> {
+auto VideoDecoder::open(ref<str> path, u32 target_width, u32 target_height, bool loop)
+    -> Result<rstd::boxed::Box<VideoDecoder>, Error> {
     Error err;
     auto  decoder = build_internal(InputSpec { rstd::string::String::make(path), None() },
                                    target_width,
@@ -415,9 +415,8 @@ auto VideoDecoder::open(ref<str> path, rstd::uint32_t target_width, rstd::uint32
     return Ok(rstd::move(decoder).unwrap());
 }
 
-auto VideoDecoder::open_with_vk(ref<str> path, rstd::uint32_t target_width,
-                                rstd::uint32_t target_height, bool loop, const Producer& producer,
-                                const OpenOpts& opts)
+auto VideoDecoder::open_with_vk(ref<str> path, u32 target_width, u32 target_height, bool loop,
+                                const Producer& producer, const OpenOpts& opts)
     -> Result<rstd::boxed::Box<VideoDecoder>, Error> {
     /* Resolve trial order. Auto = Vulkan first, then VAAPI; explicit
      * single-mode skips the others; None goes straight to sw. */
@@ -490,9 +489,9 @@ auto VideoDecoder::open_with_vk(ref<str> path, rstd::uint32_t target_width,
     return Ok(rstd::move(decoder).unwrap());
 }
 
-auto VideoDecoder::open_from_stream(InputStreamFactory make_stream, rstd::uint32_t target_width,
-                                    rstd::uint32_t target_height, bool loop,
-                                    const Producer* producer, const OpenOpts& opts)
+auto VideoDecoder::open_from_stream(InputStreamFactory make_stream, u32 target_width,
+                                    u32 target_height, bool loop, const Producer* producer,
+                                    const OpenOpts& opts)
     -> Result<rstd::boxed::Box<VideoDecoder>, Error> {
     auto fresh_stream = [&] {
         return make_stream.as_mut_ptr()->operator()();
@@ -584,12 +583,11 @@ auto VideoDecoder::open_from_stream(InputStreamFactory make_stream, rstd::uint32
     return Ok(rstd::move(decoder).unwrap());
 }
 
-auto VideoDecoder::build_internal(InputSpec input, rstd::uint32_t target_width,
-                                  rstd::uint32_t target_height, bool loop,
+auto VideoDecoder::build_internal(InputSpec input, u32 target_width, u32 target_height, bool loop,
                                   void* prebuilt_hwdevice_value, FrameKind requested_kind,
                                   Error* err) -> Option<rstd::boxed::Box<VideoDecoder>> {
     AVBufferRef* prebuilt_hwdevice = static_cast<AVBufferRef*>(prebuilt_hwdevice_value);
-    if (target_width == 0 || target_height == 0) {
+    if (target_width == u32() || target_height == u32()) {
         fail(err, "target dimensions must be non-zero"_str);
         if (prebuilt_hwdevice) av_buffer_unref(&prebuilt_hwdevice);
         return None();
@@ -600,8 +598,8 @@ auto VideoDecoder::build_internal(InputSpec input, rstd::uint32_t target_width,
         return None();
     }
     /* NV12 chroma is half-resolution → both dims must be even. */
-    if (target_width & 1u) ++target_width;
-    if (target_height & 1u) ++target_height;
+    if (target_width % u32(2) != u32()) ++target_width;
+    if (target_height % u32(2) != u32()) ++target_height;
 
     auto state           = rstd::boxed::Box<VideoDecoder::State>::make();
     auto state_ptr       = rstd::move(state).into_raw().as_raw_ptr();
@@ -831,28 +829,28 @@ int VideoDecoder::next_vk_frame_(VkFrameView& out, Error* err) {
             out.sem          = vkf->sem;
             out.sem_value    = vkf->sem_value;
             out.queue_family = vkf->queue_family;
-            out.plane_count  = (vkf->img[1] != VK_NULL_HANDLE) ? 2u : 1u;
-            out.width        = static_cast<rstd::uint32_t>(st.src_frame->width);
-            out.height       = static_cast<rstd::uint32_t>(st.src_frame->height);
+            out.plane_count  = vkf->img[1] != VK_NULL_HANDLE ? u32(2) : u32(1);
+            out.width        = u32(static_cast<rstd::uint32_t>(st.src_frame->width));
+            out.height       = u32(static_cast<rstd::uint32_t>(st.src_frame->height));
             out.colorspace   = map_colorspace(st.src_frame->colorspace);
             out.color_range  = map_range(st.src_frame->color_range);
             /* Look up the AVHWFramesContext's sw_format to know whether
              * the GPU images we're about to sample are 8-bit (NV12) or
              * 10-bit (P010). Both are 2-image disjoint formats here. */
-            out.bit_depth = 8;
+            out.bit_depth = u32(8);
             if (st.src_frame->hw_frames_ctx) {
                 auto* hwfc =
                     reinterpret_cast<AVHWFramesContext*>(st.src_frame->hw_frames_ctx->data);
                 if (hwfc->sw_format == AV_PIX_FMT_P010 || hwfc->sw_format == AV_PIX_FMT_P016) {
-                    out.bit_depth = 16;
+                    out.bit_depth = u32(16);
                 }
             }
             const rstd::int64_t pts = (st.src_frame->best_effort_timestamp != AV_NOPTS_VALUE)
                                           ? st.src_frame->best_effort_timestamp
                                           : st.src_frame->pts;
-            out.pts_seconds         = (pts == AV_NOPTS_VALUE)
-                                          ? -1.0
-                                          : static_cast<double>(pts) * ffi::av_q2d(st.stream_tb);
+            out.pts_seconds = pts == AV_NOPTS_VALUE
+                                  ? f64(-1.0)
+                                  : f64(static_cast<double>(pts) * ffi::av_q2d(st.stream_tb));
             return looped ? 2 : 0;
         }
         if (rc == AVERROR_EOF) {
@@ -940,38 +938,38 @@ int VideoDecoder::next_drm_frame_(DrmFrameView& out, Error* err) {
             }
             const int n_obj  = desc->nb_objects < 4 ? desc->nb_objects : 4;
             const int n_lay  = desc->nb_layers < 4 ? desc->nb_layers : 4;
-            out.object_count = static_cast<rstd::uint32_t>(n_obj);
+            out.object_count = u32(static_cast<rstd::uint32_t>(n_obj));
             for (int i = 0; i < n_obj; ++i) {
                 out.objects[i].fd              = desc->objects[i].fd;
-                out.objects[i].size            = desc->objects[i].size;
+                out.objects[i].size            = u64(desc->objects[i].size);
                 out.objects[i].format_modifier = desc->objects[i].format_modifier;
             }
-            out.layer_count = static_cast<rstd::uint32_t>(n_lay);
+            out.layer_count = u32(static_cast<rstd::uint32_t>(n_lay));
             for (int li = 0; li < n_lay; ++li) {
                 const auto& la             = desc->layers[li];
                 out.layers[li].fourcc      = la.format;
                 const int np               = la.nb_planes < 4 ? la.nb_planes : 4;
-                out.layers[li].plane_count = static_cast<rstd::uint32_t>(np);
+                out.layers[li].plane_count = u32(static_cast<rstd::uint32_t>(np));
                 for (int p = 0; p < np; ++p) {
                     out.layers[li].planes[p].object_index =
-                        static_cast<rstd::uint32_t>(la.planes[p].object_index);
-                    out.layers[li].planes[p].offset = la.planes[p].offset;
-                    out.layers[li].planes[p].pitch  = la.planes[p].pitch;
+                        u32(static_cast<rstd::uint32_t>(la.planes[p].object_index));
+                    out.layers[li].planes[p].offset = u64(la.planes[p].offset);
+                    out.layers[li].planes[p].pitch  = u64(la.planes[p].pitch);
                 }
             }
-            out.width       = static_cast<rstd::uint32_t>(st.src_frame->width);
-            out.height      = static_cast<rstd::uint32_t>(st.src_frame->height);
+            out.width       = u32(static_cast<rstd::uint32_t>(st.src_frame->width));
+            out.height      = u32(static_cast<rstd::uint32_t>(st.src_frame->height));
             out.colorspace  = map_colorspace(st.src_frame->colorspace);
             out.color_range = map_range(st.src_frame->color_range);
             /* VAAPI 8-bit profiles land as NV12; 10-bit as P010. We only
              * support 8-bit on the DRM_PRIME zero-copy path for now. */
-            out.bit_depth           = 8;
+            out.bit_depth           = u32(8);
             const rstd::int64_t pts = (st.src_frame->best_effort_timestamp != AV_NOPTS_VALUE)
                                           ? st.src_frame->best_effort_timestamp
                                           : st.src_frame->pts;
-            out.pts_seconds         = (pts == AV_NOPTS_VALUE)
-                                          ? -1.0
-                                          : static_cast<double>(pts) * ffi::av_q2d(st.stream_tb);
+            out.pts_seconds = pts == AV_NOPTS_VALUE
+                                  ? f64(-1.0)
+                                  : f64(static_cast<double>(pts) * ffi::av_q2d(st.stream_tb));
             return looped ? 2 : 0;
         }
         if (rc == AVERROR_EOF) {
@@ -1020,7 +1018,8 @@ int VideoDecoder::next_frame_(Nv12Frame& out, Error* err) {
 
     /* Resize output buffer to NV12 size on first call (and on extent
      * change, but the extent is fixed for VideoDecoder lifetime). */
-    const usize want = usize(target_width_) * usize(target_height_) * usize(3) / usize(2);
+    const usize want = usize(target_width_.to_primitive()) * usize(target_height_.to_primitive()) *
+                       usize(3) / usize(2);
     if (out.width != target_width_ || out.height != target_height_ || out.data.len() != want) {
         out.width                = target_width_;
         out.height               = target_height_;
@@ -1069,12 +1068,14 @@ int VideoDecoder::next_frame_(Nv12Frame& out, Error* err) {
                      rstd::format("sws_getContext failed (src={})", av_get_pix_fmt_name(src_fmt)));
                 return -1;
             }
-            rstd::uint8_t* y_dst = out.data.data();
-            rstd::uint8_t* uv_dst =
-                out.data.data() + (usize(target_width_) * usize(target_height_)).to_primitive();
+            rstd::uint8_t* y_dst         = out.data.data();
+            rstd::uint8_t* uv_dst        = out.data.data() + (usize(target_width_.to_primitive()) *
+                                                              usize(target_height_.to_primitive()))
+                                                                 .to_primitive();
             rstd::uint8_t* dst_planes[4] = { y_dst, uv_dst, nullptr, nullptr };
-            int dst_strides[4] = { static_cast<int>(target_width_),
-                                   static_cast<int>(target_width_), /* NV12 UV pitch == width */
+            int dst_strides[4] = { static_cast<int>(target_width_.to_primitive()),
+                                   static_cast<int>(
+                                       target_width_.to_primitive()), /* NV12 UV pitch == width */
                                    0,
                                    0 };
             int scaled         = sws_scale(
@@ -1086,11 +1087,11 @@ int VideoDecoder::next_frame_(Nv12Frame& out, Error* err) {
             const rstd::int64_t pts = (feed->best_effort_timestamp != AV_NOPTS_VALUE)
                                           ? feed->best_effort_timestamp
                                           : feed->pts;
-            out.pts_seconds         = (pts == AV_NOPTS_VALUE)
-                                          ? -1.0
-                                          : static_cast<double>(pts) * ffi::av_q2d(st.stream_tb);
-            out.colorspace          = map_colorspace(feed->colorspace);
-            out.color_range         = map_range(feed->color_range);
+            out.pts_seconds = pts == AV_NOPTS_VALUE
+                                  ? f64(-1.0)
+                                  : f64(static_cast<double>(pts) * ffi::av_q2d(st.stream_tb));
+            out.colorspace  = map_colorspace(feed->colorspace);
+            out.color_range = map_range(feed->color_range);
             av_frame_unref(st.src_frame.get());
             if (st.sw_frame) av_frame_unref(st.sw_frame.get());
             return looped ? 2 : 0;

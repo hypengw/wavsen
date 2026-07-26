@@ -9,6 +9,9 @@ import swscale;
 
 namespace wavsen::decode
 {
+
+using namespace rstd::prelude;
+
 namespace
 {
 
@@ -52,14 +55,13 @@ std::string av_err_str(int rc) {
 
 Error mk(ErrorKind k, std::string m) { return Error { k, std::move(m) }; }
 
-void compute_target(int src_w, int src_h, std::uint32_t max_edge, std::uint32_t& tw,
-                    std::uint32_t& th) {
+void compute_target(int src_w, int src_h, u32 max_edge, u32& tw, u32& th) {
     if (src_w <= 0 || src_h <= 0) {
-        tw = th = 0;
+        tw = th = u32();
         return;
     }
-    const auto sw = static_cast<std::uint32_t>(src_w);
-    const auto sh = static_cast<std::uint32_t>(src_h);
+    const auto sw = u32(static_cast<std::uint32_t>(src_w));
+    const auto sh = u32(static_cast<std::uint32_t>(src_h));
     if (sw <= max_edge && sh <= max_edge) {
         tw = sw;
         th = sh;
@@ -67,16 +69,18 @@ void compute_target(int src_w, int src_h, std::uint32_t max_edge, std::uint32_t&
     }
     if (sw >= sh) {
         tw = max_edge;
-        th = std::max<std::uint32_t>(
+        th = u32(std::max<std::uint32_t>(
             1u,
-            static_cast<std::uint32_t>(static_cast<double>(sh) * static_cast<double>(max_edge) /
-                                       static_cast<double>(sw)));
+            static_cast<std::uint32_t>(static_cast<double>(sh.to_primitive()) *
+                                       static_cast<double>(max_edge.to_primitive()) /
+                                       static_cast<double>(sw.to_primitive()))));
     } else {
         th = max_edge;
-        tw = std::max<std::uint32_t>(
+        tw = u32(std::max<std::uint32_t>(
             1u,
-            static_cast<std::uint32_t>(static_cast<double>(sw) * static_cast<double>(max_edge) /
-                                       static_cast<double>(sh)));
+            static_cast<std::uint32_t>(static_cast<double>(sw.to_primitive()) *
+                                       static_cast<double>(max_edge.to_primitive()) /
+                                       static_cast<double>(sh.to_primitive()))));
     }
 }
 
@@ -84,7 +88,7 @@ void compute_target(int src_w, int src_h, std::uint32_t max_edge, std::uint32_t&
 
 auto extract_thumbnail(std::string_view path_sv, const ThumbOptions& opts)
     -> rstd::Result<RgbaImage, Error> {
-    if (opts.max_edge == 0) {
+    if (opts.max_edge == u32()) {
         return rstd::Err(mk(ErrorKind::InvalidArgs, "max_edge must be non-zero"));
     }
 
@@ -129,18 +133,19 @@ auto extract_thumbnail(std::string_view path_sv, const ThumbOptions& opts)
 
     // Seek to a sensible thumbnail target if the source is long enough. Failure
     // here is non-fatal — falling through decodes from the start.
-    double duration_sec = 0.0;
+    f64 duration_sec;
     if (fmt->duration > 0) {
-        duration_sec = static_cast<double>(fmt->duration) / AV_TIME_BASE;
+        duration_sec = f64(static_cast<double>(fmt->duration) / AV_TIME_BASE);
     } else if (st->duration > 0 && st->time_base.den > 0) {
-        duration_sec = static_cast<double>(st->duration) * ffi::av_q2d(st->time_base);
+        duration_sec = f64(static_cast<double>(st->duration) * ffi::av_q2d(st->time_base));
     }
-    if (duration_sec > 0.5) {
-        double target_sec = std::max(opts.seek_seconds, duration_sec * opts.seek_fraction);
-        target_sec        = std::min(target_sec, std::max(0.0, duration_sec - 0.05));
-        if (target_sec > 0.0) {
-            const std::int64_t ts = static_cast<std::int64_t>(target_sec * AV_TIME_BASE);
-            const int seek_flags  = opts.prefer_keyframe ? AVSEEK_FLAG_BACKWARD : AVSEEK_FLAG_ANY;
+    if (duration_sec > f64(0.5)) {
+        f64 target_sec = opts.seek_seconds.max(duration_sec * opts.seek_fraction);
+        target_sec     = target_sec.min((duration_sec - f64(0.05)).max(f64()));
+        if (target_sec > f64()) {
+            const std::int64_t ts =
+                static_cast<std::int64_t>(target_sec.to_primitive() * AV_TIME_BASE);
+            const int seek_flags = opts.prefer_keyframe ? AVSEEK_FLAG_BACKWARD : AVSEEK_FLAG_ANY;
             if (av_seek_frame(fmt.get(), -1, ts, seek_flags) >= 0) {
                 avcodec_flush_buffers(cctx.get());
             }
@@ -195,17 +200,18 @@ auto extract_thumbnail(std::string_view path_sv, const ThumbOptions& opts)
             mk(ErrorKind::DecodeFailed, "decoded frame has invalid dimensions/format"));
     }
 
-    std::uint32_t tw = 0, th = 0;
+    u32 tw;
+    u32 th;
     compute_target(src_w, src_h, opts.max_edge, tw, th);
-    if (tw == 0 || th == 0) {
+    if (tw == u32() || th == u32()) {
         return rstd::Err(mk(ErrorKind::ScaleFailed, "computed target size is zero"));
     }
 
     SwsPtr sws(sws_getContext(src_w,
                               src_h,
                               src_fmt,
-                              static_cast<int>(tw),
-                              static_cast<int>(th),
+                              static_cast<int>(tw.to_primitive()),
+                              static_cast<int>(th.to_primitive()),
                               AV_PIX_FMT_RGBA,
                               SWS_BICUBIC,
                               nullptr,
@@ -220,11 +226,13 @@ auto extract_thumbnail(std::string_view path_sv, const ThumbOptions& opts)
     RgbaImage out;
     out.width  = tw;
     out.height = th;
-    out.stride = tw * 4u;
-    out.data.assign(static_cast<std::size_t>(out.stride) * th, 0u);
+    out.stride = tw * u32(4);
+    out.data.assign(static_cast<std::size_t>(out.stride.to_primitive()) *
+                        static_cast<std::size_t>(th.to_primitive()),
+                    0u);
 
     std::uint8_t* dst_planes[4]  = { out.data.data(), nullptr, nullptr, nullptr };
-    int           dst_strides[4] = { static_cast<int>(out.stride), 0, 0, 0 };
+    int           dst_strides[4] = { static_cast<int>(out.stride.to_primitive()), 0, 0, 0 };
 
     int scaled = sws_scale(
         sws.get(), src_frame->data, src_frame->linesize, 0, src_h, dst_planes, dst_strides);

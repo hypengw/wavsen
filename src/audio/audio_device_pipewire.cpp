@@ -16,6 +16,8 @@ import :core;
 namespace wavsen::audio
 {
 
+using namespace rstd::prelude;
+
 namespace pipewire_ffi = wavsen::ffi::pipewire;
 
 namespace
@@ -45,7 +47,7 @@ struct DeviceCommand {
     DeviceCommandKind             kind { DeviceCommandKind::Apply };
     AudioDeviceDesiredState       desired;
     std::unique_ptr<IPullChannel> channel;
-    std::uint64_t                 stream_revision {};
+    u64                           stream_revision;
 };
 
 struct CommandQueue {
@@ -106,7 +108,7 @@ public:
         });
     }
 
-    bool mount(std::unique_ptr<IPullChannel> channel, std::uint64_t stream_revision) {
+    bool mount(std::unique_ptr<IPullChannel> channel, u64 stream_revision) {
         if (! channel) return false;
         return enqueue(DeviceCommand {
             .kind            = DeviceCommandKind::Mount,
@@ -115,7 +117,7 @@ public:
         });
     }
 
-    bool unmount_all(std::uint64_t stream_revision) {
+    bool unmount_all(u64 stream_revision) {
         return enqueue(DeviceCommand {
             .kind            = DeviceCommandKind::UnmountAll,
             .stream_revision = stream_revision,
@@ -153,7 +155,7 @@ public:
 
     AudioDeviceState state() const { return state_.load(std::memory_order_acquire); }
     DeviceDesc       desc() const { return desc_; }
-    std::uint64_t    stream_position_frames() const {
+    auto             stream_position_frames() const -> u64 {
         return stream_position_frames_.load(std::memory_order_relaxed);
     }
 
@@ -258,9 +260,8 @@ private:
         if (desired_.volume_scale_revision == volume_scale_revision_) return;
 
         volume_scale_revision_ = desired_.volume_scale_revision;
-        volume_scale_.redirect(rstd::f32(desired_.volume_scale),
-                               rstd::u32(desc_.sample_rate),
-                               rstd::u32(desired_.volume_scale_fade_ms));
+        volume_scale_.redirect(
+            desired_.volume_scale, desc_.sample_rate, desired_.volume_scale_fade_ms);
     }
 
     void start_stream() {
@@ -355,7 +356,7 @@ private:
         if (! stream_) return;
         api_->pw_stream_destroy(stream_);
         stream_ = nullptr;
-        stream_position_frames_.store(0, std::memory_order_relaxed);
+        stream_position_frames_.store(u64(), std::memory_order_relaxed);
     }
 
     void fail(std::string error) {
@@ -381,10 +382,11 @@ private:
     }
 
     void apply_output_gain(float* output, std::uint32_t frames) {
-        volume_scale_.apply(rstd::mut_ref<float[]>::from_raw_parts(
-                                output, rstd::usize(frames) * rstd::usize(desc_.channels)),
-                            rstd::u32(desc_.channels),
-                            rstd::f32(volume_));
+        volume_scale_.apply(
+            rstd::mut_ref<float[]>::from_raw_parts(
+                output, rstd::usize(frames) * rstd::usize(desc_.channels.to_primitive())),
+            desc_.channels,
+            volume_);
     }
 
     static void on_process(void* user) {
@@ -394,8 +396,9 @@ private:
         pw_time time {};
         if (self->api_->pw_stream_get_time_n(self->stream_, &time, sizeof(time)) >= 0 &&
             time.ticks > static_cast<std::uint64_t>(time.delay)) {
-            self->stream_position_frames_.store(time.ticks - static_cast<std::uint64_t>(time.delay),
-                                                std::memory_order_relaxed);
+            self->stream_position_frames_.store(
+                u64(time.ticks - static_cast<std::uint64_t>(time.delay)),
+                std::memory_order_relaxed);
         }
 
         pw_buffer* buffer = self->api_->pw_stream_dequeue_buffer(self->stream_);
@@ -406,23 +409,24 @@ private:
             return;
         }
 
-        const auto    stride = self->desc_.channels * static_cast<std::uint32_t>(sizeof(float));
-        auto*         output = static_cast<float*>(spa_buffer->datas[0].data);
-        std::uint32_t frames = spa_buffer->datas[0].maxsize / stride;
+        const auto    channel_count = self->desc_.channels.to_primitive();
+        const auto    stride        = channel_count * static_cast<std::uint32_t>(sizeof(float));
+        auto*         output        = static_cast<float*>(spa_buffer->datas[0].data);
+        std::uint32_t frames        = spa_buffer->datas[0].maxsize / stride;
         if (buffer->requested != 0) {
             const auto requested = static_cast<std::uint32_t>(buffer->requested);
             if (requested < frames) frames = requested;
         }
 
-        const auto sample_count = static_cast<std::size_t>(frames) * self->desc_.channels;
+        const auto sample_count = static_cast<std::size_t>(frames) * channel_count;
         std::memset(output, 0, sample_count * sizeof(float));
         if (! self->muted_) {
             self->scratch_.resize(sample_count);
             for (auto& channel : self->channels_) {
                 std::memset(self->scratch_.data(), 0, sample_count * sizeof(float));
-                const auto produced = channel->next_pcm(self->scratch_.data(), frames);
+                const auto produced = channel->next_pcm(self->scratch_.data(), u32(frames));
                 const auto produced_samples =
-                    static_cast<std::size_t>(produced) * self->desc_.channels;
+                    static_cast<std::size_t>(produced.to_primitive()) * channel_count;
                 for (std::size_t index = 0; index < produced_samples; ++index) {
                     output[index] += self->scratch_[index];
                 }
@@ -467,15 +471,15 @@ private:
     ::pw_stream*             stream_ = nullptr;
 
     AudioDeviceDesiredState desired_;
-    DeviceDesc              desc_ { kDefaultChannels, kDefaultRate };
-    std::uint64_t           stream_revision_ {};
-    std::uint64_t           volume_scale_revision_ {};
+    DeviceDesc              desc_ { u32(kDefaultChannels), u32(kDefaultRate) };
+    u64                     stream_revision_;
+    u64                     volume_scale_revision_;
     bool                    shutting_down_ {};
 
     std::vector<std::unique_ptr<IPullChannel>> channels_;
     std::vector<float>                         scratch_;
 
-    float                   volume_ { 1.0f };
+    f32                     volume_ { f32(1.0f) };
     detail::VolumeScaleRamp volume_scale_;
     bool                    muted_ {};
 
@@ -484,7 +488,7 @@ private:
     rstd::sync::Mutex<bool>                 shutdown_complete_;
     rstd::sync::Condvar                     shutdown_cv_;
     std::atomic<AudioDeviceState>           state_ { AudioDeviceState::Idle };
-    std::atomic<std::uint64_t>              stream_position_frames_ {};
+    std::atomic<u64>                        stream_position_frames_ { u64() };
 };
 
 AudioDevice::AudioDevice(): impl_(std::make_unique<Impl>()) {}
@@ -496,18 +500,14 @@ void AudioDevice::set_event_sink(AudioDeviceEventSink sink) {
 bool AudioDevice::apply(AudioDeviceDesiredState desired) {
     return impl_->apply(std::move(desired));
 }
-bool AudioDevice::mount(std::unique_ptr<IPullChannel> channel, std::uint64_t stream_revision) {
+bool AudioDevice::mount(std::unique_ptr<IPullChannel> channel, u64 stream_revision) {
     return impl_->mount(std::move(channel), stream_revision);
 }
-bool AudioDevice::unmount_all(std::uint64_t stream_revision) {
-    return impl_->unmount_all(stream_revision);
-}
-void             AudioDevice::shutdown() { impl_->shutdown(); }
-void             AudioDevice::wait_stopped() { impl_->wait_stopped(); }
+bool AudioDevice::unmount_all(u64 stream_revision) { return impl_->unmount_all(stream_revision); }
+void AudioDevice::shutdown() { impl_->shutdown(); }
+void AudioDevice::wait_stopped() { impl_->wait_stopped(); }
 AudioDeviceState AudioDevice::state() const { return impl_->state(); }
 DeviceDesc       AudioDevice::desc() const { return impl_->desc(); }
-std::uint64_t    AudioDevice::stream_position_frames() const {
-    return impl_->stream_position_frames();
-}
+auto AudioDevice::stream_position_frames() const -> u64 { return impl_->stream_position_frames(); }
 
 } // namespace wavsen::audio

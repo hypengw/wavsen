@@ -1,14 +1,17 @@
 export module wavsen.audio:core;
 
 import rstd.cppstd;
+import rstd;
+
+using namespace rstd::prelude;
 
 export namespace wavsen::audio
 {
 
 // Negotiated stream format — wavsen always asks the backend for f32 interleaved.
 struct DeviceDesc {
-    std::uint32_t channels;
-    std::uint32_t sample_rate;
+    u32 channels;
+    u32 sample_rate;
 };
 
 struct AudioClientIdentity {
@@ -35,9 +38,9 @@ struct AudioClientIdentity {
 // number of interleaved frames to write into `dst`.
 class IPullChannel {
 public:
-    virtual ~IPullChannel()                                                 = default;
-    virtual auto next_pcm(void* dst, std::uint32_t frames) -> std::uint64_t = 0;
-    virtual void pass_desc(const DeviceDesc&)                               = 0;
+    virtual ~IPullChannel()                             = default;
+    virtual auto next_pcm(void* dst, u32 frames) -> u64 = 0;
+    virtual void pass_desc(const DeviceDesc&)           = 0;
 };
 
 enum class AudioDeviceState : std::uint8_t
@@ -51,7 +54,7 @@ enum class AudioDeviceState : std::uint8_t
 };
 
 struct AudioDeviceEvent {
-    std::uint64_t    generation {};
+    u64              generation;
     AudioDeviceState state { AudioDeviceState::Idle };
     std::string      error;
 };
@@ -59,15 +62,15 @@ struct AudioDeviceEvent {
 using AudioDeviceEventSink = std::function<void(AudioDeviceEvent)>;
 
 struct AudioDeviceDesiredState {
-    std::uint64_t       generation {};
+    u64                 generation;
     bool                active {};
     bool                playing {};
     AudioClientIdentity identity;
-    float               volume { 1.0f };
+    f32                 volume { f32(1.0f) };
     bool                muted {};
-    float               volume_scale { 1.0f };
-    std::uint64_t       volume_scale_revision {};
-    std::uint32_t       volume_scale_fade_ms {};
+    f32                 volume_scale { f32(1.0f) };
+    u64                 volume_scale_revision;
+    u32                 volume_scale_fade_ms;
 };
 
 class AudioDevice {
@@ -79,8 +82,8 @@ public:
 
     void set_event_sink(AudioDeviceEventSink);
     auto apply(AudioDeviceDesiredState) -> bool;
-    auto mount(std::unique_ptr<IPullChannel>, std::uint64_t stream_revision) -> bool;
-    auto unmount_all(std::uint64_t stream_revision) -> bool;
+    auto mount(std::unique_ptr<IPullChannel>, u64 stream_revision) -> bool;
+    auto unmount_all(u64 stream_revision) -> bool;
     void shutdown();
     void wait_stopped();
 
@@ -90,7 +93,7 @@ public:
     // Frames the audio device has actually played back since the stream
     // was created. The backend thread publishes this cached value so callers
     // never enter the native audio API from another thread.
-    auto stream_position_frames() const -> std::uint64_t;
+    auto stream_position_frames() const -> u64;
 
 private:
     class Impl;

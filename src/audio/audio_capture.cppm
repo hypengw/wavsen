@@ -1,9 +1,12 @@
 export module wavsen.audio:capture;
 
 import rstd.cppstd;
+import rstd;
 
 export namespace wavsen::audio
 {
+
+using namespace rstd::prelude;
 
 // 64-bin perceptual magnitude spectrum, EMA-smoothed. Values are mapped to
 // 0..1 for audio-responsive consumers. `bins` is kept as an alias of `average`.
@@ -11,18 +14,18 @@ export namespace wavsen::audio
 // RT-side update, used by readers to detect stale snapshots. Zero means
 // "never primed".
 struct AudioSpectrum {
-    std::array<float, 64> left {};
-    std::array<float, 64> right {};
-    std::array<float, 64> average {};
-    std::array<float, 64> bins {};
-    std::int64_t          publish_ms { 0 };
+    rstd::array<f32, 64> left;
+    rstd::array<f32, 64> right;
+    rstd::array<f32, 64> average;
+    rstd::array<f32, 64> bins;
+    i64                  publish_ms;
 
     void clear() {
-        left.fill(0.0f);
-        right.fill(0.0f);
-        average.fill(0.0f);
-        bins.fill(0.0f);
-        publish_ms = 0;
+        for (auto& value : left) value = f32();
+        for (auto& value : right) value = f32();
+        for (auto& value : average) value = f32();
+        for (auto& value : bins) value = f32();
+        publish_ms = i64();
     }
 };
 

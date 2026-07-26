@@ -1,18 +1,21 @@
 export module wavsen.audio:mixer;
 
 import rstd.cppstd;
+import rstd;
 import :core;
 
 export namespace wavsen::audio
 {
+
+using namespace rstd::prelude;
 
 // A mountable PCM source. Data callback fills `frames` interleaved frames
 // of the device's negotiated format (f32 little-endian) and channel count.
 class SoundStream {
 public:
     struct Desc {
-        std::uint32_t channels;
-        std::uint32_t sample_rate;
+        u32 channels;
+        u32 sample_rate;
     };
 
     SoundStream()                              = default;
@@ -20,14 +23,14 @@ public:
     SoundStream(const SoundStream&)            = delete;
     SoundStream& operator=(const SoundStream&) = delete;
 
-    virtual auto next_pcm(void* dst, std::uint32_t frames) -> std::uint64_t = 0;
-    virtual void pass_desc(const Desc&)                                     = 0;
+    virtual auto next_pcm(void* dst, u32 frames) -> u64 = 0;
+    virtual void pass_desc(const Desc&)                 = 0;
 
     // 3D-audio hooks — no-op in 0.1; spatial backend will override these in
     // a future iteration. Coordinates are listener-relative (right-handed,
     // metres). See plans/wavsen-...md "推后" section.
-    virtual void set_position(float /*x*/, float /*y*/, float /*z*/) {}
-    virtual void set_listener_position(float /*x*/, float /*y*/, float /*z*/) {}
+    virtual void set_position(f32 /*x*/, f32 /*y*/, f32 /*z*/) {}
+    virtual void set_listener_position(f32 /*x*/, f32 /*y*/, f32 /*z*/) {}
 };
 
 // Main-loop-owned playback policy. The AudioDevice backend owns native
@@ -50,13 +53,13 @@ public:
     void play();
     void pause();
 
-    auto volume() const -> float;
+    auto volume() const -> f32;
     auto muted() const -> bool;
-    void set_volume(float v);
+    void set_volume(f32 value);
     void set_muted(bool m);
-    auto volume_scale() const -> float;
-    void set_volume_scale(float v);
-    void set_volume_scale(float v, std::uint32_t fade_ms);
+    auto volume_scale() const -> f32;
+    void set_volume_scale(f32 value);
+    void set_volume_scale(f32 value, u32 fade_ms);
 
 private:
     class Impl;

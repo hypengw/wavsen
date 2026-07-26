@@ -8,6 +8,8 @@ import :mixer;
 namespace wavsen::audio
 {
 
+using namespace rstd::prelude;
+
 namespace
 {
 
@@ -16,9 +18,7 @@ class StreamPullChannel : public IPullChannel {
 public:
     explicit StreamPullChannel(std::unique_ptr<SoundStream> ss): ss_(std::move(ss)) {}
 
-    auto next_pcm(void* dst, std::uint32_t frames) -> std::uint64_t override {
-        return ss_->next_pcm(dst, frames);
-    }
+    auto next_pcm(void* dst, u32 frames) -> u64 override { return ss_->next_pcm(dst, frames); }
     void pass_desc(const DeviceDesc& d) override { ss_->pass_desc({ d.channels, d.sample_rate }); }
 
 private:
@@ -31,7 +31,7 @@ class SoundManager::Impl {
 public:
     explicit Impl(AudioClientIdentity identity_): identity(std::move(identity_)) {}
 
-    void apply(std::uint32_t fade_ms = 0) {
+    void apply(u32 fade_ms = u32()) {
         if (! activated || shutting_down) return;
         (void)device.apply(AudioDeviceDesiredState {
             .generation            = generation,
@@ -49,11 +49,11 @@ public:
     AudioDevice         device;
     AudioClientIdentity identity;
     AudioDeviceState    observed_state { AudioDeviceState::Idle };
-    std::uint64_t       generation {};
-    std::uint64_t       stream_revision {};
-    std::uint64_t       volume_scale_revision {};
-    float               volume { 1.0f };
-    float               volume_scale { 1.0f };
+    u64                 generation;
+    u64                 stream_revision;
+    u64                 volume_scale_revision;
+    f32                 volume { f32(1.0f) };
+    f32                 volume_scale { f32(1.0f) };
     bool                muted {};
     bool                playing {};
     bool                activated {};
@@ -116,16 +116,16 @@ void SoundManager::pause() {
     impl_->apply();
 }
 
-float SoundManager::volume() const { return impl_->volume; }
-bool  SoundManager::muted() const { return impl_->muted; }
-void  SoundManager::set_volume(float v) {
-    impl_->volume = v;
+auto SoundManager::volume() const -> f32 { return impl_->volume; }
+bool SoundManager::muted() const { return impl_->muted; }
+void SoundManager::set_volume(f32 value) {
+    impl_->volume = value;
     impl_->apply();
 }
-float SoundManager::volume_scale() const { return impl_->volume_scale; }
-void  SoundManager::set_volume_scale(float v) { set_volume_scale(v, 0); }
-void  SoundManager::set_volume_scale(float v, std::uint32_t fade_ms) {
-    impl_->volume_scale = v;
+auto SoundManager::volume_scale() const -> f32 { return impl_->volume_scale; }
+void SoundManager::set_volume_scale(f32 value) { set_volume_scale(value, u32()); }
+void SoundManager::set_volume_scale(f32 value, u32 fade_ms) {
+    impl_->volume_scale = value;
     ++impl_->volume_scale_revision;
     impl_->apply(fade_ms);
 }

@@ -1,12 +1,15 @@
 export module wavsen.audio:file;
 
 import rstd.cppstd;
+import rstd;
 import :byte_stream;
 import :core;  // DeviceDesc
 import :mixer; // SoundStream (for make_stream factory)
 
 export namespace wavsen::audio
 {
+
+using namespace rstd::prelude;
 
 // libav*-backed audio decoder + resampler. Reads bytes from an rstd
 // ReadSeekHandle via a custom AVIOContext, decodes via libavformat/libavcodec, and
@@ -32,24 +35,24 @@ public:
 
     // Pull `frames` interleaved f32 frames into `dst`. Returns frames
     // actually produced (less than `frames` only on EOF).
-    auto next_pcm(void* dst, std::uint32_t frames) -> std::uint64_t;
+    auto next_pcm(void* dst, u32 frames) -> u64;
 
     // Seek to a stream-time offset. Re-baselines internal PTS tracking
     // and clears the EOF flag. Returns false if no source is open or
     // av_seek_frame fails.
-    auto seek_to(double seconds) -> bool;
+    auto seek_to(f64 seconds) -> bool;
 
     // PTS in seconds of the most recently decoded frame, derived from
     // best_effort_timestamp * av_q2d(stream.time_base). Returns 0.0 before
     // the first frame is decoded.
-    auto current_pts_seconds() const -> double;
+    auto current_pts_seconds() const -> f64;
 
     // True once av_read_frame returned AVERROR_EOF (latched).
     auto is_eof() const -> bool;
 
     // Source stream characteristics. Both return 0 before a successful open.
-    auto sample_rate() const -> std::uint32_t;
-    auto channels() const -> std::uint32_t;
+    auto sample_rate() const -> u32;
+    auto channels() const -> u32;
 
 private:
     class Impl;

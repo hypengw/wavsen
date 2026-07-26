@@ -40,15 +40,15 @@ public:
     // caller knows the stream just looped or the decoder was reset.
     void reset() {
         primed_               = false;
-        t0_pts_               = -1.0;
+        t0_pts_               = f64(-1.0);
         external_drop_streak_ = u32();
     }
 
     template<typename F>
     void set_external_clock(F&& clock_fn)
-        requires rstd::Impled<rstd::mtp::rm_cvf<F>, rstd::FnMut<double()>>
+        requires rstd::Impled<rstd::mtp::rm_cvf<F>, rstd::FnMut<f64()>>
     {
-        clock_fn_ = Some(rstd::boxed::Box<dyn<FnMut<double()>>>::make(rstd::forward<F>(clock_fn)));
+        clock_fn_ = Some(rstd::boxed::Box<dyn<FnMut<f64()>>>::make(rstd::forward<F>(clock_fn)));
     }
 
     void clear_external_clock() { clock_fn_ = None(); }
@@ -57,15 +57,15 @@ public:
     // after sleeping); false if the frame is too far behind schedule and
     // should be dropped. Always advances the baseline on drop so we
     // recover instead of dropping every subsequent frame too.
-    bool present_frame(double pts_seconds) {
-        if (pts_seconds < 0.0) return true;
+    bool present_frame(f64 pts_seconds) {
+        if (pts_seconds < f64()) return true;
 
         if (clock_fn_.is_some()) {
-            const double now_pts = clock_fn_->as_mut_ptr()->operator()();
-            if (now_pts == now_pts) {
-                const double skew        = pts_seconds - now_pts;
-                const double max_lag_s   = max_lag_.as_secs_f64();
-                const double max_sleep_s = max_sleep_.as_secs_f64();
+            const f64 now_pts = clock_fn_->as_mut_ptr()->operator()();
+            if (! now_pts.is_nan()) {
+                const f64 skew        = pts_seconds - now_pts;
+                const f64 max_lag_s   = f64(max_lag_.as_secs_f64());
+                const f64 max_sleep_s = f64(max_sleep_.as_secs_f64());
                 if (skew < -max_lag_s) {
                     // Video far behind the audio clock. Normally drop,
                     // but if we've been dropping for a long stretch the
@@ -80,8 +80,8 @@ public:
                 }
                 external_drop_streak_ = u32();
                 if (skew > max_sleep_s) return true;
-                if (skew > 0.0) {
-                    rstd::thread::sleep(Duration::from_secs_f64(skew));
+                if (skew > f64()) {
+                    rstd::thread::sleep(Duration::from_secs_f64(skew.to_primitive()));
                 }
                 return true;
             }
@@ -101,7 +101,7 @@ public:
             return true;
         }
 
-        const auto delta  = Duration::from_secs_f64(pts_seconds - t0_pts_);
+        const auto delta  = Duration::from_secs_f64((pts_seconds - t0_pts_).to_primitive());
         const auto target = t0_wall_ + delta;
 
         if (target + max_lag_ < now) {
@@ -126,13 +126,13 @@ private:
     // burst, short enough that A/V doesn't drift past noticeable.
     static constexpr u32 kExternalDropStreakReset { 30 };
 
-    Duration                                       max_lag_;
-    Duration                                       max_sleep_;
-    TimePoint                                      t0_wall_ {};
-    double                                         t0_pts_ { -1.0 };
-    bool                                           primed_ { false };
-    u32                                            external_drop_streak_ {};
-    Option<rstd::boxed::Box<dyn<FnMut<double()>>>> clock_fn_;
+    Duration                                    max_lag_;
+    Duration                                    max_sleep_;
+    TimePoint                                   t0_wall_ {};
+    f64                                         t0_pts_ { -1.0 };
+    bool                                        primed_ { false };
+    u32                                         external_drop_streak_ {};
+    Option<rstd::boxed::Box<dyn<FnMut<f64()>>>> clock_fn_;
 };
 
 } // namespace wavsen::video
