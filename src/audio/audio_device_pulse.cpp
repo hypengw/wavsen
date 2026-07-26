@@ -1,7 +1,5 @@
 module;
 
-#include <pulse/pulseaudio.h>
-
 module wavsen.audio;
 
 import rstd.cppstd;
@@ -174,7 +172,7 @@ private:
         api_->pa_threaded_mainloop_unlock(loop_);
     }
 
-    static void on_commands(::pa_mainloop_api* /*api*/, void* user) {
+    static void on_commands(pulse_ffi::pa_mainloop_api* /*api*/, void* user) {
         static_cast<Impl*>(user)->drain_commands();
     }
 
@@ -203,7 +201,7 @@ private:
         case DeviceCommandKind::Mount:
             if (command.stream_revision < stream_revision_) return;
             stream_revision_ = command.stream_revision;
-            if (stream_ && api_->pa_stream_get_state(stream_) == PA_STREAM_READY) {
+            if (stream_ && api_->pa_stream_get_state(stream_) == pulse_ffi::stream_ready) {
                 command.channel->pass_desc(desc_);
             }
             channels_.push_back(std::move(command.channel));
@@ -240,7 +238,8 @@ private:
             start_context();
             return;
         }
-        if (stream_ && api_->pa_stream_get_state(stream_) == PA_STREAM_READY) apply_playing();
+        if (stream_ && api_->pa_stream_get_state(stream_) == pulse_ffi::stream_ready)
+            apply_playing();
     }
 
     void apply_gain_state() {
@@ -263,10 +262,11 @@ private:
         auto* properties = api_->pa_proplist_new();
         if (! properties ||
             api_->pa_proplist_sets(properties,
-                                   PA_PROP_APPLICATION_NAME,
+                                   pulse_ffi::prop_application_name,
                                    desired_.identity.application_name.c_str()) < 0 ||
-            api_->pa_proplist_sets(
-                properties, PA_PROP_APPLICATION_ID, desired_.identity.application_id.c_str()) < 0) {
+            api_->pa_proplist_sets(properties,
+                                   pulse_ffi::prop_application_id,
+                                   desired_.identity.application_id.c_str()) < 0) {
             if (properties) api_->pa_proplist_free(properties);
             fail("failed to build PulseAudio context properties");
             return;
@@ -281,7 +281,7 @@ private:
             return;
         }
         api_->pa_context_set_state_callback(ctx_, &Impl::on_context_state, this);
-        if (api_->pa_context_connect(ctx_, nullptr, PA_CONTEXT_NOFLAGS, nullptr) < 0) {
+        if (api_->pa_context_connect(ctx_, nullptr, pulse_ffi::context_noflags, nullptr) < 0) {
             std::string error = "pa_context_connect failed: ";
             error += api_->pa_strerror(api_->pa_context_errno(ctx_));
             cleanup_device();
@@ -299,25 +299,26 @@ private:
             return;
         }
 
-        pa_sample_spec sample_spec {};
-        sample_spec.format   = PA_SAMPLE_FLOAT32LE;
+        pulse_ffi::pa_sample_spec sample_spec {};
+        sample_spec.format   = pulse_ffi::sample_float32le;
         sample_spec.rate     = kDefaultRate;
         sample_spec.channels = static_cast<std::uint8_t>(kDefaultChannels);
 
-        pa_channel_map channel_map {};
+        pulse_ffi::pa_channel_map channel_map {};
         api_->pa_channel_map_init_stereo(&channel_map);
 
         auto* properties = api_->pa_proplist_new();
         if (! properties ||
             api_->pa_proplist_sets(properties,
-                                   PA_PROP_APPLICATION_NAME,
+                                   pulse_ffi::prop_application_name,
                                    desired_.identity.application_name.c_str()) < 0 ||
+            api_->pa_proplist_sets(properties,
+                                   pulse_ffi::prop_application_id,
+                                   desired_.identity.application_id.c_str()) < 0 ||
             api_->pa_proplist_sets(
-                properties, PA_PROP_APPLICATION_ID, desired_.identity.application_id.c_str()) < 0 ||
+                properties, pulse_ffi::prop_media_name, desired_.identity.media_name.c_str()) < 0 ||
             api_->pa_proplist_sets(
-                properties, PA_PROP_MEDIA_NAME, desired_.identity.media_name.c_str()) < 0 ||
-            api_->pa_proplist_sets(
-                properties, PA_PROP_MEDIA_ROLE, desired_.identity.media_role.c_str()) < 0) {
+                properties, pulse_ffi::prop_media_role, desired_.identity.media_role.c_str()) < 0) {
             if (properties) api_->pa_proplist_free(properties);
             fail("failed to build PulseAudio stream properties");
             return;
@@ -336,17 +337,17 @@ private:
         api_->pa_stream_set_state_callback(stream_, &Impl::on_stream_state, this);
         api_->pa_stream_set_write_callback(stream_, &Impl::on_write, this);
 
-        const auto     frame_bytes = kDefaultChannels * static_cast<std::uint32_t>(sizeof(float));
-        pa_buffer_attr buffer_attr {};
+        const auto frame_bytes = kDefaultChannels * static_cast<std::uint32_t>(sizeof(float));
+        pulse_ffi::pa_buffer_attr buffer_attr {};
         buffer_attr.maxlength = static_cast<std::uint32_t>(-1);
         buffer_attr.tlength   = kQuantum * frame_bytes * 4;
         buffer_attr.prebuf    = static_cast<std::uint32_t>(-1);
         buffer_attr.minreq    = kQuantum * frame_bytes;
         buffer_attr.fragsize  = static_cast<std::uint32_t>(-1);
 
-        const auto flags =
-            static_cast<pa_stream_flags_t>(PA_STREAM_ADJUST_LATENCY | PA_STREAM_AUTO_TIMING_UPDATE |
-                                           PA_STREAM_INTERPOLATE_TIMING | PA_STREAM_START_CORKED);
+        const auto flags = static_cast<pulse_ffi::pa_stream_flags_t>(
+            pulse_ffi::stream_adjust_latency | pulse_ffi::stream_auto_timing_update |
+            pulse_ffi::stream_interpolate_timing | pulse_ffi::stream_start_corked);
         if (api_->pa_stream_connect_playback(
                 stream_, nullptr, &buffer_attr, flags, nullptr, nullptr) < 0) {
             std::string error = "pa_stream_connect_playback failed: ";
@@ -357,7 +358,7 @@ private:
     }
 
     void apply_playing() {
-        if (! stream_ || api_->pa_stream_get_state(stream_) != PA_STREAM_READY) return;
+        if (! stream_ || api_->pa_stream_get_state(stream_) != pulse_ffi::stream_ready) return;
         auto* operation = api_->pa_stream_cork(stream_, desired_.playing ? 0 : 1, nullptr, nullptr);
         if (! operation) {
             std::string error = "pa_stream_cork failed: ";
@@ -419,18 +420,18 @@ private:
             volume_);
     }
 
-    static void on_context_state(::pa_context* context, void* user) {
+    static void on_context_state(pulse_ffi::pa_context* context, void* user) {
         auto* self = static_cast<Impl*>(user);
         if (context != self->ctx_) return;
         switch (self->api_->pa_context_get_state(context)) {
-        case PA_CONTEXT_READY: self->start_stream(); break;
-        case PA_CONTEXT_FAILED: {
+        case pulse_ffi::context_ready: self->start_stream(); break;
+        case pulse_ffi::context_failed: {
             std::string error = "PulseAudio context failed: ";
             error += self->api_->pa_strerror(self->api_->pa_context_errno(context));
             self->fail(std::move(error));
             break;
         }
-        case PA_CONTEXT_TERMINATED:
+        case pulse_ffi::context_terminated:
             if (! self->shutting_down_ && self->desired_.active)
                 self->fail("PulseAudio context terminated");
             break;
@@ -438,24 +439,24 @@ private:
         }
     }
 
-    static void on_stream_state(::pa_stream* stream, void* user) {
+    static void on_stream_state(pulse_ffi::pa_stream* stream, void* user) {
         auto* self = static_cast<Impl*>(user);
         if (stream != self->stream_) return;
         switch (self->api_->pa_stream_get_state(stream)) {
-        case PA_STREAM_READY:
+        case pulse_ffi::stream_ready:
             for (auto& channel : self->channels_) channel->pass_desc(self->desc_);
             self->apply_playing();
             rstd::log::info("wavsen::audio: pulse device ready ({} ch @ {} Hz)",
                             self->desc_.channels,
                             self->desc_.sample_rate);
             break;
-        case PA_STREAM_FAILED: {
+        case pulse_ffi::stream_failed: {
             std::string error = "PulseAudio stream failed: ";
             error += self->api_->pa_strerror(self->api_->pa_context_errno(self->ctx_));
             self->fail(std::move(error));
             break;
         }
-        case PA_STREAM_TERMINATED:
+        case pulse_ffi::stream_terminated:
             if (! self->shutting_down_ && self->desired_.active)
                 self->fail("PulseAudio stream terminated");
             break;
@@ -463,11 +464,11 @@ private:
         }
     }
 
-    static void on_write(::pa_stream* stream, size_t bytes, void* user) {
+    static void on_write(pulse_ffi::pa_stream* stream, size_t bytes, void* user) {
         auto* self = static_cast<Impl*>(user);
         if (bytes == 0 || self->desc_.channels == u32()) return;
 
-        pa_usec_t usec = 0;
+        pulse_ffi::pa_usec_t usec = 0;
         if (self->api_->pa_stream_get_time(stream, &usec) >= 0) {
             self->stream_position_frames_.store(
                 u64(usec) * u64(self->desc_.sample_rate.to_primitive()) / u64(1'000'000),
@@ -505,8 +506,8 @@ private:
             }
 
             const size_t written = static_cast<size_t>(frames) * stride;
-            if (self->api_->pa_stream_write(stream, buffer, written, nullptr, 0, PA_SEEK_RELATIVE) <
-                0) {
+            if (self->api_->pa_stream_write(
+                    stream, buffer, written, nullptr, 0, pulse_ffi::seek_relative) < 0) {
                 return;
             }
             if (written == 0) return;
@@ -514,10 +515,10 @@ private:
         }
     }
 
-    const pulse_ffi::Api*   api_    = nullptr;
-    ::pa_threaded_mainloop* loop_   = nullptr;
-    ::pa_context*           ctx_    = nullptr;
-    ::pa_stream*            stream_ = nullptr;
+    const pulse_ffi::Api*            api_    = nullptr;
+    pulse_ffi::pa_threaded_mainloop* loop_   = nullptr;
+    pulse_ffi::pa_context*           ctx_    = nullptr;
+    pulse_ffi::pa_stream*            stream_ = nullptr;
 
     AudioDeviceDesiredState desired_;
     DeviceDesc              desc_ { u32(kDefaultChannels), u32(kDefaultRate) };

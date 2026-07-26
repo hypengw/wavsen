@@ -1,13 +1,12 @@
 module;
 
 #include <pipewire/pipewire.h>
-
-#include <dlfcn.h>
+#include <spa/param/audio/format-utils.h>
 
 module pipewire;
 
 import rstd;
-import rstd.cppstd;
+import rstd.dlopn;
 
 namespace wavsen::ffi::pipewire
 {
@@ -17,37 +16,36 @@ namespace
 constexpr const char* kSoname = "libpipewire-0.3.so.0";
 
 struct LoadState {
-    bool                 attempted {};
-    bool                 loaded {};
-    void*                library {};
-    Api                  api {};
-    rstd::string::String error {};
+    bool                               attempted {};
+    bool                               loaded {};
+    rstd::Option<rstd::dlopn::Library> library {};
+    Api                                api {};
+    rstd::string::String               error {};
 };
 
 rstd::sync::Mutex<LoadState> g_state { LoadState {} };
 
 void load_once(LoadState& state) {
     state.attempted = true;
-    state.library   = dlopen(kSoname, RTLD_NOW | RTLD_LOCAL);
-    if (! state.library) {
-        const char* error = dlerror();
-        state.error       = rstd::string::String::make(
-            rstd::cppstd::as_str(error ? error : "unknown error").unwrap());
+    auto library    = rstd::dlopn::Library::open(rstd::ffi::CStr::from_ptr(kSoname));
+    if (library.is_err()) {
+        auto error  = rstd::move(library).unwrap_err_unchecked();
+        state.error = rstd::string::String::make(error.message());
         return;
     }
+    state.library.insert(rstd::move(library).unwrap_unchecked());
 
-#define WAVSEN_LOAD(symbol)                                                                      \
-    do {                                                                                         \
-        dlerror();                                                                               \
-        void*       address = dlsym(state.library, #symbol);                                     \
-        const char* error   = dlerror();                                                         \
-        if (error) {                                                                             \
-            auto message = rstd::format("missing symbol {} in {}: {}", #symbol, kSoname, error); \
-            state.error  = rstd::move(message);                                                  \
-            return;                                                                              \
-        }                                                                                        \
-        static_assert(sizeof(state.api.symbol) == sizeof(address));                              \
-        rstd::mem::memcpy(&state.api.symbol, &address, rstd::usize(sizeof(address)));            \
+#define WAVSEN_LOAD(name)                                                                      \
+    do {                                                                                       \
+        auto loaded =                                                                          \
+            state.library->symbol<decltype(state.api.name)>(rstd::ffi::CStr::from_ptr(#name)); \
+        if (loaded.is_err()) {                                                                 \
+            auto error = rstd::move(loaded).unwrap_err_unchecked();                            \
+            state.error =                                                                      \
+                rstd::format("missing symbol {} in {}: {}", #name, kSoname, error.message());  \
+            return;                                                                            \
+        }                                                                                      \
+        state.api.name = rstd::move(loaded).unwrap_unchecked();                                \
     } while (false)
 
     WAVSEN_LOAD(pw_deinit);
@@ -89,6 +87,11 @@ auto load_error() noexcept -> rstd::ref<rstd::str> {
     auto state = g_state.lock().unwrap_unchecked();
     if (! state->attempted) load_once(*state);
     return state->error.as_str();
+}
+
+auto format_audio_raw_build(spa_pod_builder* builder, rstd::uint32_t id,
+                            const spa_audio_info_raw* info) noexcept -> spa_pod* {
+    return spa_format_audio_raw_build(builder, id, info);
 }
 
 } // namespace wavsen::ffi::pipewire

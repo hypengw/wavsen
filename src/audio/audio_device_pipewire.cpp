@@ -1,9 +1,5 @@
 module;
 
-#include <pipewire/pipewire.h>
-#include <spa/param/audio/format-utils.h>
-#include <spa/utils/result.h>
-
 module wavsen.audio;
 
 import rstd.cppstd;
@@ -187,7 +183,7 @@ private:
         return false;
     }
 
-    static int on_commands(::spa_loop* /*loop*/, bool /*async*/, std::uint32_t /*seq*/,
+    static int on_commands(pipewire_ffi::spa_loop* /*loop*/, bool /*async*/, std::uint32_t /*seq*/,
                            const void* /*data*/, std::size_t /*size*/, void* user) {
         static_cast<Impl*>(user)->drain_commands();
         return 0;
@@ -271,8 +267,8 @@ private:
             return;
         }
 
-        static const ::pw_stream_events stream_events = {
-            .version       = PW_VERSION_STREAM_EVENTS,
+        static const pipewire_ffi::pw_stream_events stream_events = {
+            .version       = pipewire_ffi::version_stream_events,
             .destroy       = nullptr,
             .state_changed = &Impl::on_state_changed,
             .control_info  = nullptr,
@@ -286,27 +282,28 @@ private:
             .trigger_done  = nullptr,
         };
 
-        auto* properties = api_->pw_properties_new(PW_KEY_MEDIA_TYPE,
+        auto* properties = api_->pw_properties_new(pipewire_ffi::key_media_type,
                                                    "Audio",
-                                                   PW_KEY_MEDIA_CATEGORY,
+                                                   pipewire_ffi::key_media_category,
                                                    "Playback",
-                                                   PW_KEY_MEDIA_ROLE,
+                                                   pipewire_ffi::key_media_role,
                                                    desired_.identity.media_role.c_str(),
-                                                   PW_KEY_APP_NAME,
+                                                   pipewire_ffi::key_app_name,
                                                    desired_.identity.application_name.c_str(),
-                                                   PW_KEY_APP_ID,
+                                                   pipewire_ffi::key_app_id,
                                                    desired_.identity.application_id.c_str(),
-                                                   PW_KEY_NODE_NAME,
+                                                   pipewire_ffi::key_node_name,
                                                    stream_name->c_str(),
-                                                   PW_KEY_NODE_DESCRIPTION,
+                                                   pipewire_ffi::key_node_description,
                                                    desired_.identity.media_name.c_str(),
                                                    nullptr);
         if (! properties) {
             fail("pw_properties_new failed");
             return;
         }
-        api_->pw_properties_setf(properties, PW_KEY_NODE_LATENCY, "%u/%u", kQuantum, kDefaultRate);
-        api_->pw_properties_setf(properties, PW_KEY_NODE_RATE, "1/%u", kDefaultRate);
+        api_->pw_properties_setf(
+            properties, pipewire_ffi::key_node_latency, "%u/%u", kQuantum, kDefaultRate);
+        api_->pw_properties_setf(properties, pipewire_ffi::key_node_rate, "1/%u", kDefaultRate);
 
         stream_ = api_->pw_stream_new_simple(api_->pw_thread_loop_get_loop(loop_),
                                              stream_name->c_str(),
@@ -318,23 +315,24 @@ private:
             return;
         }
 
-        std::uint8_t    pod_buffer[1024];
-        spa_pod_builder builder {};
+        std::uint8_t                  pod_buffer[1024];
+        pipewire_ffi::spa_pod_builder builder {};
         builder.data = pod_buffer;
         builder.size = sizeof(pod_buffer);
 
-        spa_audio_info_raw info {};
-        info.format   = SPA_AUDIO_FORMAT_F32_LE;
+        pipewire_ffi::spa_audio_info_raw info {};
+        info.format   = pipewire_ffi::audio_format_f32_le;
         info.rate     = kDefaultRate;
         info.channels = kDefaultChannels;
 
-        const spa_pod* params[] = {
-            spa_format_audio_raw_build(&builder, SPA_PARAM_EnumFormat, &info),
+        const pipewire_ffi::spa_pod* params[] = {
+            pipewire_ffi::format_audio_raw_build(&builder, pipewire_ffi::param_enum_format, &info),
         };
-        const auto flags =
-            static_cast<pw_stream_flags>(PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS |
-                                         PW_STREAM_FLAG_RT_PROCESS | PW_STREAM_FLAG_INACTIVE);
-        if (api_->pw_stream_connect(stream_, PW_DIRECTION_OUTPUT, PW_ID_ANY, flags, params, 1) <
+        const auto flags = static_cast<pipewire_ffi::pw_stream_flags>(
+            pipewire_ffi::stream_flag_autoconnect | pipewire_ffi::stream_flag_map_buffers |
+            pipewire_ffi::stream_flag_rt_process | pipewire_ffi::stream_flag_inactive);
+        if (api_->pw_stream_connect(
+                stream_, pipewire_ffi::direction_output, pipewire_ffi::id_any, flags, params, 1) <
             0) {
             cleanup_device();
             fail("pw_stream_connect failed");
@@ -393,7 +391,7 @@ private:
         auto* self = static_cast<Impl*>(user);
         if (! self->stream_) return;
 
-        pw_time time {};
+        pipewire_ffi::pw_time time {};
         if (self->api_->pw_stream_get_time_n(self->stream_, &time, sizeof(time)) >= 0 &&
             time.ticks > static_cast<std::uint64_t>(time.delay)) {
             self->stream_position_frames_.store(
@@ -401,7 +399,7 @@ private:
                 std::memory_order_relaxed);
         }
 
-        pw_buffer* buffer = self->api_->pw_stream_dequeue_buffer(self->stream_);
+        pipewire_ffi::pw_buffer* buffer = self->api_->pw_stream_dequeue_buffer(self->stream_);
         if (! buffer) return;
         auto* spa_buffer = buffer->buffer;
         if (! spa_buffer || spa_buffer->n_datas == 0 || ! spa_buffer->datas[0].data) {
@@ -440,35 +438,37 @@ private:
         self->api_->pw_stream_queue_buffer(self->stream_, buffer);
     }
 
-    static void on_state_changed(void*             user, ::pw_stream_state /*old_state*/,
-                                 ::pw_stream_state state, const char* error) {
+    static void on_state_changed(void* user, pipewire_ffi::pw_stream_state /*old_state*/,
+                                 pipewire_ffi::pw_stream_state state, const char* error) {
         auto* self = static_cast<Impl*>(user);
         switch (state) {
-        case PW_STREAM_STATE_ERROR:
+        case pipewire_ffi::stream_state_error:
             self->fail(error ? std::string(error) : std::string("PipeWire stream failed"));
             break;
-        case PW_STREAM_STATE_CONNECTING: self->emit_state(AudioDeviceState::Connecting); break;
-        case PW_STREAM_STATE_PAUSED:
+        case pipewire_ffi::stream_state_connecting:
+            self->emit_state(AudioDeviceState::Connecting);
+            break;
+        case pipewire_ffi::stream_state_paused:
             if (! self->desired_.active) break;
             if (self->desired_.playing)
                 self->apply_playing();
             else
                 self->emit_state(AudioDeviceState::ReadyPaused);
             break;
-        case PW_STREAM_STATE_STREAMING:
+        case pipewire_ffi::stream_state_streaming:
             if (! self->desired_.active) break;
             if (! self->desired_.playing)
                 self->apply_playing();
             else
                 self->emit_state(AudioDeviceState::ReadyPlaying);
             break;
-        case PW_STREAM_STATE_UNCONNECTED: break;
+        case pipewire_ffi::stream_state_unconnected: break;
         }
     }
 
-    const pipewire_ffi::Api* api_    = nullptr;
-    ::pw_thread_loop*        loop_   = nullptr;
-    ::pw_stream*             stream_ = nullptr;
+    const pipewire_ffi::Api*      api_    = nullptr;
+    pipewire_ffi::pw_thread_loop* loop_   = nullptr;
+    pipewire_ffi::pw_stream*      stream_ = nullptr;
 
     AudioDeviceDesiredState desired_;
     DeviceDesc              desc_ { u32(kDefaultChannels), u32(kDefaultRate) };

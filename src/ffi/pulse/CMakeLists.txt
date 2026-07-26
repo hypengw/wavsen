@@ -15,16 +15,14 @@ target_sources(wavsen_ffi_pulse
         pulse.cpp
 )
 
-target_include_directories(wavsen_ffi_pulse SYSTEM PUBLIC
+target_include_directories(wavsen_ffi_pulse SYSTEM PRIVATE
     ${WAVSEN_LIBPULSE_INCLUDE_DIRS}
 )
 target_link_libraries(wavsen_ffi_pulse
     PUBLIC
         rstd::core
     PRIVATE
-        rstd::rstd
-        rstd.cppstd
-        ${CMAKE_DL_LIBS}
+        rstd::dlopn
 )
 
 set_property(TARGET wavsen_ffi_pulse PROPERTY POSITION_INDEPENDENT_CODE ON)

@@ -1,7 +1,5 @@
 module;
 
-#include <pulse/pulseaudio.h>
-
 #include <chrono>
 #include <cstring>
 #include <string>
@@ -71,7 +69,7 @@ public:
         }
         api_->pa_context_set_state_callback(ctx_, &Impl::on_context_state, this);
 
-        if (api_->pa_context_connect(ctx_, nullptr, PA_CONTEXT_NOFLAGS, nullptr) < 0) {
+        if (api_->pa_context_connect(ctx_, nullptr, pulse_ffi::context_noflags, nullptr) < 0) {
             rstd::log::error("wavsen::audio: capture pa_context_connect failed: {}",
                              api_->pa_strerror(api_->pa_context_errno(ctx_)));
             destroy_locked();
@@ -82,8 +80,8 @@ public:
 
         for (;;) {
             const auto st = api_->pa_context_get_state(ctx_);
-            if (st == PA_CONTEXT_READY) break;
-            if (! PA_CONTEXT_IS_GOOD(st)) {
+            if (st == pulse_ffi::context_ready) break;
+            if (! pulse_ffi::context_is_good(st)) {
                 rstd::log::error("wavsen::audio: capture pa_context failed: {}",
                                  api_->pa_strerror(api_->pa_context_errno(ctx_)));
                 destroy_locked();
@@ -117,12 +115,12 @@ public:
         }
         const std::string monitor_name = default_sink_ + ".monitor";
 
-        pa_sample_spec ss {};
-        ss.format   = PA_SAMPLE_FLOAT32LE;
+        pulse_ffi::pa_sample_spec ss {};
+        ss.format   = pulse_ffi::sample_float32le;
         ss.rate     = kDefaultRate;
         ss.channels = static_cast<std::uint8_t>(kDefaultChannels);
 
-        pa_channel_map cm {};
+        pulse_ffi::pa_channel_map cm {};
         api_->pa_channel_map_init_stereo(&cm);
 
         stream_ = api_->pa_stream_new(ctx_, "wavsen-capture", &ss, &cm);
@@ -137,15 +135,16 @@ public:
         api_->pa_stream_set_state_callback(stream_, &Impl::on_stream_state, this);
         api_->pa_stream_set_read_callback(stream_, &Impl::on_read, this);
 
-        const auto     frame_bytes = kDefaultChannels * static_cast<std::uint32_t>(sizeof(float));
-        pa_buffer_attr ba {};
+        const auto frame_bytes = kDefaultChannels * static_cast<std::uint32_t>(sizeof(float));
+        pulse_ffi::pa_buffer_attr ba {};
         ba.maxlength = static_cast<std::uint32_t>(-1);
         ba.tlength   = static_cast<std::uint32_t>(-1);
         ba.prebuf    = static_cast<std::uint32_t>(-1);
         ba.minreq    = static_cast<std::uint32_t>(-1);
         ba.fragsize  = kQuantum * frame_bytes;
 
-        const auto flags = static_cast<pa_stream_flags_t>(PA_STREAM_ADJUST_LATENCY);
+        const auto flags =
+            static_cast<pulse_ffi::pa_stream_flags_t>(pulse_ffi::stream_adjust_latency);
 
         if (api_->pa_stream_connect_record(stream_, monitor_name.c_str(), &ba, flags) < 0) {
             rstd::log::error("wavsen::audio: capture pa_stream_connect_record failed: {}",
@@ -158,8 +157,8 @@ public:
 
         for (;;) {
             const auto st = api_->pa_stream_get_state(stream_);
-            if (st == PA_STREAM_READY) break;
-            if (! PA_STREAM_IS_GOOD(st)) {
+            if (st == pulse_ffi::stream_ready) break;
+            if (! pulse_ffi::stream_is_good(st)) {
                 rstd::log::error("wavsen::audio: capture pa_stream failed: {}",
                                  api_->pa_strerror(api_->pa_context_errno(ctx_)));
                 destroy_locked();
@@ -235,17 +234,18 @@ private:
         }
     }
 
-    static void on_context_state(::pa_context* /*c*/, void* user) {
+    static void on_context_state(pulse_ffi::pa_context* /*c*/, void* user) {
         auto* self = static_cast<Impl*>(user);
         self->api_->pa_threaded_mainloop_signal(self->loop_, 0);
     }
 
-    static void on_stream_state(::pa_stream* /*s*/, void* user) {
+    static void on_stream_state(pulse_ffi::pa_stream* /*s*/, void* user) {
         auto* self = static_cast<Impl*>(user);
         self->api_->pa_threaded_mainloop_signal(self->loop_, 0);
     }
 
-    static void on_server_info(::pa_context* /*c*/, const ::pa_server_info* info, void* user) {
+    static void on_server_info(pulse_ffi::pa_context* /*c*/, const pulse_ffi::pa_server_info* info,
+                               void* user) {
         auto* self = static_cast<Impl*>(user);
         if (info && info->default_sink_name) {
             self->default_sink_ = info->default_sink_name;
@@ -254,7 +254,7 @@ private:
         self->api_->pa_threaded_mainloop_signal(self->loop_, 0);
     }
 
-    static void on_read(::pa_stream* s, size_t /*nbytes*/, void* user) {
+    static void on_read(pulse_ffi::pa_stream* s, size_t /*nbytes*/, void* user) {
         auto* self = static_cast<Impl*>(user);
         while (self->api_->pa_stream_readable_size(s) > 0) {
             const void* data = nullptr;
@@ -325,12 +325,12 @@ private:
         seq_.fetch_add(1, std::memory_order_release);
     }
 
-    const pulse_ffi::Api*   api_    = nullptr;
-    ::pa_threaded_mainloop* loop_   = nullptr;
-    ::pa_context*           ctx_    = nullptr;
-    ::pa_stream*            stream_ = nullptr;
-    std::string             default_sink_;
-    bool                    server_info_done_ = false;
+    const pulse_ffi::Api*            api_    = nullptr;
+    pulse_ffi::pa_threaded_mainloop* loop_   = nullptr;
+    pulse_ffi::pa_context*           ctx_    = nullptr;
+    pulse_ffi::pa_stream*            stream_ = nullptr;
+    std::string                      default_sink_;
+    bool                             server_info_done_ = false;
 
     std::array<float, dsp::kFftSize> ring_left_ {};
     std::array<float, dsp::kFftSize> ring_right_ {};

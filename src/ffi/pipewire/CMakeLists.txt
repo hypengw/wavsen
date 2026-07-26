@@ -15,16 +15,14 @@ target_sources(wavsen_ffi_pipewire
         pipewire.cpp
 )
 
-target_include_directories(wavsen_ffi_pipewire SYSTEM PUBLIC
+target_include_directories(wavsen_ffi_pipewire SYSTEM PRIVATE
     ${WAVSEN_LIBPIPEWIRE_INCLUDE_DIRS}
 )
 target_link_libraries(wavsen_ffi_pipewire
     PUBLIC
         rstd::core
     PRIVATE
-        rstd::rstd
-        rstd.cppstd
-        ${CMAKE_DL_LIBS}
+        rstd::dlopn
 )
 
 set_property(TARGET wavsen_ffi_pipewire PROPERTY POSITION_INDEPENDENT_CODE ON)

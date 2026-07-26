@@ -1,8 +1,5 @@
 module;
 
-#include <pipewire/pipewire.h>
-#include <spa/param/audio/format-utils.h>
-
 #include <chrono>
 #include <cstring>
 
@@ -66,8 +63,8 @@ public:
             return false;
         }
 
-        static const ::pw_stream_events stream_events = {
-            .version       = PW_VERSION_STREAM_EVENTS,
+        static const pipewire_ffi::pw_stream_events stream_events = {
+            .version       = pipewire_ffi::version_stream_events,
             .destroy       = nullptr,
             .state_changed = &Impl::on_state_changed,
             .control_info  = nullptr,
@@ -83,22 +80,23 @@ public:
 
         api_->pw_thread_loop_lock(loop_);
 
-        auto* props = api_->pw_properties_new(PW_KEY_MEDIA_TYPE,
+        auto* props = api_->pw_properties_new(pipewire_ffi::key_media_type,
                                               "Audio",
-                                              PW_KEY_MEDIA_CATEGORY,
+                                              pipewire_ffi::key_media_category,
                                               "Capture",
-                                              PW_KEY_MEDIA_ROLE,
+                                              pipewire_ffi::key_media_role,
                                               "Music",
-                                              PW_KEY_APP_NAME,
+                                              pipewire_ffi::key_app_name,
                                               "wavsen",
-                                              PW_KEY_NODE_NAME,
+                                              pipewire_ffi::key_node_name,
                                               "wavsen-capture",
-                                              PW_KEY_NODE_DESCRIPTION,
+                                              pipewire_ffi::key_node_description,
                                               "wavsen audio response capture",
-                                              PW_KEY_STREAM_CAPTURE_SINK,
+                                              pipewire_ffi::key_stream_capture_sink,
                                               "true",
                                               nullptr);
-        api_->pw_properties_setf(props, PW_KEY_NODE_LATENCY, "%u/%u", kQuantum, kDefaultRate);
+        api_->pw_properties_setf(
+            props, pipewire_ffi::key_node_latency, "%u/%u", kQuantum, kDefaultRate);
 
         stream_ = api_->pw_stream_new_simple(
             api_->pw_thread_loop_get_loop(loop_), "wavsen-capture", props, &stream_events, this);
@@ -111,23 +109,27 @@ public:
             return false;
         }
 
-        std::uint8_t    pod_buffer[1024];
-        spa_pod_builder b {};
+        std::uint8_t                  pod_buffer[1024];
+        pipewire_ffi::spa_pod_builder b {};
         b.data = pod_buffer;
         b.size = sizeof(pod_buffer);
 
-        spa_audio_info_raw info {};
-        info.format   = SPA_AUDIO_FORMAT_F32_LE;
+        pipewire_ffi::spa_audio_info_raw info {};
+        info.format   = pipewire_ffi::audio_format_f32_le;
         info.rate     = kDefaultRate;
         info.channels = kDefaultChannels;
 
-        const spa_pod* params[1];
-        params[0] = spa_format_audio_raw_build(&b, SPA_PARAM_EnumFormat, &info);
+        const pipewire_ffi::spa_pod* params[1];
+        params[0] =
+            pipewire_ffi::format_audio_raw_build(&b, pipewire_ffi::param_enum_format, &info);
 
-        const auto flags = static_cast<pw_stream_flags>(
-            PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS | PW_STREAM_FLAG_RT_PROCESS);
+        const auto flags = static_cast<pipewire_ffi::pw_stream_flags>(
+            pipewire_ffi::stream_flag_autoconnect | pipewire_ffi::stream_flag_map_buffers |
+            pipewire_ffi::stream_flag_rt_process);
 
-        if (api_->pw_stream_connect(stream_, PW_DIRECTION_INPUT, PW_ID_ANY, flags, params, 1) < 0) {
+        if (api_->pw_stream_connect(
+                stream_, pipewire_ffi::direction_input, pipewire_ffi::id_any, flags, params, 1) <
+            0) {
             rstd::log::error("wavsen::audio: capture pw_stream_connect failed");
             api_->pw_stream_destroy(stream_);
             stream_ = nullptr;
@@ -188,7 +190,7 @@ private:
         auto* self = static_cast<Impl*>(user);
         if (! self->stream_) return;
 
-        pw_buffer* b = self->api_->pw_stream_dequeue_buffer(self->stream_);
+        pipewire_ffi::pw_buffer* b = self->api_->pw_stream_dequeue_buffer(self->stream_);
         if (! b) return;
 
         auto* sb = b->buffer;
@@ -213,23 +215,23 @@ private:
         self->api_->pw_stream_queue_buffer(self->stream_, b);
     }
 
-    static void on_state_changed(void* /*user*/, ::pw_stream_state /*old*/, ::pw_stream_state state,
-                                 const char* error) {
+    static void on_state_changed(void* /*user*/, pipewire_ffi::pw_stream_state /*old*/,
+                                 pipewire_ffi::pw_stream_state state, const char* error) {
         switch (state) {
-        case PW_STREAM_STATE_ERROR:
+        case pipewire_ffi::stream_state_error:
             rstd::log::error("wavsen::audio: capture stream ERROR{}",
                              error ? std::string(": ") + error : std::string {});
             break;
-        case PW_STREAM_STATE_UNCONNECTED:
+        case pipewire_ffi::stream_state_unconnected:
             rstd::log::debug("wavsen::audio: capture stream UNCONNECTED");
             break;
-        case PW_STREAM_STATE_CONNECTING:
+        case pipewire_ffi::stream_state_connecting:
             rstd::log::debug("wavsen::audio: capture stream CONNECTING");
             break;
-        case PW_STREAM_STATE_PAUSED:
+        case pipewire_ffi::stream_state_paused:
             rstd::log::debug("wavsen::audio: capture stream PAUSED");
             break;
-        case PW_STREAM_STATE_STREAMING:
+        case pipewire_ffi::stream_state_streaming:
             rstd::log::debug("wavsen::audio: capture stream STREAMING");
             break;
         }
@@ -285,9 +287,9 @@ private:
         seq_.fetch_add(1, std::memory_order_release);
     }
 
-    const pipewire_ffi::Api* api_    = nullptr;
-    ::pw_thread_loop*        loop_   = nullptr;
-    ::pw_stream*             stream_ = nullptr;
+    const pipewire_ffi::Api*      api_    = nullptr;
+    pipewire_ffi::pw_thread_loop* loop_   = nullptr;
+    pipewire_ffi::pw_stream*      stream_ = nullptr;
 
     std::array<float, dsp::kFftSize> ring_left_ {};
     std::array<float, dsp::kFftSize> ring_right_ {};

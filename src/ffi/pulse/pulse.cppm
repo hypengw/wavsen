@@ -5,27 +5,6 @@ module;
 export module pulse;
 export import rstd.core;
 
-export {
-    using ::pa_buffer_attr;
-    using ::pa_channel_map;
-    using ::pa_context;
-    using ::pa_context_flags_t;
-    using ::pa_context_state_t;
-    using ::pa_mainloop_api;
-    using ::pa_operation;
-    using ::pa_proplist;
-    using ::pa_sample_format_t;
-    using ::pa_sample_spec;
-    using ::pa_seek_mode_t;
-    using ::pa_server_info;
-    using ::pa_stream;
-    using ::pa_stream_flags_t;
-    using ::pa_stream_state_t;
-    using ::pa_threaded_mainloop;
-    using ::pa_timing_info;
-    using ::pa_usec_t;
-}
-
 export namespace wavsen::ffi::pulse
 {
 
@@ -47,6 +26,27 @@ using ::pa_stream_state_t;
 using ::pa_threaded_mainloop;
 using ::pa_timing_info;
 using ::pa_usec_t;
+
+inline constexpr auto context_noflags    = ::PA_CONTEXT_NOFLAGS;
+inline constexpr auto context_ready      = ::PA_CONTEXT_READY;
+inline constexpr auto context_failed     = ::PA_CONTEXT_FAILED;
+inline constexpr auto context_terminated = ::PA_CONTEXT_TERMINATED;
+
+inline constexpr auto stream_ready      = ::PA_STREAM_READY;
+inline constexpr auto stream_failed     = ::PA_STREAM_FAILED;
+inline constexpr auto stream_terminated = ::PA_STREAM_TERMINATED;
+
+inline constexpr auto sample_float32le          = ::PA_SAMPLE_FLOAT32LE;
+inline constexpr auto stream_adjust_latency     = ::PA_STREAM_ADJUST_LATENCY;
+inline constexpr auto stream_auto_timing_update = ::PA_STREAM_AUTO_TIMING_UPDATE;
+inline constexpr auto stream_interpolate_timing = ::PA_STREAM_INTERPOLATE_TIMING;
+inline constexpr auto stream_start_corked       = ::PA_STREAM_START_CORKED;
+inline constexpr auto seek_relative             = ::PA_SEEK_RELATIVE;
+
+inline constexpr const char* prop_application_name = PA_PROP_APPLICATION_NAME;
+inline constexpr const char* prop_application_id   = PA_PROP_APPLICATION_ID;
+inline constexpr const char* prop_media_name       = PA_PROP_MEDIA_NAME;
+inline constexpr const char* prop_media_role       = PA_PROP_MEDIA_ROLE;
 
 struct Api {
     decltype(&::pa_mainloop_api_once)           pa_mainloop_api_once {};
@@ -106,5 +106,7 @@ struct Api {
 
 auto load() noexcept -> const Api*;
 auto load_error() noexcept -> rstd::ref<rstd::str>;
+auto context_is_good(pa_context_state_t state) noexcept -> bool;
+auto stream_is_good(pa_stream_state_t state) noexcept -> bool;
 
 } // namespace wavsen::ffi::pulse
