@@ -51,8 +51,8 @@ public:
     void seek_to(f64 seconds);
 
     // PTS in seconds of the audio sample currently being played by the
-    // device. Returns NaN before the device is primed; the caller should
-    // treat NaN as "fall back to wall-clock pacing".
+    // device. Returns NaN while the device clock cannot advance or before
+    // it is primed; the caller should fall back to wall-clock pacing.
     auto current_time_seconds() const -> f64;
 
     // 0..1 linear gain. Atomic; safe from any thread.

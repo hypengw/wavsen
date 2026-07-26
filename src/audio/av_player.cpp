@@ -189,15 +189,14 @@ void AvPlayer::seek_to(f64 seconds) {
     impl_->anchored.store(false, rstd::sync::atomic::Ordering::Release);
     impl_->needs_reanchor.store(true, rstd::sync::atomic::Ordering::Release);
     impl_->device_pos_at_anchor.store(u64(), rstd::sync::atomic::Ordering::Relaxed);
-    if (was_playing && impl_->desired.active) {
+    if (was_playing) {
         impl_->desired.playing = true;
-        (void)impl_->device.apply(impl_->desired.clone());
+        if (impl_->desired.active) (void)impl_->device.apply(impl_->desired.clone());
     }
 }
 
 auto AvPlayer::current_time_seconds() const -> f64 {
-    if (impl_->device.state() != AudioDeviceState::ReadyPaused &&
-        impl_->device.state() != AudioDeviceState::ReadyPlaying) {
+    if (impl_->device.state() != AudioDeviceState::ReadyPlaying) {
         return f64::NAN_;
     }
     if (! impl_->anchored.load(rstd::sync::atomic::Ordering::Acquire)) {
