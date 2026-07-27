@@ -1167,4 +1167,41 @@ auto VideoDecoder::next_drm_frame(DrmFrameView& out) -> Result<NextFrame, Error>
     return Ok(NextFrame::Ok);
 }
 
+auto VideoDecoder::seek(f64 seconds) -> Result<empty, Error> {
+    if (! seconds.is_finite() || seconds < f64()) {
+        return Err(Error("seek time must be finite and non-negative"_str));
+    }
+
+    State& st    = *state_;
+    auto   limit = duration();
+    if (limit.is_some()) seconds = seconds.min(*limit);
+    const double time_base = ffi::av_q2d(st.stream_tb);
+    if (time_base <= 0.0) {
+        return Err(Error("video stream has an invalid time base"_str));
+    }
+    const auto timestamp = static_cast<rstd::int64_t>(seconds.to_primitive() / time_base);
+    const int  rc = av_seek_frame(st.fmt.get(), st.video_idx, timestamp, AVSEEK_FLAG_BACKWARD);
+    if (rc < 0) {
+        return Err(Error(rstd::format("av_seek_frame: {}", av_err_str(rc).as_str())));
+    }
+
+    avcodec_flush_buffers(st.cctx.get());
+    av_packet_unref(st.pkt.get());
+    av_frame_unref(st.src_frame.get());
+    if (st.sw_frame) av_frame_unref(st.sw_frame.get());
+    if (st.drm_frame) av_frame_unref(st.drm_frame.get());
+    st.flushing = false;
+    return Ok(empty {});
+}
+
+auto VideoDecoder::duration() const -> Option<f64> {
+    const State& st = *state_;
+    if (st.fmt->duration > 0) {
+        return Some(f64(static_cast<double>(st.fmt->duration) / AV_TIME_BASE));
+    }
+    const auto* stream = st.fmt->streams[st.video_idx];
+    if (stream->duration <= 0) return None();
+    return Some(f64(static_cast<double>(stream->duration) * ffi::av_q2d(stream->time_base)));
+}
+
 } // namespace wavsen::video

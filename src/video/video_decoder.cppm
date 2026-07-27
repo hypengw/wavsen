@@ -141,6 +141,8 @@ public:
     auto next_frame(Nv12Frame& out) -> Result<NextFrame, Error>;
     auto next_vk_frame(VkFrameView& out) -> Result<NextFrame, Error>;
     auto next_drm_frame(DrmFrameView& out) -> Result<NextFrame, Error>;
+    auto seek(f64 seconds) -> Result<empty, Error>;
+    auto duration() const -> Option<f64>;
 
     FrameKind kind() const { return kind_; }
     bool      using_vk_frames() const { return kind_ == FrameKind::VulkanShared; }
