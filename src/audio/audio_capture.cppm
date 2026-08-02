@@ -1,4 +1,4 @@
-export module wavsen.audio:capture;
+export module wavsen.audio.capture;
 
 import rstd;
 
@@ -7,31 +7,34 @@ export namespace wavsen::audio
 
 using namespace rstd::prelude;
 
-// 64-bin perceptual magnitude spectrum, EMA-smoothed. Values are mapped to
-// 0..1 for audio-responsive consumers. `bins` is kept as an alias of `average`.
-// `publish_ms` is a steady_clock timestamp (ms since epoch) of the last
-// RT-side update, used by readers to detect stale snapshots. Zero means
-// "never primed".
-struct AudioSpectrum {
-    rstd::array<f32, 64> left;
-    rstd::array<f32, 64> right;
-    rstd::array<f32, 64> average;
-    rstd::array<f32, 64> bins;
-    i64                  publish_ms;
+inline constexpr rstd::uint32_t kAudioSampleRate   = 48000;
+inline constexpr rstd::uint32_t kAudioChannels     = 2;
+inline constexpr rstd::size_t   kAudioWindowFrames = 4096;
+inline constexpr rstd::size_t   kAudioSampleCount  = kAudioWindowFrames * kAudioChannels;
+
+struct AudioPcmWindow {
+    rstd::uint64_t                      generation;
+    rstd::uint64_t                      sequence;
+    rstd::uint64_t                      captured_at_ns;
+    rstd::uint64_t                      end_sample_frame;
+    rstd::uint32_t                      sample_rate_hz;
+    rstd::uint32_t                      channels;
+    rstd::uint32_t                      frames;
+    rstd::array<f32, kAudioSampleCount> samples;
 
     void clear() {
-        for (auto& value : left) value = f32();
-        for (auto& value : right) value = f32();
-        for (auto& value : average) value = f32();
-        for (auto& value : bins) value = f32();
-        publish_ms = i64();
+        generation       = 0;
+        sequence         = 0;
+        captured_at_ns   = 0;
+        end_sample_frame = 0;
+        sample_rate_hz   = 0;
+        channels         = 0;
+        frames           = 0;
+        for (auto& sample : samples) sample = f32();
     }
 };
 
-// Taps the system default sink's monitor source, runs a 4096-point
-// Hann-windowed FFT per stereo channel on the audio thread, merges
-// magnitudes into 64 calibrated WE-style bands, EMA-smooths, and publishes a
-// lock-free snapshot for renderers.
+// Taps the system default sink and publishes complete stereo F32 windows.
 class AudioCapture {
 public:
     AudioCapture();
@@ -43,9 +46,8 @@ public:
     void uninit();
     auto is_inited() const -> bool;
 
-    // Lock-free read. Returns true if at least one capture buffer has
-    // been processed; out is zero-filled until then.
-    bool snapshot(AudioSpectrum& out) const;
+    // Returns each complete window at most once to this reader.
+    bool snapshot(AudioPcmWindow& out);
 
 private:
     class Impl;

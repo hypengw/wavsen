@@ -1,15 +1,9 @@
-module;
-
-#include <chrono>
-#include <complex>
-
-module wavsen.audio;
+module wavsen.audio.capture;
 
 import rstd;
 import rstd.log;
 import pulse;
-import :capture;
-import wavsen.audio.capture_dsp;
+import wavsen.audio.capture_window;
 
 namespace wavsen::audio
 {
@@ -33,6 +27,7 @@ public:
 
     bool init() {
         if (is_inited()) return true;
+        if (loop_) uninit();
 
         api_ = pulse_ffi::load();
         if (! api_) {
@@ -89,7 +84,6 @@ public:
             api_->pa_threaded_mainloop_wait(loop_);
         }
 
-        // Resolve default sink → "<sink>.monitor" source name.
         default_sink_.clear();
         server_info_done_ = false;
         auto* op          = api_->pa_context_get_server_info(ctx_, &Impl::on_server_info, this);
@@ -100,6 +94,7 @@ public:
             shutdown_loop();
             return false;
         }
+        api_->pa_operation_unref(op);
         while (! server_info_done_) {
             api_->pa_threaded_mainloop_wait(loop_);
         }
@@ -110,43 +105,29 @@ public:
             shutdown_loop();
             return false;
         }
-        auto monitor_name   = rstd::format("{}.monitor", default_sink_);
-        auto monitor_name_c = rstd::ffi::CString::make(monitor_name.clone()).unwrap();
-
-        pulse_ffi::pa_sample_spec ss {};
-        ss.format   = pulse_ffi::sample_float32le;
-        ss.rate     = kDefaultRate;
-        ss.channels = static_cast<rstd::uint8_t>(kDefaultChannels);
-
-        pulse_ffi::pa_channel_map cm {};
-        api_->pa_channel_map_init_stereo(&cm);
-
-        stream_ = api_->pa_stream_new(ctx_, "wavsen-capture", &ss, &cm);
-        if (! stream_) {
-            rstd::log::error("wavsen::audio: capture pa_stream_new failed: {}",
-                             api_->pa_strerror(api_->pa_context_errno(ctx_)));
+        monitor_source_.clear();
+        sink_info_done_ = false;
+        auto sink_name  = rstd::ffi::CString::make(default_sink_.clone()).unwrap();
+        op              = api_->pa_context_get_sink_info_by_name(
+            ctx_, sink_name.as_ptr(), &Impl::on_sink_info, this);
+        if (! op) {
+            rstd::log::error("wavsen::audio: capture pa_context_get_sink_info_by_name failed");
             destroy_locked();
             api_->pa_threaded_mainloop_unlock(loop_);
             shutdown_loop();
             return false;
         }
-        api_->pa_stream_set_state_callback(stream_, &Impl::on_stream_state, this);
-        api_->pa_stream_set_read_callback(stream_, &Impl::on_read, this);
-
-        const auto frame_bytes = kDefaultChannels * static_cast<rstd::uint32_t>(sizeof(float));
-        pulse_ffi::pa_buffer_attr ba {};
-        ba.maxlength = static_cast<rstd::uint32_t>(-1);
-        ba.tlength   = static_cast<rstd::uint32_t>(-1);
-        ba.prebuf    = static_cast<rstd::uint32_t>(-1);
-        ba.minreq    = static_cast<rstd::uint32_t>(-1);
-        ba.fragsize  = kQuantum * frame_bytes;
-
-        const auto flags =
-            static_cast<pulse_ffi::pa_stream_flags_t>(pulse_ffi::stream_adjust_latency);
-
-        if (api_->pa_stream_connect_record(stream_, monitor_name_c.as_ptr(), &ba, flags) < 0) {
-            rstd::log::error("wavsen::audio: capture pa_stream_connect_record failed: {}",
-                             api_->pa_strerror(api_->pa_context_errno(ctx_)));
+        api_->pa_operation_unref(op);
+        while (! sink_info_done_) api_->pa_threaded_mainloop_wait(loop_);
+        if (monitor_source_.is_empty()) {
+            rstd::log::error("wavsen::audio: default sink has no monitor source");
+            destroy_locked();
+            api_->pa_threaded_mainloop_unlock(loop_);
+            shutdown_loop();
+            return false;
+        }
+        auto monitor_name_c = rstd::ffi::CString::make(monitor_source_.clone()).unwrap();
+        if (! connect_stream_locked(monitor_name_c.as_ptr())) {
             destroy_locked();
             api_->pa_threaded_mainloop_unlock(loop_);
             shutdown_loop();
@@ -167,11 +148,21 @@ public:
             api_->pa_threaded_mainloop_wait(loop_);
         }
 
+        api_->pa_context_set_subscribe_callback(ctx_, &Impl::on_subscription, this);
+        if (auto* subscribe = api_->pa_context_subscribe(
+                ctx_,
+                static_cast<pulse_ffi::pa_subscription_mask_t>(pulse_ffi::subscription_mask_sink |
+                                                               pulse_ffi::subscription_mask_server),
+                nullptr,
+                nullptr)) {
+            api_->pa_operation_unref(subscribe);
+        }
+
         api_->pa_threaded_mainloop_unlock(loop_);
 
         rstd::log::info("wavsen::audio: capture inited (pulse monitor '{}', "
                         "{} ch @ {} Hz)",
-                        monitor_name,
+                        monitor_source_,
                         kDefaultChannels,
                         kDefaultRate);
         return true;
@@ -186,39 +177,73 @@ public:
         }
     }
 
-    bool is_inited() const { return loop_ != nullptr && stream_ != nullptr; }
+    bool is_inited() const {
+        return loop_ != nullptr && stream_ != nullptr &&
+               ! capture_failed_.load(rstd::sync::atomic::Ordering::Acquire);
+    }
 
-    bool snapshot(AudioSpectrum& out) const {
-        for (int attempt = 0; attempt < 16; ++attempt) {
-            const rstd::uint32_t s1 = seq_.load(rstd::sync::atomic::Ordering::Acquire);
-            if (s1 == 0) {
-                out.clear();
-                return false;
-            }
-            if (s1 & 1u) continue;
-            AudioSpectrum tmp;
-            rstd::mem::memcpy(&tmp, &published_, usize(sizeof(AudioSpectrum)));
-            const rstd::uint32_t s2 = seq_.load(rstd::sync::atomic::Ordering::Acquire);
-            if (s1 == s2) {
-                out = tmp;
-                return true;
-            }
+    bool snapshot(AudioPcmWindow& out) {
+        AudioPcmWindow candidate {};
+        if (! publisher_.snapshot(candidate)) return false;
+        if (candidate.generation == last_generation_ && candidate.sequence == last_sequence_) {
+            return false;
         }
-        out.clear();
-        return false;
+        last_generation_ = candidate.generation;
+        last_sequence_   = candidate.sequence;
+        out              = candidate;
+        return true;
     }
 
 private:
-    void destroy_locked() {
-        if (stream_) {
-            api_->pa_stream_set_state_callback(stream_, nullptr, nullptr);
-            api_->pa_stream_set_read_callback(stream_, nullptr, nullptr);
-            api_->pa_stream_disconnect(stream_);
-            api_->pa_stream_unref(stream_);
-            stream_ = nullptr;
+    bool connect_stream_locked(const char* monitor) {
+        destroy_stream_locked();
+        pulse_ffi::pa_sample_spec sample_spec {};
+        sample_spec.format   = pulse_ffi::sample_float32le;
+        sample_spec.rate     = kDefaultRate;
+        sample_spec.channels = static_cast<rstd::uint8_t>(kDefaultChannels);
+        pulse_ffi::pa_channel_map channel_map {};
+        api_->pa_channel_map_init_stereo(&channel_map);
+        stream_ = api_->pa_stream_new(ctx_, "wavsen-capture", &sample_spec, &channel_map);
+        if (! stream_) {
+            rstd::log::error("wavsen::audio: capture pa_stream_new failed: {}",
+                             api_->pa_strerror(api_->pa_context_errno(ctx_)));
+            return false;
         }
+        api_->pa_stream_set_state_callback(stream_, &Impl::on_stream_state, this);
+        api_->pa_stream_set_read_callback(stream_, &Impl::on_read, this);
+        const auto frame_bytes = kDefaultChannels * static_cast<rstd::uint32_t>(sizeof(float));
+        pulse_ffi::pa_buffer_attr attr {};
+        attr.maxlength = static_cast<rstd::uint32_t>(-1);
+        attr.tlength   = static_cast<rstd::uint32_t>(-1);
+        attr.prebuf    = static_cast<rstd::uint32_t>(-1);
+        attr.minreq    = static_cast<rstd::uint32_t>(-1);
+        attr.fragsize  = kQuantum * frame_bytes;
+        const auto flags =
+            static_cast<pulse_ffi::pa_stream_flags_t>(pulse_ffi::stream_adjust_latency);
+        publisher_.restart();
+        if (api_->pa_stream_connect_record(stream_, monitor, &attr, flags) < 0) {
+            rstd::log::error("wavsen::audio: capture pa_stream_connect_record failed: {}",
+                             api_->pa_strerror(api_->pa_context_errno(ctx_)));
+            destroy_stream_locked();
+            return false;
+        }
+        return true;
+    }
+
+    void destroy_stream_locked() {
+        if (! stream_) return;
+        api_->pa_stream_set_state_callback(stream_, nullptr, nullptr);
+        api_->pa_stream_set_read_callback(stream_, nullptr, nullptr);
+        api_->pa_stream_disconnect(stream_);
+        api_->pa_stream_unref(stream_);
+        stream_ = nullptr;
+    }
+
+    void destroy_locked() {
+        destroy_stream_locked();
         if (ctx_) {
             api_->pa_context_set_state_callback(ctx_, nullptr, nullptr);
+            api_->pa_context_set_subscribe_callback(ctx_, nullptr, nullptr);
             api_->pa_context_disconnect(ctx_);
             api_->pa_context_unref(ctx_);
             ctx_ = nullptr;
@@ -234,11 +259,22 @@ private:
 
     static void on_context_state(pulse_ffi::pa_context* /*c*/, void* user) {
         auto* self = static_cast<Impl*>(user);
+        if (! pulse_ffi::context_is_good(self->api_->pa_context_get_state(self->ctx_))) {
+            self->capture_failed_.store(true, rstd::sync::atomic::Ordering::Release);
+            self->publisher_.restart();
+        }
         self->api_->pa_threaded_mainloop_signal(self->loop_, 0);
     }
 
-    static void on_stream_state(pulse_ffi::pa_stream* /*s*/, void* user) {
-        auto* self = static_cast<Impl*>(user);
+    static void on_stream_state(pulse_ffi::pa_stream* stream, void* user) {
+        auto*      self  = static_cast<Impl*>(user);
+        const auto state = self->api_->pa_stream_get_state(stream);
+        if (state == pulse_ffi::stream_ready) {
+            self->capture_failed_.store(false, rstd::sync::atomic::Ordering::Release);
+        } else if (! pulse_ffi::stream_is_good(state)) {
+            self->capture_failed_.store(true, rstd::sync::atomic::Ordering::Release);
+            self->publisher_.restart();
+        }
         self->api_->pa_threaded_mainloop_signal(self->loop_, 0);
     }
 
@@ -253,6 +289,73 @@ private:
         self->api_->pa_threaded_mainloop_signal(self->loop_, 0);
     }
 
+    static void on_sink_info(pulse_ffi::pa_context* /*c*/, const pulse_ffi::pa_sink_info* info,
+                             int eol, void* user) {
+        auto* self = static_cast<Impl*>(user);
+        if (info && info->monitor_source_name) {
+            self->monitor_source_ = String::make(
+                rstd::ffi::CStr::from_ptr(info->monitor_source_name).to_str().unwrap());
+        }
+        if (eol != 0) {
+            self->sink_info_done_ = true;
+            self->api_->pa_threaded_mainloop_signal(self->loop_, 0);
+        }
+    }
+
+    static void on_subscription(pulse_ffi::pa_context* context,
+                                pulse_ffi::pa_subscription_event_type_t, rstd::uint32_t,
+                                void* user) {
+        auto* self = static_cast<Impl*>(user);
+        if (self->refresh_pending_) return;
+        self->refresh_pending_ = true;
+        auto* operation =
+            self->api_->pa_context_get_server_info(context, &Impl::on_refresh_server_info, self);
+        if (! operation) {
+            self->refresh_pending_ = false;
+            return;
+        }
+        self->api_->pa_operation_unref(operation);
+    }
+
+    static void on_refresh_server_info(pulse_ffi::pa_context*           context,
+                                       const pulse_ffi::pa_server_info* info, void* user) {
+        auto* self = static_cast<Impl*>(user);
+        if (! info || ! info->default_sink_name) {
+            self->refresh_pending_ = false;
+            return;
+        }
+        self->refreshed_monitor_.clear();
+        auto sink =
+            String::make(rstd::ffi::CStr::from_ptr(info->default_sink_name).to_str().unwrap());
+        auto  name      = rstd::ffi::CString::make(rstd::move(sink)).unwrap();
+        auto* operation = self->api_->pa_context_get_sink_info_by_name(
+            context, name.as_ptr(), &Impl::on_refresh_sink_info, self);
+        if (! operation) {
+            self->refresh_pending_ = false;
+            return;
+        }
+        self->api_->pa_operation_unref(operation);
+    }
+
+    static void on_refresh_sink_info(pulse_ffi::pa_context*, const pulse_ffi::pa_sink_info* info,
+                                     int eol, void* user) {
+        auto* self = static_cast<Impl*>(user);
+        if (info && info->monitor_source_name) {
+            self->refreshed_monitor_ = String::make(
+                rstd::ffi::CStr::from_ptr(info->monitor_source_name).to_str().unwrap());
+        }
+        if (eol == 0) return;
+        self->refresh_pending_ = false;
+        if (self->refreshed_monitor_.is_empty() ||
+            self->refreshed_monitor_ == self->monitor_source_)
+            return;
+        self->monitor_source_ = self->refreshed_monitor_.clone();
+        auto monitor          = rstd::ffi::CString::make(self->monitor_source_.clone()).unwrap();
+        if (! self->connect_stream_locked(monitor.as_ptr())) {
+            rstd::log::error("wavsen::audio: failed to follow default PulseAudio sink");
+        }
+    }
+
     static void on_read(pulse_ffi::pa_stream* s, size_t /*nbytes*/, void* user) {
         auto* self = static_cast<Impl*>(user);
         while (self->api_->pa_stream_readable_size(s) > 0) {
@@ -262,6 +365,7 @@ private:
             if (sz == 0) return;
             // A hole: data==nullptr means dropped samples; advance and continue.
             if (! data) {
+                self->publisher_.restart();
                 self->api_->pa_stream_drop(s);
                 continue;
             }
@@ -275,53 +379,7 @@ private:
     }
 
     void ingest(const float* src, rstd::uint32_t n_frames, rstd::uint32_t channels) {
-        for (rstd::uint32_t f = 0; f < n_frames; ++f) {
-            const rstd::uint32_t base      = f * channels;
-            const float          left      = channels > 0 ? src[base] : 0.f;
-            const float          right     = channels > 1 ? src[base + 1] : left;
-            ring_left_[usize(ring_head_)]  = left;
-            ring_right_[usize(ring_head_)] = right;
-            ring_head_                     = (ring_head_ + 1) % dsp::kFftSize;
-            if (samples_filled_ < dsp::kFftSize) ++samples_filled_;
-            ++samples_since_fft_;
-        }
-
-        if (samples_filled_ < dsp::kFftSize || samples_since_fft_ < dsp::kHopSize) return;
-        samples_since_fft_ = 0;
-
-        rstd::array<std::complex<float>, dsp::kFftSize> buf_left;
-        rstd::array<std::complex<float>, dsp::kFftSize> buf_right;
-        for (rstd::size_t i = 0; i < dsp::kFftSize; ++i) {
-            const rstd::size_t idx = (ring_head_ + i) % dsp::kFftSize;
-            const float        w   = dsp::hann_window(i, dsp::kFftSize);
-            buf_left[usize(i)]     = std::complex<float>(ring_left_[usize(idx)] * w, 0.0f);
-            buf_right[usize(i)]    = std::complex<float>(ring_right_[usize(idx)] * w, 0.0f);
-        }
-
-        dsp::fft_inplace(buf_left.data(), dsp::kFftSize);
-        dsp::fft_inplace(buf_right.data(), dsp::kFftSize);
-
-        const float norm = 2.0f / static_cast<float>(dsp::kFftSize);
-        const auto  raw =
-            dsp::analyze_stereo_spectrum(buf_left.data(), buf_right.data(), band_layout_, norm);
-        const auto dt_sec = static_cast<float>(dsp::kHopSize) / static_cast<float>(kDefaultRate);
-        const auto bands  = dsp::smooth_spectrum(raw, smoothed_, dt_sec);
-
-        AudioSpectrum out {};
-        for (rstd::size_t k = 0; k < dsp::kNumBins; ++k) {
-            const auto index   = usize(k);
-            out.left[index]    = f32(bands.left[index]);
-            out.right[index]   = f32(bands.right[index]);
-            out.average[index] = f32(bands.average[index]);
-            out.bins[index]    = f32(bands.average[index]);
-        }
-        out.publish_ms = i64(std::chrono::duration_cast<std::chrono::milliseconds>(
-                                 std::chrono::steady_clock::now().time_since_epoch())
-                                 .count());
-
-        seq_.fetch_add(1, rstd::sync::atomic::Ordering::Release);
-        rstd::mem::memcpy(&published_, &out, usize(sizeof(AudioSpectrum)));
-        seq_.fetch_add(1, rstd::sync::atomic::Ordering::Release);
+        publisher_.ingest(src, n_frames, channels);
     }
 
     const pulse_ffi::Api*            api_    = nullptr;
@@ -329,18 +387,16 @@ private:
     pulse_ffi::pa_context*           ctx_    = nullptr;
     pulse_ffi::pa_stream*            stream_ = nullptr;
     String                           default_sink_;
+    String                           monitor_source_;
+    String                           refreshed_monitor_;
     bool                             server_info_done_ = false;
+    bool                             sink_info_done_   = false;
+    bool                             refresh_pending_  = false;
+    rstd::sync::atomic::Atomic<bool> capture_failed_ { false };
 
-    rstd::array<float, dsp::kFftSize> ring_left_ {};
-    rstd::array<float, dsp::kFftSize> ring_right_ {};
-    rstd::size_t                      ring_head_         = 0;
-    rstd::size_t                      samples_filled_    = 0;
-    rstd::size_t                      samples_since_fft_ = 0;
-    dsp::BandLayout                   band_layout_ { dsp::make_we_layout(kDefaultRate) };
-    dsp::SpectrumBands                smoothed_ {};
-
-    mutable rstd::sync::atomic::Atomic<rstd::uint32_t> seq_ { 0 };
-    AudioSpectrum                                      published_ {};
+    capture::PcmWindowPublisher publisher_;
+    rstd::uint64_t              last_generation_ = 0;
+    rstd::uint64_t              last_sequence_   = 0;
 };
 
 AudioCapture::AudioCapture(): impl_(Box<Impl>::make()) {}
@@ -349,6 +405,6 @@ AudioCapture::~AudioCapture() = default;
 bool AudioCapture::init() { return impl_->init(); }
 void AudioCapture::uninit() { impl_->uninit(); }
 bool AudioCapture::is_inited() const { return impl_->is_inited(); }
-bool AudioCapture::snapshot(AudioSpectrum& out) const { return impl_->snapshot(out); }
+bool AudioCapture::snapshot(AudioPcmWindow& out) { return impl_->snapshot(out); }
 
 } // namespace wavsen::audio

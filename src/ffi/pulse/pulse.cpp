@@ -60,10 +60,13 @@ void load_once(LoadState& state) {
     WAVSEN_LOAD(pa_context_disconnect);
     WAVSEN_LOAD(pa_context_errno);
     WAVSEN_LOAD(pa_context_get_server_info);
+    WAVSEN_LOAD(pa_context_get_sink_info_by_name);
     WAVSEN_LOAD(pa_context_get_state);
     WAVSEN_LOAD(pa_context_new);
     WAVSEN_LOAD(pa_context_new_with_proplist);
     WAVSEN_LOAD(pa_context_set_state_callback);
+    WAVSEN_LOAD(pa_context_set_subscribe_callback);
+    WAVSEN_LOAD(pa_context_subscribe);
     WAVSEN_LOAD(pa_context_unref);
     WAVSEN_LOAD(pa_operation_unref);
     WAVSEN_LOAD(pa_proplist_free);

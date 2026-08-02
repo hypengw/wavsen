@@ -143,7 +143,7 @@ target_sources(wavsen_audio
 target_sources(wavsen_audio
     PRIVATE FILE_SET wavsen_audio_internal_modules TYPE CXX_MODULES FILES
         src/audio/audio_gain.cppm
-        src/audio/audio_capture_dsp.cppm
+        src/audio/audio_capture_window.cppm
 )
 target_sources(wavsen_audio PRIVATE
     src/audio/stream_decoder.cpp
@@ -179,17 +179,18 @@ set_target_properties(wavsen_audio PROPERTIES CXX_SCAN_FOR_MODULES ON)
 option(WAVSEN_BUILD_TESTS "Build wavsen test executables" OFF)
 if(WAVSEN_BUILD_TESTS)
     enable_testing()
-    add_executable(wavsen_audio_capture_dsp_tests
-        tests/audio_capture_dsp_tests.cpp
+    add_executable(wavsen_audio_capture_window_tests
+        tests/audio_capture_window_tests.cpp
     )
-    target_compile_features(wavsen_audio_capture_dsp_tests PRIVATE cxx_std_20)
-    target_sources(wavsen_audio_capture_dsp_tests
+    target_compile_features(wavsen_audio_capture_window_tests PRIVATE cxx_std_20)
+    target_sources(wavsen_audio_capture_window_tests
         PRIVATE FILE_SET CXX_MODULES FILES
-            src/audio/audio_capture_dsp.cppm
+            src/audio/audio_capture.cppm
+            src/audio/audio_capture_window.cppm
     )
-    target_link_libraries(wavsen_audio_capture_dsp_tests PRIVATE rstd::rstd)
-    add_test(NAME wavsen_audio_capture_dsp_tests
-             COMMAND wavsen_audio_capture_dsp_tests)
+    target_link_libraries(wavsen_audio_capture_window_tests PRIVATE rstd::rstd)
+    add_test(NAME wavsen_audio_capture_window_tests
+             COMMAND wavsen_audio_capture_window_tests)
 
     add_executable(wavsen_audio_gain_tests
         tests/audio_gain_tests.cpp

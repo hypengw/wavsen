@@ -20,9 +20,12 @@ using ::pa_sample_format_t;
 using ::pa_sample_spec;
 using ::pa_seek_mode_t;
 using ::pa_server_info;
+using ::pa_sink_info;
 using ::pa_stream;
 using ::pa_stream_flags_t;
 using ::pa_stream_state_t;
+using ::pa_subscription_event_type_t;
+using ::pa_subscription_mask_t;
 using ::pa_threaded_mainloop;
 using ::pa_timing_info;
 using ::pa_usec_t;
@@ -42,6 +45,8 @@ inline constexpr auto stream_auto_timing_update = ::PA_STREAM_AUTO_TIMING_UPDATE
 inline constexpr auto stream_interpolate_timing = ::PA_STREAM_INTERPOLATE_TIMING;
 inline constexpr auto stream_start_corked       = ::PA_STREAM_START_CORKED;
 inline constexpr auto seek_relative             = ::PA_SEEK_RELATIVE;
+inline constexpr auto subscription_mask_sink    = ::PA_SUBSCRIPTION_MASK_SINK;
+inline constexpr auto subscription_mask_server  = ::PA_SUBSCRIPTION_MASK_SERVER;
 
 inline constexpr const char* prop_application_name = PA_PROP_APPLICATION_NAME;
 inline constexpr const char* prop_application_id   = PA_PROP_APPLICATION_ID;
@@ -61,15 +66,18 @@ struct Api {
     decltype(&::pa_threaded_mainloop_unlock)    pa_threaded_mainloop_unlock {};
     decltype(&::pa_threaded_mainloop_wait)      pa_threaded_mainloop_wait {};
 
-    decltype(&::pa_context_connect)            pa_context_connect {};
-    decltype(&::pa_context_disconnect)         pa_context_disconnect {};
-    decltype(&::pa_context_errno)              pa_context_errno {};
-    decltype(&::pa_context_get_server_info)    pa_context_get_server_info {};
-    decltype(&::pa_context_get_state)          pa_context_get_state {};
-    decltype(&::pa_context_new)                pa_context_new {};
-    decltype(&::pa_context_new_with_proplist)  pa_context_new_with_proplist {};
-    decltype(&::pa_context_set_state_callback) pa_context_set_state_callback {};
-    decltype(&::pa_context_unref)              pa_context_unref {};
+    decltype(&::pa_context_connect)                pa_context_connect {};
+    decltype(&::pa_context_disconnect)             pa_context_disconnect {};
+    decltype(&::pa_context_errno)                  pa_context_errno {};
+    decltype(&::pa_context_get_server_info)        pa_context_get_server_info {};
+    decltype(&::pa_context_get_sink_info_by_name)  pa_context_get_sink_info_by_name {};
+    decltype(&::pa_context_get_state)              pa_context_get_state {};
+    decltype(&::pa_context_new)                    pa_context_new {};
+    decltype(&::pa_context_new_with_proplist)      pa_context_new_with_proplist {};
+    decltype(&::pa_context_set_state_callback)     pa_context_set_state_callback {};
+    decltype(&::pa_context_set_subscribe_callback) pa_context_set_subscribe_callback {};
+    decltype(&::pa_context_subscribe)              pa_context_subscribe {};
+    decltype(&::pa_context_unref)                  pa_context_unref {};
 
     decltype(&::pa_operation_unref) pa_operation_unref {};
     decltype(&::pa_proplist_free)   pa_proplist_free {};
