@@ -1,0 +1,64 @@
+[package]
+name = "wavsen-ffi-ffmpeg"
+version.workspace = true
+module = "avutil"
+
+[library]
+archive = "wavsen_ffi_ffmpeg"
+discovery = "explicit"
+sources = [
+  "avutil.cppm",
+  "avcodec.cppm",
+  "avformat.cppm",
+  "swscale.cppm",
+  "swresample.cppm",
+]
+
+[usage]
+public-definitions = ["WAVSEN_HAS_VAAPI=1"]
+private-options = [
+  "-fPIC",
+  "-fsized-deallocation",
+  "-Wall",
+  "-Wextra",
+  "-Wpedantic",
+  "-Wno-missing-field-initializers",
+]
+
+[dependencies.vulkan]
+cmake = "Vulkan"
+target = "Vulkan::Vulkan"
+visibility = "private"
+
+[dependencies.libavformat]
+pkg-config = "libavformat"
+version = ">= 58"
+visibility = "public"
+
+[dependencies.libavcodec]
+pkg-config = "libavcodec"
+version = ">= 58"
+visibility = "public"
+
+[dependencies.libavutil]
+pkg-config = "libavutil"
+version = ">= 56"
+visibility = "public"
+
+[dependencies.libswscale]
+pkg-config = "libswscale"
+version = ">= 5"
+visibility = "public"
+
+[dependencies.libswresample]
+pkg-config = "libswresample"
+version = ">= 3"
+visibility = "public"
+
+[dependencies.libva]
+pkg-config = "libva"
+visibility = "public"
+
+[dependencies.libva-drm]
+pkg-config = "libva-drm"
+visibility = "public"
