@@ -109,19 +109,9 @@ u32 map_range(int r) { return r == AVCOL_RANGE_JPEG ? u32(1) : u32(); }
  * ff_decode_get_hw_frames_ctx) is safe to call. Calling it earlier
  * (between avcodec_alloc_context3 and avcodec_open2) segfaults.
  *
- * We set AV_VK_FRAME_FLAG_DISABLE_MULTIPLANE on AVVulkanFramesContext
- * — but FFmpeg's vulkan video-decode hwaccel silently ignores it
- * because Vulkan VK_KHR_video_decode_h264 et al. require the DPB to
- * be a single multi-plane VkImage (G8_B8R8_2PLANE_420_UNORM). The
- * resulting AVVkFrame has img[0] = single VkImage, img[1] = NULL.
- * `convert_av_vk_frame_` handles that layout via plane-aspect views
- * (VK_IMAGE_ASPECT_PLANE_{0,1}_BIT). The flag remains set for
- * forward compatibility / non-decode use cases.
- *
- * On any failure inside this callback we fall through to default
- * get_format → sw pix_fmt. build_internal probes after open by
- * sending one packet so cctx->pix_fmt is populated, then resets
- * kind_ to Sw if hwaccel was rejected. */
+ * A rejected Vulkan frame configuration returns AV_PIX_FMT_NONE so
+ * build_internal fails this decoder attempt and the outer trial loop
+ * can rebuild it for the next backend. */
 AVPixelFormat get_format_prefer_vulkan(AVCodecContext* cctx, const AVPixelFormat* fmts) {
     for (const AVPixelFormat* p = fmts; *p != AV_PIX_FMT_NONE; ++p) {
         if (*p != AV_PIX_FMT_VULKAN) continue;
@@ -131,28 +121,22 @@ AVPixelFormat get_format_prefer_vulkan(AVCodecContext* cctx, const AVPixelFormat
             cctx, cctx->hw_device_ctx, AV_PIX_FMT_VULKAN, &hw_frames);
         if (rc < 0 || ! hw_frames) {
             rstd::log::warn("get_format_prefer_vulkan: avcodec_get_hw_frames_parameters "
-                            "failed ({}); falling back to default get_format.",
+                            "failed ({}); rejecting this Vulkan decode attempt.",
                             av_err_str(rc).as_str());
             if (hw_frames) av_buffer_unref(&hw_frames);
-            break;
+            return AV_PIX_FMT_NONE;
         }
-        auto* fc   = reinterpret_cast<AVHWFramesContext*>(hw_frames->data);
-        auto* vfc  = reinterpret_cast<AVVulkanFramesContext*>(fc->hwctx);
-        vfc->flags = static_cast<AVVkFrameFlags>(
-            static_cast<unsigned>(vfc->flags) | static_cast<unsigned>(AV_VK_FRAME_FLAG_NONE) |
-            static_cast<unsigned>(AV_VK_FRAME_FLAG_DISABLE_MULTIPLANE));
-        if (int irc = av_hwframe_ctx_init(hw_frames); irc < 0) {
-            rstd::log::warn("get_format_prefer_vulkan: av_hwframe_ctx_init "
-                            "(DISABLE_MULTIPLANE) failed ({}); falling back to default "
-                            "get_format.",
+        auto* fc = reinterpret_cast<AVHWFramesContext*>(hw_frames->data);
+        if (int irc = avcodec_prepare_vulkan_decode_frames(hw_frames); irc < 0) {
+            rstd::log::warn("get_format_prefer_vulkan: Vulkan decode frame preparation "
+                            "failed ({}); rejecting this Vulkan decode attempt.",
                             av_err_str(irc).as_str());
             av_buffer_unref(&hw_frames);
-            break;
+            return AV_PIX_FMT_NONE;
         }
         if (cctx->hw_frames_ctx) av_buffer_unref(&cctx->hw_frames_ctx);
         cctx->hw_frames_ctx = hw_frames;
-        rstd::log::info("get_format_prefer_vulkan: AV_PIX_FMT_VULKAN selected "
-                        "(DISABLE_MULTIPLANE, sw_format={}).",
+        rstd::log::info("get_format_prefer_vulkan: AV_PIX_FMT_VULKAN selected (sw_format={}).",
                         av_get_pix_fmt_name(fc->sw_format));
         return AV_PIX_FMT_VULKAN;
     }
@@ -706,8 +690,8 @@ auto VideoDecoder::build_internal(InputSpec input, u32 target_width, u32 target_
         self->state_->cctx->hw_device_ctx = av_buffer_ref(self->state_->hwd.get());
         if (requested_kind == FrameKind::VulkanShared) {
             /* get_format_prefer_vulkan runs during avcodec_open2 below
-             * and bootstraps a DISABLE_MULTIPLANE hw_frames_ctx if it
-             * picks AV_PIX_FMT_VULKAN. On any failure inside that
+             * and bootstraps a compatible hw_frames_ctx if it picks
+             * AV_PIX_FMT_VULKAN. On any failure inside that
              * callback the codec falls through to a sw pix_fmt; we
              * detect that after open and reset kind_ to Sw. */
             self->state_->cctx->get_format = get_format_prefer_vulkan;
