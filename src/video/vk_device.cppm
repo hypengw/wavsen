@@ -92,6 +92,7 @@ public:
     u32                  queue_family_index() const { return queue_family_; }
     u32                  drm_render_major() const { return drm_render_major_; }
     u32                  drm_render_minor() const { return drm_render_minor_; }
+    auto                 drm_render_node() const -> Option<rstd::string::String>;
     const rstd::uint8_t* device_uuid() const { return have_uuid_ ? device_uuid_ : nullptr; }
     const rstd::uint8_t* driver_uuid() const { return have_uuid_ ? driver_uuid_ : nullptr; }
     int                  drm_render_fd() const { return drm_render_file_.as_raw_fd(); }

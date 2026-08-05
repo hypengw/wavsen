@@ -156,26 +156,34 @@ AVPixelFormat get_format_prefer_vaapi(AVCodecContext* cctx, const AVPixelFormat*
 }
 
 /* Best-effort AV_HWDEVICE_TYPE_VAAPI context. FFmpeg owns the libva
- * VADisplay; we just hand it a render-node path (or NULL for default).
+ * VADisplay; we hand it the selected Vulkan device's render-node path.
  * Returns NULL on any failure with *err populated. */
 AVBufferRef* make_vaapi_hwdevice(const rstd::string::String& render_node, Error* err) {
+    if (render_node.is_empty()) {
+        fail(err, "VAAPI requires the selected Vulkan device's render node"_str);
+        return nullptr;
+    }
     AVBufferRef* hwd           = nullptr;
     auto         render_node_c = rstd::ffi::CString::make(render_node.clone()).unwrap();
-    const char*  dev           = render_node.is_empty() ? nullptr : render_node_c.as_ptr();
+    const char*  dev           = render_node_c.as_ptr();
     int          rc = av_hwdevice_ctx_create(&hwd, AV_HWDEVICE_TYPE_VAAPI, dev, nullptr, 0);
     if (rc < 0 || ! hwd) {
         fail(err,
-             render_node.is_empty()
-                 ? rstd::format("av_hwdevice_ctx_create(VAAPI): {}", av_err_str(rc).as_str())
-                 : rstd::format("av_hwdevice_ctx_create(VAAPI, {}): {}",
-                                render_node.as_str(),
-                                av_err_str(rc).as_str()));
+             rstd::format("av_hwdevice_ctx_create(VAAPI, {}): {}",
+                          render_node.as_str(),
+                          av_err_str(rc).as_str()));
         if (hwd) av_buffer_unref(&hwd);
         return nullptr;
     }
     return hwd;
 }
 #endif
+
+rstd::string::String resolve_render_node(const Producer& producer, const OpenOpts& opts) {
+    if (! opts.render_node.is_empty()) return opts.render_node.clone();
+    auto node = producer.drm_render_node();
+    return node.is_some() ? rstd::move(node).unwrap() : rstd::string::String {};
+}
 
 /* Build an AV_HWDEVICE_TYPE_VULKAN context wrapping the caller's
  * Producer-owned VkInstance/VkDevice. Returns a populated AVBufferRef
@@ -401,6 +409,7 @@ auto VideoDecoder::open(ref<str> path, u32 target_width, u32 target_height, bool
 auto VideoDecoder::open_with_vk(ref<str> path, u32 target_width, u32 target_height, bool loop,
                                 const Producer& producer, const OpenOpts& opts)
     -> Result<rstd::boxed::Box<VideoDecoder>, Error> {
+    auto render_node = resolve_render_node(producer, opts);
     /* Resolve trial order. Auto = Vulkan first, then VAAPI; explicit
      * single-mode skips the others; None goes straight to sw. */
     HwAccel order[2] = { HwAccel::None, HwAccel::None };
@@ -431,7 +440,7 @@ auto VideoDecoder::open_with_vk(ref<str> path, u32 target_width, u32 target_heig
             kind = FrameKind::VulkanShared;
         } else if (order[i] == HwAccel::Vaapi) {
 #if defined(WAVSEN_HAS_VAAPI)
-            hwd  = make_vaapi_hwdevice(opts.render_node, &local_err);
+            hwd  = make_vaapi_hwdevice(render_node, &local_err);
             kind = FrameKind::VaapiDrm;
 #else
             local_err.message =
@@ -497,8 +506,9 @@ auto VideoDecoder::open_from_stream(InputStreamFactory make_stream, u32 target_w
     /* Shared Vulkan path: mirror open_with_vk's trial loop. Each trial
      * gets a fresh IInputStream from the factory — build_internal
      * consumes it, and on failure State's destructor cleans up. */
-    HwAccel order[2] = { HwAccel::None, HwAccel::None };
-    int     n_order  = 0;
+    auto    render_node = resolve_render_node(*producer, opts);
+    HwAccel order[2]    = { HwAccel::None, HwAccel::None };
+    int     n_order     = 0;
     switch (opts.hwaccel) {
     case HwAccel::Auto:
         order[0] = HwAccel::Vulkan;
@@ -525,7 +535,7 @@ auto VideoDecoder::open_from_stream(InputStreamFactory make_stream, u32 target_w
             kind = FrameKind::VulkanShared;
         } else if (order[i] == HwAccel::Vaapi) {
 #if defined(WAVSEN_HAS_VAAPI)
-            hwd  = make_vaapi_hwdevice(opts.render_node, &local_err);
+            hwd  = make_vaapi_hwdevice(render_node, &local_err);
             kind = FrameKind::VaapiDrm;
 #else
             local_err.message =

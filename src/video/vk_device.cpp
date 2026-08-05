@@ -88,12 +88,40 @@ auto Producer::from_external(ExternalDeviceInfo info) -> Result<rstd::boxed::Box
     self->enabled_inst_exts_    = rstd::move(info.enabled_instance_extensions);
     self->enabled_dev_exts_     = rstd::move(info.enabled_device_extensions);
     self->queue_families_       = rstd::move(info.queue_families);
+
+    if (info.drm_render_major == u32() && info.drm_render_minor == u32() &&
+        device_has_ext(self->phys_, "VK_EXT_physical_device_drm"_str)) {
+        VkPhysicalDeviceDrmPropertiesEXT drm {};
+        drm.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRM_PROPERTIES_EXT;
+        VkPhysicalDeviceProperties2 properties {};
+        properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+        properties.pNext = &drm;
+        self->phys_.GetProperties2KHR(properties);
+        if (drm.hasRender) {
+            info.drm_render_major = u32(drm.renderMajor);
+            info.drm_render_minor = u32(drm.renderMinor);
+        }
+    }
     if (info.drm_render_fd >= 0) {
         self->drm_render_file_ = rstd::fs::File::from_raw_fd(info.drm_render_fd);
     }
     self->drm_render_major_ = info.drm_render_major;
     self->drm_render_minor_ = info.drm_render_minor;
     return Ok(rstd::move(self));
+}
+
+auto Producer::drm_render_node() const -> Option<rstd::string::String> {
+    if (drm_render_major_ == u32() && drm_render_minor_ == u32()) return None();
+
+    auto node     = rstd::format("/dev/dri/renderD{}", drm_render_minor_);
+    auto path     = rstd::path::PathBuf::from(node.as_str());
+    auto metadata = rstd::fs::metadata(path.as_path());
+    if (metadata.is_err()) return None();
+    auto value = rstd::move(metadata).unwrap();
+    if (value.rdev_major() != drm_render_major_ || value.rdev_minor() != drm_render_minor_) {
+        return None();
+    }
+    return Some(rstd::move(node));
 }
 
 Option<rstd::boxed::Box<Producer>> Producer::build_(u32 width, u32 height,
