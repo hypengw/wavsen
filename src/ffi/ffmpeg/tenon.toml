@@ -25,40 +25,39 @@ private-options = [
   "-Wno-missing-field-initializers",
 ]
 
-[dependencies.vulkan]
-cmake = "Vulkan"
-target = "Vulkan::Vulkan"
-visibility = "private"
+[external-dependencies.cmake.vulkan]
+find-package = "Vulkan"
+targets = [{ name = "Vulkan::Vulkan", visibility = "private" }]
 
-[dependencies.libavformat]
-pkg-config = "libavformat"
+[external-dependencies.pkg-config.libavformat]
+module = "libavformat"
 version = ">= 58"
 visibility = "public"
 
-[dependencies.libavcodec]
-pkg-config = "libavcodec"
+[external-dependencies.pkg-config.libavcodec]
+module = "libavcodec"
 version = ">= 58"
 visibility = "public"
 
-[dependencies.libavutil]
-pkg-config = "libavutil"
+[external-dependencies.pkg-config.libavutil]
+module = "libavutil"
 version = ">= 56"
 visibility = "public"
 
-[dependencies.libswscale]
-pkg-config = "libswscale"
+[external-dependencies.pkg-config.libswscale]
+module = "libswscale"
 version = ">= 5"
 visibility = "public"
 
-[dependencies.libswresample]
-pkg-config = "libswresample"
+[external-dependencies.pkg-config.libswresample]
+module = "libswresample"
 version = ">= 3"
 visibility = "public"
 
-[dependencies.libva]
-pkg-config = "libva"
+[external-dependencies.pkg-config.libva]
+module = "libva"
 visibility = "public"
 
-[dependencies.libva-drm]
-pkg-config = "libva-drm"
+[external-dependencies.pkg-config.libva-drm]
+module = "libva-drm"
 visibility = "public"

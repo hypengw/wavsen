@@ -30,7 +30,7 @@ visibility = "private"
 git = "https://github.com/litocpp/rstd.git"
 visibility = "private"
 
-[dependencies.libpulse]
-pkg-config = "libpulse"
+[external-dependencies.pkg-config.libpulse]
+module = "libpulse"
 version = ">= 14.0"
 visibility = "private"

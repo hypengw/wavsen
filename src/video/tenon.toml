@@ -40,8 +40,7 @@ visibility = "public"
 git = "https://github.com/litocpp/vvk.git"
 visibility = "public"
 
-[dependencies.wavsen-shader]
-cmake = "WavsenShader"
-target = "WavsenShader::nv12_to_rgba"
+[external-dependencies.cmake.wavsen-shader]
+find-package = "WavsenShader"
 path = "../../shaders"
-visibility = "private"
+targets = [{ name = "WavsenShader::nv12_to_rgba", visibility = "private" }]
