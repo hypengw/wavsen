@@ -33,6 +33,12 @@ public:
     // was originally requested.
     void retarget(const DeviceDesc& target);
 
+    // Change the decoded media rate without reopening the source. The
+    // resampler runs the source clock faster or slower, so pitch follows
+    // playback rate.
+    auto set_playback_rate(f64 rate) -> bool;
+    auto playback_rate() const -> f64;
+
     // Pull `frames` interleaved f32 frames into `dst`. Returns frames
     // actually produced (less than `frames` only on EOF).
     auto next_pcm(void* dst, u32 frames) -> u64;

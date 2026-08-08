@@ -130,15 +130,35 @@ public:
         if (target.channels == target_.channels && target.sample_rate == target_.sample_rate) {
             return;
         }
+        SwrContext* next = nullptr;
+        if (! build_resampler(target, playback_rate_, &next)) return;
+        if (swr_) swr_free(&swr_);
+        swr_    = next;
         target_ = target;
-        if (swr_) {
-            swr_free(&swr_);
-        }
-        setup_resampler();
         // Drop any pending resampled frames; the new format is incompatible.
         pending_offset_ = u32();
         pending_frames_ = u32();
     }
+
+    auto set_playback_rate(f64 rate) -> bool {
+        if (! rate.is_finite() || rate <= f64()) return false;
+        if (rate == playback_rate_) return true;
+        if (cctx_ == nullptr) {
+            playback_rate_ = rate;
+            return true;
+        }
+
+        SwrContext* next = nullptr;
+        if (! build_resampler(target_, rate, &next)) return false;
+        if (swr_) swr_free(&swr_);
+        swr_            = next;
+        playback_rate_  = rate;
+        pending_offset_ = u32();
+        pending_frames_ = u32();
+        return true;
+    }
+
+    auto playback_rate() const -> f64 { return playback_rate_; }
 
     auto next_pcm(void* dst, u32 frames) -> u64 {
         if (cctx_ == nullptr || swr_ == nullptr) return u64();
@@ -263,9 +283,16 @@ private:
         }
     }
 
-    bool setup_resampler() {
+    bool build_resampler(const DeviceDesc& target, f64 rate, SwrContext** result) {
+        const auto effective_input_rate = f64(cctx_->sample_rate) * rate;
+        if (! effective_input_rate.is_finite() || effective_input_rate < f64(1.0) ||
+            effective_input_rate > f64(i32::MAX.to_primitive())) {
+            rstd::log::error("wavsen::audio: playback rate produces an invalid sample rate");
+            return false;
+        }
+
         AVChannelLayout out_layout {};
-        av_channel_layout_default(&out_layout, static_cast<int>(target_.channels.to_primitive()));
+        av_channel_layout_default(&out_layout, static_cast<int>(target.channels.to_primitive()));
 
         AVChannelLayout in_layout {};
         if (cctx_->ch_layout.order != AV_CHANNEL_ORDER_UNSPEC) {
@@ -274,13 +301,14 @@ private:
             av_channel_layout_default(&in_layout, cctx_->ch_layout.nb_channels);
         }
 
-        if (swr_alloc_set_opts2(&swr_,
+        SwrContext* next = nullptr;
+        if (swr_alloc_set_opts2(&next,
                                 &out_layout,
                                 AV_SAMPLE_FMT_FLT,
-                                static_cast<int>(target_.sample_rate.to_primitive()),
+                                static_cast<int>(target.sample_rate.to_primitive()),
                                 &in_layout,
                                 cctx_->sample_fmt,
-                                cctx_->sample_rate,
+                                static_cast<int>(effective_input_rate.to_primitive() + 0.5),
                                 /*log_offset=*/0,
                                 /*log_ctx=*/nullptr) < 0) {
             av_channel_layout_uninit(&out_layout);
@@ -291,11 +319,20 @@ private:
         av_channel_layout_uninit(&out_layout);
         av_channel_layout_uninit(&in_layout);
 
-        if (swr_init(swr_) < 0) {
+        if (swr_init(next) < 0) {
             rstd::log::error("wavsen::audio: swr_init failed");
-            swr_free(&swr_);
+            swr_free(&next);
             return false;
         }
+        *result = next;
+        return true;
+    }
+
+    bool setup_resampler() {
+        SwrContext* next = nullptr;
+        if (! build_resampler(target_, playback_rate_, &next)) return false;
+        if (swr_) swr_free(&swr_);
+        swr_ = next;
         return true;
     }
 
@@ -317,6 +354,7 @@ private:
         pending_frames_   = u32();
         eof_              = false;
         last_pts_seconds_ = f64();
+        playback_rate_    = f64(1.0);
     }
 
     rstd::Option<ByteStream> src_;
@@ -336,6 +374,7 @@ private:
     u32                pending_frames_;
     bool               eof_ {};
     f64                last_pts_seconds_;
+    f64                playback_rate_ { 1.0 };
 };
 
 StreamDecoder::StreamDecoder(): impl_(Box<Impl>::make()) {}
@@ -348,6 +387,10 @@ bool StreamDecoder::open(ByteStream src, const DeviceDesc& target) {
 }
 
 void StreamDecoder::retarget(const DeviceDesc& target) { impl_->retarget(target); }
+
+auto StreamDecoder::set_playback_rate(f64 rate) -> bool { return impl_->set_playback_rate(rate); }
+
+auto StreamDecoder::playback_rate() const -> f64 { return impl_->playback_rate(); }
 
 auto StreamDecoder::next_pcm(void* dst, u32 frames) -> u64 { return impl_->next_pcm(dst, frames); }
 

@@ -24,17 +24,46 @@ public:
     AvPullChannel(StreamDecoder* decoder, rstd::sync::atomic::Atomic<f64>* pts_at_anchor,
                   rstd::sync::atomic::Atomic<u64>*  device_pos_at_anchor,
                   rstd::sync::atomic::Atomic<bool>* needs_reanchor,
-                  rstd::sync::atomic::Atomic<bool>* anchored, Box<dyn<FnMut<u64()>>> device_pos_now)
+                  rstd::sync::atomic::Atomic<bool>* anchored,
+                  rstd::sync::atomic::Atomic<f64>*  desired_rate,
+                  rstd::sync::atomic::Atomic<u64>*  desired_rate_revision,
+                  rstd::sync::atomic::Atomic<u64>*  applied_rate_revision,
+                  rstd::sync::atomic::Atomic<f64>*  rate_at_anchor,
+                  Box<dyn<FnMut<u64()>>>            device_pos_now)
         : decoder_(decoder),
           pts_at_anchor_(pts_at_anchor),
           device_pos_at_anchor_(device_pos_at_anchor),
           needs_reanchor_(needs_reanchor),
           anchored_(anchored),
+          desired_rate_(desired_rate),
+          desired_rate_revision_(desired_rate_revision),
+          applied_rate_revision_(applied_rate_revision),
+          rate_at_anchor_(rate_at_anchor),
           device_pos_now_(rstd::move(device_pos_now)) {}
 
     auto next_pcm(void* dst, u32 frames) -> u64 override {
+        const auto desired_revision =
+            desired_rate_revision_->load(rstd::sync::atomic::Ordering::Acquire);
+        if (desired_revision !=
+            applied_rate_revision_->load(rstd::sync::atomic::Ordering::Relaxed)) {
+            anchored_->store(false, rstd::sync::atomic::Ordering::Release);
+            needs_reanchor_->store(true, rstd::sync::atomic::Ordering::Release);
+            const auto rate = desired_rate_->load(rstd::sync::atomic::Ordering::Acquire);
+            rate_ready_     = decoder_->set_playback_rate(rate);
+            applied_rate_revision_->store(desired_revision, rstd::sync::atomic::Ordering::Release);
+            if (! rate_ready_) {
+                rstd::log::error("wavsen::audio::AvPlayer: failed to apply playback rate {}", rate);
+            }
+        }
+        if (! rate_ready_) return u64();
+
         const auto produced = decoder_->next_pcm(dst, frames);
         if (produced > u64() && needs_reanchor_->load(rstd::sync::atomic::Ordering::Acquire)) {
+            if (desired_rate_revision_->load(rstd::sync::atomic::Ordering::Acquire) !=
+                applied_rate_revision_->load(rstd::sync::atomic::Ordering::Acquire)) {
+                anchored_->store(false, rstd::sync::atomic::Ordering::Release);
+                return produced;
+            }
             // Anchor: at the moment this batch enters the device, the
             // decoder's most-recent PTS corresponds to the device's
             // current playback position.
@@ -42,6 +71,8 @@ public:
                                   rstd::sync::atomic::Ordering::Relaxed);
             device_pos_at_anchor_->store(device_pos_now_->operator()(),
                                          rstd::sync::atomic::Ordering::Relaxed);
+            rate_at_anchor_->store(decoder_->playback_rate(),
+                                   rstd::sync::atomic::Ordering::Relaxed);
             anchored_->store(true, rstd::sync::atomic::Ordering::Release);
             needs_reanchor_->store(false, rstd::sync::atomic::Ordering::Release);
         }
@@ -56,7 +87,12 @@ private:
     rstd::sync::atomic::Atomic<u64>*  device_pos_at_anchor_;
     rstd::sync::atomic::Atomic<bool>* needs_reanchor_;
     rstd::sync::atomic::Atomic<bool>* anchored_;
+    rstd::sync::atomic::Atomic<f64>*  desired_rate_;
+    rstd::sync::atomic::Atomic<u64>*  desired_rate_revision_;
+    rstd::sync::atomic::Atomic<u64>*  applied_rate_revision_;
+    rstd::sync::atomic::Atomic<f64>*  rate_at_anchor_;
     Box<dyn<FnMut<u64()>>>            device_pos_now_;
+    bool                              rate_ready_ { true };
 };
 
 } // namespace
@@ -84,6 +120,10 @@ public:
     rstd::sync::atomic::Atomic<bool> needs_reanchor { true };
     rstd::sync::atomic::Atomic<bool> anchored { false };
     rstd::sync::atomic::Atomic<bool> paused { true };
+    rstd::sync::atomic::Atomic<f64>  desired_rate { f64(1.0) };
+    rstd::sync::atomic::Atomic<u64>  desired_rate_revision { u64() };
+    rstd::sync::atomic::Atomic<u64>  applied_rate_revision { u64() };
+    rstd::sync::atomic::Atomic<f64>  rate_at_anchor { f64(1.0) };
 };
 
 AvPlayer::AvPlayer(ConstructionKey, AudioClientIdentity identity)
@@ -128,6 +168,10 @@ auto AvPlayer::open(ByteStream src, bool open_device, AudioClientIdentity identi
                                                     &p->impl_->device_pos_at_anchor,
                                                     &p->impl_->needs_reanchor,
                                                     &p->impl_->anchored,
+                                                    &p->impl_->desired_rate,
+                                                    &p->impl_->desired_rate_revision,
+                                                    &p->impl_->applied_rate_revision,
+                                                    &p->impl_->rate_at_anchor,
                                                     Box<dyn<FnMut<u64()>>>::make([dev]() {
                                                        return dev->stream_position_frames();
                                                     }));
@@ -195,6 +239,20 @@ void AvPlayer::seek_to(f64 seconds) {
     }
 }
 
+auto AvPlayer::set_playback_rate(f64 rate) -> bool {
+    if (! rate.is_finite() || rate <= f64()) return false;
+    if (rate == playback_rate()) return true;
+    impl_->desired_rate.store(rate, rstd::sync::atomic::Ordering::Release);
+    impl_->desired_rate_revision.fetch_add(u64(1), rstd::sync::atomic::Ordering::AcqRel);
+    impl_->anchored.store(false, rstd::sync::atomic::Ordering::Release);
+    impl_->needs_reanchor.store(true, rstd::sync::atomic::Ordering::Release);
+    return true;
+}
+
+auto AvPlayer::playback_rate() const -> f64 {
+    return impl_->desired_rate.load(rstd::sync::atomic::Ordering::Acquire);
+}
+
 auto AvPlayer::current_time_seconds() const -> f64 {
     if (impl_->device.state() != AudioDeviceState::ReadyPlaying) {
         return f64::NAN_;
@@ -207,11 +265,12 @@ auto AvPlayer::current_time_seconds() const -> f64 {
     const auto played = impl_->device.stream_position_frames();
     const auto base   = impl_->device_pos_at_anchor.load(rstd::sync::atomic::Ordering::Relaxed);
     const auto pts0   = impl_->pts_at_anchor.load(rstd::sync::atomic::Ordering::Relaxed);
+    const auto rate   = impl_->rate_at_anchor.load(rstd::sync::atomic::Ordering::Relaxed);
     // played may legally drop below base across some backends after stop/start;
     // saturate to anchor pts in that case.
     if (played < base) return pts0;
     return pts0 + f64(static_cast<double>((played - base).to_primitive())) /
-                      f64(static_cast<double>(sr.to_primitive()));
+                      f64(static_cast<double>(sr.to_primitive())) * rate;
 }
 
 void AvPlayer::set_volume(f32 value) {

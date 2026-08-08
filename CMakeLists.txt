@@ -178,4 +178,20 @@ if(WAVSEN_BUILD_TESTS)
     target_link_libraries(wavsen_audio_gain_tests PRIVATE rstd::rstd)
     add_test(NAME wavsen_audio_gain_tests
              COMMAND wavsen_audio_gain_tests)
+
+    add_executable(wavsen_presenter_tests
+        tests/presenter_tests.cpp
+    )
+    target_compile_features(wavsen_presenter_tests PRIVATE cxx_std_20)
+    target_link_libraries(wavsen_presenter_tests PRIVATE wavsen::video)
+    add_test(NAME wavsen_presenter_tests
+             COMMAND wavsen_presenter_tests)
+
+    add_executable(wavsen_stream_decoder_rate_tests
+        tests/stream_decoder_rate_tests.cpp
+    )
+    target_compile_features(wavsen_stream_decoder_rate_tests PRIVATE cxx_std_20)
+    target_link_libraries(wavsen_stream_decoder_rate_tests PRIVATE wavsen::audio)
+    add_test(NAME wavsen_stream_decoder_rate_tests
+             COMMAND wavsen_stream_decoder_rate_tests)
 endif()

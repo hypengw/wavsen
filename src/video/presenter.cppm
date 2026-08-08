@@ -53,6 +53,16 @@ public:
 
     void clear_external_clock() { clock_fn_ = None(); }
 
+    auto set_playback_rate(f64 rate) -> bool {
+        if (! rate.is_finite() || rate <= f64()) return false;
+        if (rate == playback_rate_) return true;
+        playback_rate_ = rate;
+        reset();
+        return true;
+    }
+
+    auto playback_rate() const -> f64 { return playback_rate_; }
+
     // Returns true if the caller should render the frame now (possibly
     // after sleeping); false if the frame is too far behind schedule and
     // should be dropped. Always advances the baseline on drop so we
@@ -63,7 +73,7 @@ public:
         if (clock_fn_.is_some()) {
             const f64 now_pts = clock_fn_->as_mut_ptr()->operator()();
             if (! now_pts.is_nan()) {
-                const f64 skew        = pts_seconds - now_pts;
+                const f64 skew        = (pts_seconds - now_pts) / playback_rate_;
                 const f64 max_lag_s   = f64(max_lag_.as_secs_f64());
                 const f64 max_sleep_s = f64(max_sleep_.as_secs_f64());
                 if (skew < -max_lag_s) {
@@ -101,7 +111,8 @@ public:
             return true;
         }
 
-        const auto delta  = Duration::from_secs_f64((pts_seconds - t0_pts_).to_primitive());
+        const auto delta =
+            Duration::from_secs_f64(((pts_seconds - t0_pts_) / playback_rate_).to_primitive());
         const auto target = t0_wall_ + delta;
 
         if (target + max_lag_ < now) {
@@ -131,6 +142,7 @@ private:
     TimePoint                                   t0_wall_ {};
     f64                                         t0_pts_ { -1.0 };
     bool                                        primed_ { false };
+    f64                                         playback_rate_ { 1.0 };
     u32                                         external_drop_streak_ {};
     Option<rstd::boxed::Box<dyn<FnMut<f64()>>>> clock_fn_;
 };
