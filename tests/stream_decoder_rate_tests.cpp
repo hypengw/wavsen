@@ -67,17 +67,19 @@ auto decoded_frames(f64 rate) -> u64 {
 } // namespace
 
 int main() {
-    const auto normal = decoded_frames(f64(1.0));
-    const auto fast   = decoded_frames(f64(2.0));
-    const auto slow   = decoded_frames(f64(0.5));
+    const auto normal  = decoded_frames(f64(1.0));
+    const auto fast    = decoded_frames(f64(2.0));
+    const auto fastest = decoded_frames(f64(4.0));
+    const auto slow    = decoded_frames(f64(0.5));
     if (normal < u64(47000) || normal > u64(49000)) return 1;
     if (fast * u64(100) < normal * u64(45) || fast * u64(100) > normal * u64(55)) return 2;
-    if (slow * u64(100) < normal * u64(190) || slow * u64(100) > normal * u64(210)) return 3;
+    if (fastest * u64(100) < normal * u64(20) || fastest * u64(100) > normal * u64(30)) return 3;
+    if (slow * u64(100) < normal * u64(190) || slow * u64(100) > normal * u64(210)) return 4;
 
     wavsen::audio::StreamDecoder decoder;
-    if (decoder.set_playback_rate(f64())) return 4;
-    if (decoder.set_playback_rate(f64::NAN_)) return 5;
-    if (decoder.set_playback_rate(f64(-1.0))) return 6;
-    if (decoder.set_playback_rate(f64::INFINITY_)) return 7;
+    if (decoder.set_playback_rate(f64())) return 5;
+    if (decoder.set_playback_rate(f64::NAN_)) return 6;
+    if (decoder.set_playback_rate(f64(-1.0))) return 7;
+    if (decoder.set_playback_rate(f64::INFINITY_)) return 8;
     return 0;
 }
