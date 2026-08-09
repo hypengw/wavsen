@@ -7,10 +7,10 @@ import avcodec;
 import avformat;
 import swscale;
 
+using namespace rstd::prelude;
+
 namespace wavsen::decode
 {
-
-using namespace rstd::prelude;
 
 namespace
 {
@@ -92,7 +92,7 @@ void compute_target(int src_w, int src_h, u32 max_edge, u32& tw, u32& th) {
 
 auto extract_thumbnail(ref<str> path, const ThumbOptions& opts) -> Result<RgbaImage, Error> {
     if (opts.max_edge == u32()) {
-        return rstd::Err(mk(ErrorKind::InvalidArgs, "max_edge must be non-zero"));
+        return Err(mk(ErrorKind::InvalidArgs, "max_edge must be non-zero"));
     }
 
     auto path_c   = rstd::ffi::CString::make(String::make(path)).unwrap();
@@ -112,7 +112,7 @@ auto extract_thumbnail(ref<str> path, const ThumbOptions& opts) -> Result<RgbaIm
 
     int video_idx = av_find_best_stream(fmt.get(), AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
     if (video_idx < 0) {
-        return rstd::Err(mk(ErrorKind::NoVideoStream, "no video/image stream in file"));
+        return Err(mk(ErrorKind::NoVideoStream, "no video/image stream in file"));
     }
 
     AVStream*          st  = fmt->streams[video_idx];
@@ -126,7 +126,7 @@ auto extract_thumbnail(ref<str> path, const ThumbOptions& opts) -> Result<RgbaIm
 
     CodecCtxPtr cctx(avcodec_alloc_context3(dec));
     if (! cctx) {
-        return rstd::Err(mk(ErrorKind::DecoderInit, "avcodec_alloc_context3 failed"));
+        return Err(mk(ErrorKind::DecoderInit, "avcodec_alloc_context3 failed"));
     }
     if (int rc = avcodec_parameters_to_context(cctx.get(), par); rc < 0) {
         return Err(mk(ErrorKind::DecoderInit,
@@ -160,7 +160,7 @@ auto extract_thumbnail(ref<str> path, const ThumbOptions& opts) -> Result<RgbaIm
     PacketPtr pkt(av_packet_alloc());
     FramePtr  src_frame(av_frame_alloc());
     if (! pkt || ! src_frame) {
-        return rstd::Err(mk(ErrorKind::DecoderInit, "av_packet_alloc / av_frame_alloc failed"));
+        return Err(mk(ErrorKind::DecoderInit, "av_packet_alloc / av_frame_alloc failed"));
     }
 
     bool got_frame = false;
@@ -186,7 +186,7 @@ auto extract_thumbnail(ref<str> path, const ThumbOptions& opts) -> Result<RgbaIm
             rc = avcodec_receive_frame(cctx.get(), src_frame.get());
             if (rc == AVERROR(EAGAIN)) break;
             if (rc == AVERROR_EOF) {
-                return rstd::Err(
+                return Err(
                     mk(ErrorKind::DecodeFailed, "decoder flushed without producing a frame"));
             }
             if (rc < 0) {
@@ -202,15 +202,14 @@ auto extract_thumbnail(ref<str> path, const ThumbOptions& opts) -> Result<RgbaIm
     const int  src_w   = src_frame->width;
     const int  src_h   = src_frame->height;
     if (src_w <= 0 || src_h <= 0 || src_fmt == AV_PIX_FMT_NONE) {
-        return rstd::Err(
-            mk(ErrorKind::DecodeFailed, "decoded frame has invalid dimensions/format"));
+        return Err(mk(ErrorKind::DecodeFailed, "decoded frame has invalid dimensions/format"));
     }
 
     u32 tw;
     u32 th;
     compute_target(src_w, src_h, opts.max_edge, tw, th);
     if (tw == u32() || th == u32()) {
-        return rstd::Err(mk(ErrorKind::ScaleFailed, "computed target size is zero"));
+        return Err(mk(ErrorKind::ScaleFailed, "computed target size is zero"));
     }
 
     SwsPtr sws(sws_getContext(src_w,
@@ -241,7 +240,7 @@ auto extract_thumbnail(ref<str> path, const ThumbOptions& opts) -> Result<RgbaIm
     int scaled = sws_scale(
         sws.get(), src_frame->data, src_frame->linesize, 0, src_h, dst_planes, dst_strides);
     if (scaled <= 0) {
-        return rstd::Err(mk(ErrorKind::ScaleFailed, "sws_scale produced no rows"));
+        return Err(mk(ErrorKind::ScaleFailed, "sws_scale produced no rows"));
     }
 
     return Ok(rstd::move(out));

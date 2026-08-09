@@ -8,10 +8,10 @@ export module wavsen.audio.capture_window;
 import rstd;
 import wavsen.audio.capture;
 
+using namespace rstd::prelude;
+
 export namespace wavsen::audio::capture
 {
-
-using namespace rstd::prelude;
 
 class PcmWindowPublisher {
 public:

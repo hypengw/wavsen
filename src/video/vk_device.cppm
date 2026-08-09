@@ -4,19 +4,19 @@ import rstd;
 export import vulkan;
 import vvk;
 
+using namespace rstd::prelude;
+
 export namespace wavsen::video
 {
-
-using namespace rstd::prelude;
 
 // Unified error carrier. Free-form message — callers either log or
 // surface as an opaque diagnostic.
 struct Error {
-    rstd::string::String message;
+    String message;
 
     Error() = default;
-    explicit Error(ref<str> value): message(rstd::string::String::make(value)) {}
-    explicit Error(rstd::string::String value): message(rstd::move(value)) {}
+    explicit Error(ref<str> value): message(String::make(value)) {}
+    explicit Error(String value): message(rstd::move(value)) {}
 };
 
 // Per-queue-family record exposed to FFmpeg's AVVulkanDeviceContext::qf[].
@@ -41,14 +41,14 @@ public:
     Producer(const Producer&)            = delete;
     Producer& operator=(const Producer&) = delete;
 
-    static auto create(u32 width, u32 height) -> Result<rstd::boxed::Box<Producer>, Error>;
+    static auto create(u32 width, u32 height) -> Result<Box<Producer>, Error>;
 
     // Pin the picked VkPhysicalDevice to the GPU that exposes
     // `render_node` (e.g. "/dev/dri/renderD128"). Empty string → behaves
     // identically to the no-arg overload (first device that advertises
     // the required extension set wins).
     static auto create_with_render_node(u32 width, u32 height, ref<str> render_node)
-        -> Result<rstd::boxed::Box<Producer>, Error>;
+        -> Result<Box<Producer>, Error>;
 
     // Adopt a caller-owned VkInstance/VkDevice. The returned Producer
     // exposes them via instance() / device() etc. and feeds FFmpeg's
@@ -71,19 +71,19 @@ public:
         // vkGetPhysicalDeviceQueueFamilyProperties returns. Used for
         // AVVulkanDeviceContext::qf[]. May be empty (FFmpeg falls back
         // to its own queue discovery).
-        rstd::vec::Vec<QueueFamily> queue_families;
-        rstd::vec::Vec<const char*> enabled_instance_extensions;
-        rstd::vec::Vec<const char*> enabled_device_extensions;
-        u32                         api_version { 0x00403000u }; // VK_API_VERSION_1_3
-        u32                         width {};
-        u32                         height {};
+        Vec<QueueFamily> queue_families;
+        Vec<const char*> enabled_instance_extensions;
+        Vec<const char*> enabled_device_extensions;
+        u32              api_version { 0x00403000u }; // VK_API_VERSION_1_3
+        u32              width {};
+        u32              height {};
         // Optional DRM render-node info (renderD12X). drm_render_fd is
         // adopted (closed on Producer destruction) if >= 0.
         int drm_render_fd { -1 };
         u32 drm_render_major {};
         u32 drm_render_minor {};
     };
-    static auto from_external(ExternalDeviceInfo info) -> Result<rstd::boxed::Box<Producer>, Error>;
+    static auto from_external(ExternalDeviceInfo info) -> Result<Box<Producer>, Error>;
 
     VkInstance           instance() const { return *instance_; }
     VkPhysicalDevice     physical_device() const { return *phys_; }
@@ -92,7 +92,7 @@ public:
     u32                  queue_family_index() const { return queue_family_; }
     u32                  drm_render_major() const { return drm_render_major_; }
     u32                  drm_render_minor() const { return drm_render_minor_; }
-    auto                 drm_render_node() const -> Option<rstd::string::String>;
+    auto                 drm_render_node() const -> Option<String>;
     const rstd::uint8_t* device_uuid() const { return have_uuid_ ? device_uuid_ : nullptr; }
     const rstd::uint8_t* driver_uuid() const { return have_uuid_ ? driver_uuid_ : nullptr; }
     int                  drm_render_fd() const { return drm_render_file_.as_raw_fd(); }
@@ -116,8 +116,8 @@ public:
 private:
     // Internal builder used by the two public factories. Returns a
     // unique_ptr or nullptr; on failure populates `*err` with a message.
-    static Option<rstd::boxed::Box<Producer>> build_(u32 width, u32 height,
-                                                     Option<ref<str>> render_node, Error* err);
+    static Option<Box<Producer>> build_(u32 width, u32 height, Option<ref<str>> render_node,
+                                        Error* err);
 
     int upload_into_(VkImage target, u32 target_width, u32 target_height, const rstd::uint8_t* data,
                      usize size, Error* err);
@@ -152,10 +152,10 @@ private:
     rstd::uint8_t device_uuid_[16] {};
     rstd::uint8_t driver_uuid_[16] {};
 
-    u32                         instance_api_version_ {};
-    rstd::vec::Vec<const char*> enabled_inst_exts_;
-    rstd::vec::Vec<const char*> enabled_dev_exts_;
-    rstd::vec::Vec<QueueFamily> queue_families_;
+    u32              instance_api_version_ {};
+    Vec<const char*> enabled_inst_exts_;
+    Vec<const char*> enabled_dev_exts_;
+    Vec<QueueFamily> queue_families_;
 
     /* When true, ~Producer destroys the VkInstance/VkDevice and the
      * staging/command-pool/fence/semaphore resources it allocated. When

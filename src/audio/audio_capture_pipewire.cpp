@@ -5,10 +5,10 @@ import rstd.log;
 import pipewire;
 import wavsen.audio.capture_window;
 
+using namespace rstd::prelude;
+
 namespace wavsen::audio
 {
-
-using namespace rstd::prelude;
 
 namespace pipewire_ffi = wavsen::ffi::pipewire;
 

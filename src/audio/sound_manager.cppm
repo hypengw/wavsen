@@ -4,10 +4,10 @@ import rstd.cppstd;
 import rstd;
 import :core;
 
+using namespace rstd::prelude;
+
 export namespace wavsen::audio
 {
-
-using namespace rstd::prelude;
 
 // A mountable PCM source. Data callback fills `frames` interleaved frames
 // of the device's negotiated format (f32 little-endian) and channel count.

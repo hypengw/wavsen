@@ -2,10 +2,10 @@ export module wavsen.decode;
 
 import rstd;
 
+using namespace rstd::prelude;
+
 export namespace wavsen::decode
 {
-
-using namespace rstd::prelude;
 
 enum class ErrorKind : rstd::int32_t
 {

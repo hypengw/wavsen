@@ -9,11 +9,11 @@ import pipewire;
 import wavsen.audio.gain;
 import :core;
 
-namespace wavsen::audio
-{
-
 using namespace rstd::prelude;
 using namespace rstd::literals;
+
+namespace wavsen::audio
+{
 
 namespace pipewire_ffi = wavsen::ffi::pipewire;
 
@@ -40,10 +40,10 @@ struct DeviceCommand {
 };
 
 struct CommandQueue {
-    rstd::prelude::Vec<DeviceCommand> pending;
-    bool                              scheduled {};
-    bool                              accepting { true };
-    bool                              shutdown_queued {};
+    Vec<DeviceCommand> pending;
+    bool               scheduled {};
+    bool               accepting { true };
+    bool               shutdown_queued {};
 };
 
 } // namespace
@@ -182,7 +182,7 @@ private:
 
     void drain_commands() {
         for (;;) {
-            rstd::prelude::Vec<DeviceCommand> batch;
+            Vec<DeviceCommand> batch;
             {
                 auto commands = commands_.lock().unwrap_unchecked();
                 if (commands->pending.is_empty()) {
@@ -190,7 +190,7 @@ private:
                     return;
                 }
                 batch             = rstd::move(commands->pending);
-                commands->pending = rstd::prelude::Vec<DeviceCommand>();
+                commands->pending = Vec<DeviceCommand>();
             }
 
             for (auto& command : batch) process(rstd::move(command));

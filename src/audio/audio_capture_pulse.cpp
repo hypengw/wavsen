@@ -5,10 +5,10 @@ import rstd.log;
 import pulse;
 import wavsen.audio.capture_window;
 
+using namespace rstd::prelude;
+
 namespace wavsen::audio
 {
-
-using namespace rstd::prelude;
 
 namespace pulse_ffi = wavsen::ffi::pulse;
 

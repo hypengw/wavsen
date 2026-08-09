@@ -11,11 +11,13 @@ import avcodec;
 import avformat;
 import swscale;
 
-namespace wavsen::video
-{
-
 using namespace rstd::prelude;
 using namespace rstd::literals;
+using rstd::sync::atomic::Atomic;
+using rstd::sync::atomic::Ordering;
+
+namespace wavsen::video
+{
 
 namespace
 {
@@ -82,8 +84,8 @@ using BufRefPtr   = AvOwner<AVBufferRef, release_buffer>;
 /* Defined further down — forward-declared so the helpers above the
  * definitions can use them. */
 bool fail(Error* err, ref<str> message);
-bool fail(Error* err, rstd::string::String message);
-auto av_err_str(int rc) -> rstd::string::String;
+bool fail(Error* err, String message);
+auto av_err_str(int rc) -> String;
 
 /* Translate FFmpeg's colorspace/range enums into our ColorSpace /
  * ColorRange ints (which the public Nv12Frame / VkFrameView carry).
@@ -158,7 +160,7 @@ AVPixelFormat get_format_prefer_vaapi(AVCodecContext* cctx, const AVPixelFormat*
 /* Best-effort AV_HWDEVICE_TYPE_VAAPI context. FFmpeg owns the libva
  * VADisplay; we hand it the selected Vulkan device's render-node path.
  * Returns NULL on any failure with *err populated. */
-AVBufferRef* make_vaapi_hwdevice(const rstd::string::String& render_node, Error* err) {
+AVBufferRef* make_vaapi_hwdevice(const String& render_node, Error* err) {
     if (render_node.is_empty()) {
         fail(err, "VAAPI requires the selected Vulkan device's render node"_str);
         return nullptr;
@@ -179,10 +181,10 @@ AVBufferRef* make_vaapi_hwdevice(const rstd::string::String& render_node, Error*
 }
 #endif
 
-rstd::string::String resolve_render_node(const Producer& producer, const OpenOpts& opts) {
+String resolve_render_node(const Producer& producer, const OpenOpts& opts) {
     if (! opts.render_node.is_empty()) return opts.render_node.clone();
     auto node = producer.drm_render_node();
-    return node.is_some() ? rstd::move(node).unwrap() : rstd::string::String {};
+    return node.is_some() ? rstd::move(node).unwrap() : String {};
 }
 
 /* Build an AV_HWDEVICE_TYPE_VULKAN context wrapping the caller's
@@ -232,25 +234,25 @@ AVBufferRef* make_shared_vulkan_hwdevice(const Producer& vk, Error* err) {
 }
 
 bool fail(Error* err, ref<str> message) {
-    if (err) err->message = rstd::string::String::make(message);
+    if (err) err->message = String::make(message);
     return false;
 }
 
-bool fail(Error* err, rstd::string::String message) {
+bool fail(Error* err, String message) {
     if (err) err->message = rstd::move(message);
     return false;
 }
 
-auto av_err_str(int rc) -> rstd::string::String {
+auto av_err_str(int rc) -> String {
     char buf[AV_ERROR_MAX_STRING_SIZE] = {};
     av_strerror(rc, buf, sizeof(buf));
-    return rstd::string::String::make(rstd::cppstd::as_str(buf).unwrap());
+    return String::make(rstd::cppstd::as_str(buf).unwrap());
 }
 
 u64 next_decoder_generation() {
-    static rstd::sync::atomic::Atomic<u64> next { u64(1) };
-    auto value = next.fetch_add(u64(1), rstd::sync::atomic::Ordering::Relaxed);
-    if (value == u64()) value = next.fetch_add(u64(1), rstd::sync::atomic::Ordering::Relaxed);
+    static Atomic<u64> next { u64(1) };
+    auto               value = next.fetch_add(u64(1), Ordering::Relaxed);
+    if (value == u64()) value = next.fetch_add(u64(1), Ordering::Relaxed);
     return value;
 }
 
@@ -263,7 +265,7 @@ struct DrmFrameLease::State {
 
 void DrmFrameLease::reset() noexcept {
     if (! state_) return;
-    auto state = rstd::boxed::Box<State>::from_raw(mut_ptr<State>::from_raw_parts(state_));
+    auto state = Box<State>::from_raw(mut_ptr<State>::from_raw_parts(state_));
     state_     = nullptr;
 }
 
@@ -289,8 +291,8 @@ struct VideoDecoder::State {
      * resets `fmt` and frees `avio_ctx` explicitly before the implicit
      * member destructors run, then `input_stream` is destroyed last as
      * the implicit destructions unwind in reverse declaration order. */
-    Option<rstd::boxed::Box<dyn<InputStream>>> input_stream;
-    AVIOContext*                               avio_ctx { nullptr };
+    Option<Box<dyn<InputStream>>> input_stream;
+    AVIOContext*                  avio_ctx { nullptr };
 
     FmtCtxPtr   fmt;
     CodecCtxPtr cctx;
@@ -329,7 +331,7 @@ struct VideoDecoder::State {
 };
 
 VideoDecoder::StateOwner::~StateOwner() {
-    auto state = rstd::boxed::Box<State>::from_raw(mut_ptr<State>::from_raw_parts(state_));
+    auto state = Box<State>::from_raw(mut_ptr<State>::from_raw_parts(state_));
 }
 
 namespace
@@ -374,7 +376,7 @@ bool probe_native_impl(ref<str> path, u32* native_width, u32* native_height, Err
     *native_width             = u32();
     *native_height            = u32();
     AVFormatContext* raw_fmt  = nullptr;
-    auto             path_c   = rstd::ffi::CString::make(rstd::string::String::make(path)).unwrap();
+    auto             path_c   = rstd::ffi::CString::make(String::make(path)).unwrap();
     auto             path_raw = path_c.as_ptr();
     if (int rc = avformat_open_input(&raw_fmt, path_raw, nullptr, nullptr); rc < 0) {
         fail(err, rstd::format("avformat_open_input: {}", av_err_str(rc).as_str()));
@@ -428,9 +430,9 @@ auto VideoDecoder::probe_native(ref<str> path) -> Result<ProbeResult, Error> {
 }
 
 auto VideoDecoder::open(ref<str> path, u32 target_width, u32 target_height, bool loop)
-    -> Result<rstd::boxed::Box<VideoDecoder>, Error> {
+    -> Result<Box<VideoDecoder>, Error> {
     Error err;
-    auto  decoder = build_internal(InputSpec { rstd::string::String::make(path), None() },
+    auto  decoder = build_internal(InputSpec { String::make(path), None() },
                                    target_width,
                                    target_height,
                                    loop,
@@ -443,7 +445,7 @@ auto VideoDecoder::open(ref<str> path, u32 target_width, u32 target_height, bool
 
 auto VideoDecoder::open_with_vk(ref<str> path, u32 target_width, u32 target_height, bool loop,
                                 const Producer& producer, const OpenOpts& opts)
-    -> Result<rstd::boxed::Box<VideoDecoder>, Error> {
+    -> Result<Box<VideoDecoder>, Error> {
     auto render_node = resolve_render_node(producer, opts);
     /* Resolve trial order. Auto = Vulkan first, then VAAPI; explicit
      * single-mode skips the others; None goes straight to sw. */
@@ -478,8 +480,7 @@ auto VideoDecoder::open_with_vk(ref<str> path, u32 target_width, u32 target_heig
             hwd  = make_vaapi_hwdevice(render_node, &local_err);
             kind = FrameKind::VaapiDrm;
 #else
-            local_err.message =
-                rstd::string::String::make("wavsen built without VAAPI support"_str);
+            local_err.message = String::make("wavsen built without VAAPI support"_str);
 #endif
         }
         if (! hwd) {
@@ -489,7 +490,7 @@ auto VideoDecoder::open_with_vk(ref<str> path, u32 target_width, u32 target_heig
             continue;
         }
         Error err;
-        auto  decoder = build_internal(InputSpec { rstd::string::String::make(path), None() },
+        auto  decoder = build_internal(InputSpec { String::make(path), None() },
                                        target_width,
                                        target_height,
                                        loop,
@@ -505,7 +506,7 @@ auto VideoDecoder::open_with_vk(ref<str> path, u32 target_width, u32 target_heig
 
     /* Final fallback: pure sw decode. */
     Error err;
-    auto  decoder = build_internal(InputSpec { rstd::string::String::make(path), None() },
+    auto  decoder = build_internal(InputSpec { String::make(path), None() },
                                    target_width,
                                    target_height,
                                    loop,
@@ -518,8 +519,7 @@ auto VideoDecoder::open_with_vk(ref<str> path, u32 target_width, u32 target_heig
 
 auto VideoDecoder::open_from_stream(InputStreamFactory make_stream, u32 target_width,
                                     u32 target_height, bool loop, const Producer* producer,
-                                    const OpenOpts& opts)
-    -> Result<rstd::boxed::Box<VideoDecoder>, Error> {
+                                    const OpenOpts& opts) -> Result<Box<VideoDecoder>, Error> {
     auto fresh_stream = [&] {
         return make_stream.as_mut_ptr()->operator()();
     };
@@ -573,8 +573,7 @@ auto VideoDecoder::open_from_stream(InputStreamFactory make_stream, u32 target_w
             hwd  = make_vaapi_hwdevice(render_node, &local_err);
             kind = FrameKind::VaapiDrm;
 #else
-            local_err.message =
-                rstd::string::String::make("wavsen built without VAAPI support"_str);
+            local_err.message = String::make("wavsen built without VAAPI support"_str);
 #endif
         }
         if (! hwd) {
@@ -613,7 +612,7 @@ auto VideoDecoder::open_from_stream(InputStreamFactory make_stream, u32 target_w
 
 auto VideoDecoder::build_internal(InputSpec input, u32 target_width, u32 target_height, bool loop,
                                   void* prebuilt_hwdevice_value, FrameKind requested_kind,
-                                  Error* err) -> Option<rstd::boxed::Box<VideoDecoder>> {
+                                  Error* err) -> Option<Box<VideoDecoder>> {
     AVBufferRef* prebuilt_hwdevice = static_cast<AVBufferRef*>(prebuilt_hwdevice_value);
     if (target_width == u32() || target_height == u32()) {
         fail(err, "target dimensions must be non-zero"_str);
@@ -629,9 +628,9 @@ auto VideoDecoder::build_internal(InputSpec input, u32 target_width, u32 target_
     if (target_width % u32(2) != u32()) ++target_width;
     if (target_height % u32(2) != u32()) ++target_height;
 
-    auto state                       = rstd::boxed::Box<VideoDecoder::State>::make();
+    auto state                       = Box<VideoDecoder::State>::make();
     auto state_ptr                   = rstd::move(state).into_raw().as_raw_ptr();
-    auto self                        = rstd::boxed::Box<VideoDecoder>::make(state_ptr);
+    auto self                        = Box<VideoDecoder>::make(state_ptr);
     self->target_width_              = target_width;
     self->target_height_             = target_height;
     self->loop_                      = loop;
@@ -1202,7 +1201,7 @@ auto VideoDecoder::next_drm_frame() -> Result<DrmFramePull, Error> {
         return Err(Error("av_frame_clone(VAAPI lease) failed"_str));
     }
 
-    auto lease_state            = rstd::boxed::Box<DrmFrameLease::State>::make();
+    auto lease_state            = Box<DrmFrameLease::State>::make();
     lease_state->source         = rstd::move(source);
     lease_state->mapped         = rstd::move(mapped);
     auto       lease_state_ptr  = rstd::move(lease_state).into_raw().as_raw_ptr();

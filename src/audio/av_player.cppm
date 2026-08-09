@@ -4,10 +4,10 @@ import rstd;
 import :byte_stream;
 import :core;
 
+using namespace rstd::prelude;
+
 export namespace wavsen::audio
 {
-
-using namespace rstd::prelude;
 
 // Error type for AvPlayer::open. Mirrors the small-string Error pattern
 // used elsewhere in wavsen (no rich type — just a printable reason).

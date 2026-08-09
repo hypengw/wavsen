@@ -2,10 +2,11 @@ import rstd;
 import wavsen.video;
 
 using namespace rstd::prelude;
+using rstd::time::Duration;
 
 int main() {
-    wavsen::video::Presenter presenter(rstd::time::Duration::from_millis(u64(100)),
-                                       rstd::time::Duration::from_secs(u64(1)));
+    wavsen::video::Presenter presenter(Duration::from_millis(u64(100)),
+                                       Duration::from_secs(u64(1)));
     presenter.set_external_clock([] {
         return f64(1.15);
     });

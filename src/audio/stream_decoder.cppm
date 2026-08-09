@@ -6,10 +6,10 @@ import :byte_stream;
 import :core;  // DeviceDesc
 import :mixer; // SoundStream (for make_stream factory)
 
+using namespace rstd::prelude;
+
 export namespace wavsen::audio
 {
-
-using namespace rstd::prelude;
 
 // libav*-backed audio decoder + resampler. Reads bytes from an rstd
 // ReadSeekHandle via a custom AVIOContext, decodes via libavformat/libavcodec, and

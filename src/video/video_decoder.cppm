@@ -4,18 +4,18 @@ import rstd;
 import vulkan;
 import :vk_device;
 
+using namespace rstd::prelude;
+
 export namespace wavsen::video
 {
 
-using namespace rstd::prelude;
-
 struct Nv12Frame {
-    rstd::vec::Vec<rstd::uint8_t> data;
-    u32                           width {};
-    u32                           height {};
-    f64                           pts_seconds { -1.0 };
-    u32                           colorspace {};
-    u32                           color_range {};
+    Vec<rstd::uint8_t> data;
+    u32                width {};
+    u32                height {};
+    f64                pts_seconds { -1.0 };
+    u32                colorspace {};
+    u32                color_range {};
 };
 
 struct ProbeResult {
@@ -54,8 +54,8 @@ enum class HwAccel
 };
 
 struct OpenOpts {
-    HwAccel              hwaccel { HwAccel::Auto };
-    rstd::string::String render_node;
+    HwAccel hwaccel { HwAccel::Auto };
+    String  render_node;
 };
 
 struct InputStream {
@@ -78,7 +78,7 @@ struct InputStream {
     using Funcs = TraitFuncs<&T::read, &T::seek>;
 };
 
-using InputStreamFactory = rstd::boxed::Box<dyn<FnMut<rstd::boxed::Box<dyn<InputStream>>()>>>;
+using InputStreamFactory = Box<dyn<FnMut<Box<dyn<InputStream>>()>>>;
 
 enum class FrameKind
 {
@@ -164,16 +164,15 @@ public:
     static auto probe_native(ref<str> path) -> Result<ProbeResult, Error>;
 
     static auto open(ref<str> path, u32 target_width, u32 target_height, bool loop)
-        -> Result<rstd::boxed::Box<VideoDecoder>, Error>;
+        -> Result<Box<VideoDecoder>, Error>;
 
     static auto open_with_vk(ref<str> path, u32 target_width, u32 target_height, bool loop,
                              const Producer& producer, const OpenOpts& opts = {})
-        -> Result<rstd::boxed::Box<VideoDecoder>, Error>;
+        -> Result<Box<VideoDecoder>, Error>;
 
     static auto open_from_stream(InputStreamFactory make_stream, u32 target_width,
                                  u32 target_height, bool loop, const Producer* producer = nullptr,
-                                 const OpenOpts& opts = {})
-        -> Result<rstd::boxed::Box<VideoDecoder>, Error>;
+                                 const OpenOpts& opts = {}) -> Result<Box<VideoDecoder>, Error>;
 
     ~VideoDecoder();
     VideoDecoder(const VideoDecoder&)            = delete;
@@ -211,13 +210,13 @@ public:
 
 private:
     struct InputSpec {
-        rstd::string::String                       path;
-        Option<rstd::boxed::Box<dyn<InputStream>>> stream;
+        String                        path;
+        Option<Box<dyn<InputStream>>> stream;
     };
 
     static auto build_internal(InputSpec input, u32 target_width, u32 target_height, bool loop,
                                void* prebuilt_hwdevice, FrameKind requested_kind, Error* err)
-        -> Option<rstd::boxed::Box<VideoDecoder>>;
+        -> Option<Box<VideoDecoder>>;
 
     int next_frame_(Nv12Frame& out, Error* err);
     int next_vk_frame_(VkFrameView& out, Error* err);

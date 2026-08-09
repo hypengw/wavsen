@@ -6,10 +6,11 @@ import vvk;
 import :vk_device;     // Error
 import :video_decoder; // DrmFrameView
 
+using namespace rstd::prelude;
+using rstd::sync::Arc;
+
 export namespace wavsen::video
 {
-
-using namespace rstd::prelude;
 
 // Coefficients for the YUV→RGB push constant. CPU side fills this from
 // the source frame's colorspace + range; the shader applies it as
@@ -121,15 +122,15 @@ public:
 
     static auto create(VkInstance instance, VkPhysicalDevice phys, VkDevice device,
                        u32 queue_family, VkQueue queue, u32 max_w, u32 max_h)
-        -> Result<rstd::boxed::Box<YuvToRgba>, Error>;
+        -> Result<Box<YuvToRgba>, Error>;
 
     auto convert_nv12(VkImage dst, u32 dst_w, u32 dst_h, const rstd::uint8_t* nv12, usize nv12_size,
-                      const ColorMatrix& cm) -> rstd::Result<int, Error>;
+                      const ColorMatrix& cm) -> Result<int, Error>;
     auto convert_nv12(VkImage dst, u32 dst_w, u32 dst_h, const rstd::uint8_t* nv12, usize nv12_size,
-                      const ColorMatrix& cm, ConvertTarget target) -> rstd::Result<int, Error>;
+                      const ColorMatrix& cm, ConvertTarget target) -> Result<int, Error>;
     auto submit_nv12(VkImage dst, u32 dst_w, u32 dst_h, const rstd::uint8_t* nv12, usize nv12_size,
                      const ColorMatrix& cm, ConvertTarget target)
-        -> rstd::Result<ConversionSubmission, Error>;
+        -> Result<ConversionSubmission, Error>;
 
     struct VkFrameImports {
         VkImage         y_image;
@@ -148,13 +149,12 @@ public:
         u32 bit_depth;
     };
     auto convert_av_vk_frame(const VkFrameImports& imports, VkImage dst, u32 dst_w, u32 dst_h,
-                             const ColorMatrix& cm) -> rstd::Result<int, Error>;
+                             const ColorMatrix& cm) -> Result<int, Error>;
     auto convert_av_vk_frame(const VkFrameImports& imports, VkImage dst, u32 dst_w, u32 dst_h,
-                             const ColorMatrix& cm, ConvertTarget target)
-        -> rstd::Result<int, Error>;
+                             const ColorMatrix& cm, ConvertTarget target) -> Result<int, Error>;
     auto submit_av_vk_frame(const VkFrameImports& imports, VkImage dst, u32 dst_w, u32 dst_h,
                             const ColorMatrix& cm, ConvertTarget target)
-        -> rstd::Result<ConversionSubmission, Error>;
+        -> Result<ConversionSubmission, Error>;
 
     auto configure_drm_pipeline(u32 max_contexts, u32 max_imports) -> Result<empty, Error>;
     auto try_reserve_drm(ConvertTarget target) -> Result<Option<ConversionReservation>, Error>;
@@ -222,13 +222,13 @@ private:
     vvk::Fence     done_fence_;
     bool           fence_pending_ { false };
 
-    u64                                                       completion_value_ { 0 };
-    Option<rstd::sync::Arc<vvk::TimelineSemaphoreGeneration>> completion_timeline_;
-    Option<vvk::TimelineCompletionObserver>                   completion_observer_;
-    Option<ConversionSubmission>                              last_submission_;
+    u64                                           completion_value_ { 0 };
+    Option<Arc<vvk::TimelineSemaphoreGeneration>> completion_timeline_;
+    Option<vvk::TimelineCompletionObserver>       completion_observer_;
+    Option<ConversionSubmission>                  last_submission_;
 
-    Option<rstd::sync::Arc<vvk::DescriptorArenaGeneration>> descriptor_arena_;
-    vvk::DescriptorSetLease                                 descriptor_set_;
+    Option<Arc<vvk::DescriptorArenaGeneration>> descriptor_arena_;
+    vvk::DescriptorSetLease                     descriptor_set_;
 
     vvk::ImageView last_dst_view_;
     vvk::ImageView last_y_view_;

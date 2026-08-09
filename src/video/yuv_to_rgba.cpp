@@ -12,11 +12,13 @@ import vulkan;
 import :vk_device;
 import :yuv_to_rgba;
 
-namespace wavsen::video
-{
-
 using namespace rstd::prelude;
 using namespace rstd::literals;
+using rstd::sync::atomic::Atomic;
+using rstd::sync::atomic::Ordering;
+
+namespace wavsen::video
+{
 
 /* Push-constant struct mirroring `PC` in shaders/nv12_to_rgba.comp.
  * std140-friendly: padded to 16-byte boundaries. */
@@ -126,11 +128,11 @@ namespace
 {
 
 bool fail(Error* err, ref<str> message) {
-    if (err) err->message = rstd::string::String::make(message);
+    if (err) err->message = String::make(message);
     return false;
 }
 
-bool fail(Error* err, rstd::string::String message) {
+bool fail(Error* err, String message) {
     if (err) err->message = rstd::move(message);
     return false;
 }
@@ -147,7 +149,7 @@ const char* vk_result_str(VkResult r) {
     }
 }
 
-auto vk_error(ref<str> operation, VkResult result) -> rstd::string::String {
+auto vk_error(ref<str> operation, VkResult result) -> String {
     return rstd::format("{}: {}", operation, vk_result_str(result));
 }
 
@@ -269,16 +271,16 @@ void barrier_image2(const vvk::CommandBuffer& cmd, VkImage img, VkPipelineStageF
 bool target_exports_sync_fd(ConvertTarget target) { return target == ConvertTarget::BridgeForeign; }
 
 u64 next_completion_generation() {
-    static rstd::sync::atomic::Atomic<u64> next { u64(1) };
-    auto value = next.fetch_add(u64(1), rstd::sync::atomic::Ordering::Relaxed);
-    if (value == u64()) value = next.fetch_add(u64(1), rstd::sync::atomic::Ordering::Relaxed);
+    static Atomic<u64> next { u64(1) };
+    auto               value = next.fetch_add(u64(1), Ordering::Relaxed);
+    if (value == u64()) value = next.fetch_add(u64(1), Ordering::Relaxed);
     return value;
 }
 
 u64 next_content_revision() {
-    static rstd::sync::atomic::Atomic<u64> next { u64(1) };
-    auto value = next.fetch_add(u64(1), rstd::sync::atomic::Ordering::Relaxed);
-    if (value == u64()) value = next.fetch_add(u64(1), rstd::sync::atomic::Ordering::Relaxed);
+    static Atomic<u64> next { u64(1) };
+    auto               value = next.fetch_add(u64(1), Ordering::Relaxed);
+    if (value == u64()) value = next.fetch_add(u64(1), Ordering::Relaxed);
     return value;
 }
 
@@ -377,15 +379,15 @@ bool same_drm_signature(const DrmFrameView& lhs, const DrmFrameView& rhs) {
 }
 
 struct DrmImportEntry {
-    DrmResourceKey                    key;
-    DrmFrameView                      signature;
-    rstd::vec::Vec<vvk::DeviceMemory> memories;
-    vvk::Image                        image;
-    vvk::ImageView                    y_view;
-    vvk::ImageView                    uv_view;
-    u32                               in_flight {};
-    u64                               last_use_serial {};
-    bool                              initialized { false };
+    DrmResourceKey         key;
+    DrmFrameView           signature;
+    Vec<vvk::DeviceMemory> memories;
+    vvk::Image             image;
+    vvk::ImageView         y_view;
+    vvk::ImageView         uv_view;
+    u32                    in_flight {};
+    u64                    last_use_serial {};
+    bool                   initialized { false };
 };
 
 struct DrmTargetEntry {
@@ -413,12 +415,12 @@ struct DrmSubmissionContext {
 } // namespace
 
 struct YuvToRgba::DrmPipelineState {
-    rstd::vec::Vec<rstd::boxed::Box<DrmImportEntry>>       imports;
-    rstd::vec::Vec<rstd::boxed::Box<DrmTargetEntry>>       targets;
-    rstd::vec::Vec<rstd::boxed::Box<DrmSubmissionContext>> contexts;
-    u32                                                    max_contexts { 3 };
-    u32                                                    max_imports { 32 };
-    u64                                                    use_serial {};
+    Vec<Box<DrmImportEntry>>       imports;
+    Vec<Box<DrmTargetEntry>>       targets;
+    Vec<Box<DrmSubmissionContext>> contexts;
+    u32                            max_contexts { 3 };
+    u32                            max_imports { 32 };
+    u64                            use_serial {};
 };
 
 struct ConversionReservation::State {
@@ -430,7 +432,7 @@ struct ConversionReservation::State {
 
 void ConversionReservation::reset() noexcept {
     if (! state_) return;
-    auto state = rstd::boxed::Box<State>::from_raw(mut_ptr<State>::from_raw_parts(state_));
+    auto state = Box<State>::from_raw(mut_ptr<State>::from_raw_parts(state_));
     if (! state->submitted && state->context) state->context->reserved = false;
     state_ = nullptr;
 }
@@ -451,8 +453,7 @@ namespace
 {
 
 auto create_drm_import(const vvk::Device& device, const vvk::PhysicalDevice& phys,
-                       const DrmFrameLease& frame)
-    -> Result<rstd::boxed::Box<DrmImportEntry>, Error> {
+                       const DrmFrameLease& frame) -> Result<Box<DrmImportEntry>, Error> {
     const auto& drm = frame.view();
     if (drm.object_count == u32() || drm.layer_count == u32()) {
         return Err(Error { "submit_drm_prime: empty DRM_PRIME descriptor"_str });
@@ -484,7 +485,7 @@ auto create_drm_import(const vvk::Device& device, const vvk::PhysicalDevice& phy
         return Err(Error { "submit_drm_prime: expected two NV12 planes"_str });
     }
 
-    auto entry          = rstd::boxed::Box<DrmImportEntry>::make();
+    auto entry          = Box<DrmImportEntry>::make();
     entry->key          = frame.resource_key();
     entry->signature    = drm_signature(drm);
     const bool disjoint = planes[0].object_index != planes[1].object_index;
@@ -669,7 +670,7 @@ auto create_drm_import(const vvk::Device& device, const vvk::PhysicalDevice& phy
 YuvToRgba::~YuvToRgba() {
     if (device_) (void)device_.WaitIdle();
     if (drm_pipeline_) {
-        auto state = rstd::boxed::Box<DrmPipelineState>::from_raw(
+        auto state = Box<DrmPipelineState>::from_raw(
             mut_ptr<DrmPipelineState>::from_raw_parts(drm_pipeline_));
         drm_pipeline_ = nullptr;
     }
@@ -679,14 +680,14 @@ YuvToRgba::~YuvToRgba() {
 
 auto YuvToRgba::create(VkInstance instance, VkPhysicalDevice phys, VkDevice device,
                        u32 queue_family, VkQueue queue, u32 max_w, u32 max_h)
-    -> Result<rstd::boxed::Box<YuvToRgba>, Error> {
+    -> Result<Box<YuvToRgba>, Error> {
     if (max_w == u32() || max_h == u32()) {
         return Err(Error { "YuvToRgba: max_w/max_h must be non-zero"_str });
     }
     // NV12 chroma is 4:2:0, so plane W/H must be even.
     if (max_w % u32(2) != u32()) ++max_w;
     if (max_h % u32(2) != u32()) ++max_h;
-    auto  self = rstd::boxed::Box<YuvToRgba>::make();
+    auto  self = Box<YuvToRgba>::make();
     Error err;
     if (! self->init(instance, phys, device, queue_family, queue, max_w, max_h, &err)) {
         return Err(rstd::move(err));
@@ -932,7 +933,7 @@ bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device
         }
     }
 
-    auto drm_pipeline = rstd::boxed::Box<DrmPipelineState>::make();
+    auto drm_pipeline = Box<DrmPipelineState>::make();
     drm_pipeline_     = rstd::move(drm_pipeline).into_raw().as_raw_ptr();
 
     // Bindings 0/1 are stable across frames — write them once.
@@ -1594,7 +1595,7 @@ auto YuvToRgba::try_reserve_drm(ConvertTarget target)
     }
     if (! context &&
         drm_pipeline_->contexts.len() < usize(drm_pipeline_->max_contexts.to_primitive())) {
-        auto candidate = rstd::boxed::Box<DrmSubmissionContext>::make();
+        auto candidate = Box<DrmSubmissionContext>::make();
         if (const auto result = cmd_pool_.Allocate(
                 usize(1), VK_COMMAND_BUFFER_LEVEL_PRIMARY, candidate->command_buffers);
             result != VK_SUCCESS) {
@@ -1627,7 +1628,7 @@ auto YuvToRgba::try_reserve_drm(ConvertTarget target)
         }
     }
     context->reserved = true;
-    auto state        = rstd::boxed::Box<ConversionReservation::State>::make();
+    auto state        = Box<ConversionReservation::State>::make();
     state->owner      = this;
     state->context    = context;
     state->target     = target;
@@ -1790,7 +1791,7 @@ auto YuvToRgba::submit_drm_prime(ConversionReservation&& reservation, DrmFrameLe
             }
         }
         if (! target_entry) {
-            auto entry    = rstd::boxed::Box<DrmTargetEntry>::make();
+            auto entry    = Box<DrmTargetEntry>::make();
             entry->image  = dst;
             entry->width  = dst_w;
             entry->height = dst_h;

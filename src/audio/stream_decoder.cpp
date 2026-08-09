@@ -12,10 +12,10 @@ import avcodec;
 import avformat;
 import swresample;
 
+using namespace rstd::prelude;
+
 namespace wavsen::audio
 {
-
-using namespace rstd::prelude;
 
 namespace
 {
@@ -357,8 +357,8 @@ private:
         playback_rate_    = f64(1.0);
     }
 
-    rstd::Option<ByteStream> src_;
-    DeviceDesc               target_ {};
+    Option<ByteStream> src_;
+    DeviceDesc         target_ {};
 
     rstd::uint8_t*   avio_buf_   = nullptr;
     AVIOContext*     avio_       = nullptr;

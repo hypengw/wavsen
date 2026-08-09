@@ -5,10 +5,10 @@ import rstd;
 import :core;
 import :mixer;
 
+using namespace rstd::prelude;
+
 namespace wavsen::audio
 {
-
-using namespace rstd::prelude;
 
 namespace
 {

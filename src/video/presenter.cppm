@@ -2,14 +2,16 @@ export module wavsen.video:presenter;
 
 import rstd;
 
+using namespace rstd::prelude;
+using rstd::time::Duration;
+using rstd::time::Instant;
+
 export namespace wavsen::video
 {
 
-using namespace rstd::prelude;
-
 struct PresentationSchedule {
-    bool                        present { true };
-    Option<rstd::time::Instant> deadline;
+    bool            present { true };
+    Option<Instant> deadline;
 };
 
 // PTS → wall-clock pacing helper for the video plugin's render loop.
@@ -34,8 +36,7 @@ struct PresentationSchedule {
 //   - If clock_fn returns NaN, fall back to the wall-clock algorithm.
 class Presenter {
 public:
-    using Duration  = rstd::time::Duration;
-    using TimePoint = rstd::time::Instant;
+    using TimePoint = Instant;
 
     explicit Presenter(Duration max_lag   = Duration::from_millis(u64(250)),
                        Duration max_sleep = Duration::from_secs(u64(1)))
@@ -53,7 +54,7 @@ public:
     void set_external_clock(F&& clock_fn)
         requires rstd::Impled<rstd::mtp::rm_cvf<F>, rstd::FnMut<f64()>>
     {
-        clock_fn_ = Some(rstd::boxed::Box<dyn<FnMut<f64()>>>::make(rstd::forward<F>(clock_fn)));
+        clock_fn_ = Some(Box<dyn<FnMut<f64()>>>::make(rstd::forward<F>(clock_fn)));
     }
 
     void clear_external_clock() { clock_fn_ = None(); }
@@ -154,14 +155,14 @@ private:
     // burst, short enough that A/V doesn't drift past noticeable.
     static constexpr u32 kExternalDropStreakReset { 30 };
 
-    Duration                                    max_lag_;
-    Duration                                    max_sleep_;
-    TimePoint                                   t0_wall_ {};
-    f64                                         t0_pts_ { -1.0 };
-    bool                                        primed_ { false };
-    f64                                         playback_rate_ { 1.0 };
-    u32                                         external_drop_streak_ {};
-    Option<rstd::boxed::Box<dyn<FnMut<f64()>>>> clock_fn_;
+    Duration                       max_lag_;
+    Duration                       max_sleep_;
+    TimePoint                      t0_wall_ {};
+    f64                            t0_pts_ { -1.0 };
+    bool                           primed_ { false };
+    f64                            playback_rate_ { 1.0 };
+    u32                            external_drop_streak_ {};
+    Option<Box<dyn<FnMut<f64()>>>> clock_fn_;
 };
 
 } // namespace wavsen::video

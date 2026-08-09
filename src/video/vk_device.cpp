@@ -16,17 +16,17 @@ namespace
 {
 
 bool fail(Error* err, ref<str> message) {
-    if (err) err->message = rstd::string::String::make(message);
+    if (err) err->message = String::make(message);
     return false;
 }
 
-bool fail(Error* err, rstd::string::String message) {
+bool fail(Error* err, String message) {
     if (err) err->message = rstd::move(message);
     return false;
 }
 
 bool device_has_ext(const vvk::PhysicalDevice& physical_device, ref<str> name) {
-    rstd::vec::Vec<VkExtensionProperties> properties;
+    Vec<VkExtensionProperties> properties;
     if (physical_device.EnumerateDeviceExtensionProperties(properties) != VK_SUCCESS) return false;
     for (const auto& property : properties) {
         if (rstd::cppstd::as_str(property.extensionName).unwrap() == name) return true;
@@ -34,7 +34,7 @@ bool device_has_ext(const vvk::PhysicalDevice& physical_device, ref<str> name) {
     return false;
 }
 
-auto vk_error(ref<str> operation, VkResult result) -> rstd::string::String {
+auto vk_error(ref<str> operation, VkResult result) -> String {
     return rstd::format("{}: {}", operation, vvk::ToString(result));
 }
 
@@ -45,7 +45,7 @@ Producer::~Producer() {
     if (staging_map_ && staging_mem_) staging_mem_.Unmap();
 }
 
-auto Producer::create(u32 width, u32 height) -> Result<rstd::boxed::Box<Producer>, Error> {
+auto Producer::create(u32 width, u32 height) -> Result<Box<Producer>, Error> {
     Error err;
     auto  producer = build_(width, height, None(), &err);
     if (producer.is_none()) return Err(rstd::move(err));
@@ -53,7 +53,7 @@ auto Producer::create(u32 width, u32 height) -> Result<rstd::boxed::Box<Producer
 }
 
 auto Producer::create_with_render_node(u32 width, u32 height, ref<str> render_node)
-    -> Result<rstd::boxed::Box<Producer>, Error> {
+    -> Result<Box<Producer>, Error> {
     Error            err;
     Option<ref<str>> pinned_node = render_node.is_empty() ? None() : Some(render_node);
     auto             producer    = build_(width, height, pinned_node, &err);
@@ -61,12 +61,12 @@ auto Producer::create_with_render_node(u32 width, u32 height, ref<str> render_no
     return Ok(rstd::move(producer).unwrap());
 }
 
-auto Producer::from_external(ExternalDeviceInfo info) -> Result<rstd::boxed::Box<Producer>, Error> {
+auto Producer::from_external(ExternalDeviceInfo info) -> Result<Box<Producer>, Error> {
     if (! info.instance || ! info.physical_device || ! info.device || ! info.queue) {
         return Err(Error { "Producer::from_external: missing handle(s)"_str });
     }
 
-    auto self = rstd::boxed::Box<Producer>::make();
+    auto self = Box<Producer>::make();
     if (! vvk::Load(self->instance_dispatch_) ||
         ! vvk::Load(info.instance, self->instance_dispatch_)) {
         return Err(Error { "Producer::from_external: failed to load instance dispatch"_str });
@@ -110,7 +110,7 @@ auto Producer::from_external(ExternalDeviceInfo info) -> Result<rstd::boxed::Box
     return Ok(rstd::move(self));
 }
 
-auto Producer::drm_render_node() const -> Option<rstd::string::String> {
+auto Producer::drm_render_node() const -> Option<String> {
     if (drm_render_major_ == u32() && drm_render_minor_ == u32()) return None();
 
     auto node     = rstd::format("/dev/dri/renderD{}", drm_render_minor_);
@@ -124,14 +124,14 @@ auto Producer::drm_render_node() const -> Option<rstd::string::String> {
     return Some(rstd::move(node));
 }
 
-Option<rstd::boxed::Box<Producer>> Producer::build_(u32 width, u32 height,
-                                                    Option<ref<str>> render_node, Error* err) {
+Option<Box<Producer>> Producer::build_(u32 width, u32 height, Option<ref<str>> render_node,
+                                       Error* err) {
     if (width == u32() || height == u32()) {
         fail(err, "Producer: width/height must be non-zero"_str);
         return None();
     }
 
-    auto self     = rstd::boxed::Box<Producer>::make();
+    auto self     = Box<Producer>::make();
     self->width_  = width;
     self->height_ = height;
     self->enabled_inst_exts_.push_back(VK_KHR_EXTERNAL_MEMORY_CAPABILITIES_EXTENSION_NAME);
@@ -265,8 +265,7 @@ Option<rstd::boxed::Box<Producer>> Producer::build_(u32 width, u32 height,
     }
 
     float default_priority = 1.0f;
-    auto  queue_infos =
-        rstd::vec::Vec<VkDeviceQueueCreateInfo>::with_capacity(self->queue_families_.len());
+    auto  queue_infos = Vec<VkDeviceQueueCreateInfo>::with_capacity(self->queue_families_.len());
     for (const auto& queue_family : self->queue_families_) {
         VkDeviceQueueCreateInfo queue_info {};
         queue_info.sType            = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;

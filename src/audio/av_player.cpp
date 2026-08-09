@@ -8,11 +8,11 @@ import :core; // AudioDevice, IPullChannel, DeviceDesc
 import :file; // StreamDecoder
 import :av_sync;
 
-namespace wavsen::audio
-{
-
 using namespace rstd::prelude;
 using namespace rstd::literals;
+
+namespace wavsen::audio
+{
 
 namespace
 {

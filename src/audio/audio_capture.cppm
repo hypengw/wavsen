@@ -2,10 +2,10 @@ export module wavsen.audio.capture;
 
 import rstd;
 
+using namespace rstd::prelude;
+
 export namespace wavsen::audio
 {
-
-using namespace rstd::prelude;
 
 inline constexpr rstd::uint32_t kAudioSampleRate   = 48000;
 inline constexpr rstd::uint32_t kAudioChannels     = 2;
