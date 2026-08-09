@@ -126,6 +126,7 @@ struct DrmResourceKey {
 };
 
 class VideoDecoder;
+class VaapiFrameLease;
 
 class DrmFrameLease {
 public:
@@ -143,6 +144,7 @@ public:
 
 private:
     friend class VideoDecoder;
+    friend class VaapiFrameLease;
 
     DrmFrameLease(State* state, DrmFrameView view, DrmResourceKey resource_key) noexcept
         : state_(state), view_(rstd::move(view)), resource_key_(resource_key) {}
@@ -152,6 +154,47 @@ private:
     State*         state_ { nullptr };
     DrmFrameView   view_;
     DrmResourceKey resource_key_;
+};
+
+struct VaapiFrameView {
+    u32 width {};
+    u32 height {};
+    f64 pts_seconds { -1.0 };
+    u32 colorspace {};
+    u32 color_range {};
+    u32 bit_depth { 8 };
+};
+
+class VaapiFrameLease {
+public:
+    VaapiFrameLease(const VaapiFrameLease&)            = delete;
+    VaapiFrameLease& operator=(const VaapiFrameLease&) = delete;
+    VaapiFrameLease(VaapiFrameLease&& other) noexcept;
+    VaapiFrameLease& operator=(VaapiFrameLease&& other) noexcept;
+    ~VaapiFrameLease();
+
+    const VaapiFrameView& view() const noexcept { return view_; }
+    bool                  valid() const noexcept { return state_ != nullptr; }
+    auto                  into_drm() && -> Result<DrmFrameLease, Error>;
+
+    struct State;
+
+private:
+    friend class VideoDecoder;
+
+    VaapiFrameLease(State* state, VaapiFrameView view, DrmResourceKey resource_key) noexcept
+        : state_(state), view_(rstd::move(view)), resource_key_(resource_key) {}
+
+    void reset() noexcept;
+
+    State*         state_ { nullptr };
+    VaapiFrameView view_;
+    DrmResourceKey resource_key_;
+};
+
+struct VaapiFramePull {
+    NextFrame               status { NextFrame::Ok };
+    Option<VaapiFrameLease> frame;
 };
 
 struct DrmFramePull {
@@ -180,6 +223,7 @@ public:
 
     auto next_frame(Nv12Frame& out) -> Result<NextFrame, Error>;
     auto next_vk_frame(VkFrameView& out) -> Result<NextFrame, Error>;
+    auto next_vaapi_frame() -> Result<VaapiFramePull, Error>;
     auto next_drm_frame() -> Result<DrmFramePull, Error>;
     auto seek(f64 seconds) -> Result<empty, Error>;
     auto duration() const -> Option<f64>;
@@ -220,7 +264,7 @@ private:
 
     int next_frame_(Nv12Frame& out, Error* err);
     int next_vk_frame_(VkFrameView& out, Error* err);
-    int next_drm_frame_(DrmFrameView& out, Error* err);
+    int next_vaapi_frame_(VaapiFrameView& out, Error* err);
 
     StateOwner state_;
     u32        target_width_ {};

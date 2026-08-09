@@ -263,6 +263,10 @@ struct DrmFrameLease::State {
     FramePtr mapped;
 };
 
+struct VaapiFrameLease::State {
+    FramePtr source;
+};
+
 void DrmFrameLease::reset() noexcept {
     if (! state_) return;
     auto state = Box<State>::from_raw(mut_ptr<State>::from_raw_parts(state_));
@@ -285,6 +289,85 @@ DrmFrameLease& DrmFrameLease::operator=(DrmFrameLease&& other) noexcept {
 
 DrmFrameLease::~DrmFrameLease() { reset(); }
 
+void VaapiFrameLease::reset() noexcept {
+    if (! state_) return;
+    auto state = Box<State>::from_raw(mut_ptr<State>::from_raw_parts(state_));
+    state_     = nullptr;
+}
+
+VaapiFrameLease::VaapiFrameLease(VaapiFrameLease&& other) noexcept
+    : state_(rstd::exchange(other.state_, nullptr)),
+      view_(rstd::move(other.view_)),
+      resource_key_(other.resource_key_) {}
+
+VaapiFrameLease& VaapiFrameLease::operator=(VaapiFrameLease&& other) noexcept {
+    if (this == &other) return *this;
+    reset();
+    state_        = rstd::exchange(other.state_, nullptr);
+    view_         = rstd::move(other.view_);
+    resource_key_ = other.resource_key_;
+    return *this;
+}
+
+VaapiFrameLease::~VaapiFrameLease() { reset(); }
+
+auto VaapiFrameLease::into_drm() && -> Result<DrmFrameLease, Error> {
+    if (! state_) return Err(Error("into_drm called on invalid VAAPI frame lease"_str));
+
+    auto source_state = Box<State>::from_raw(mut_ptr<State>::from_raw_parts(state_));
+    state_            = nullptr;
+
+    FramePtr mapped(av_frame_alloc());
+    if (! mapped) return Err(Error("av_frame_alloc(drm_frame) failed"_str));
+
+    mapped->format       = AV_PIX_FMT_DRM_PRIME;
+    const int map_result = av_hwframe_map(
+        mapped.get(), source_state->source.get(), AV_HWFRAME_MAP_READ | AV_HWFRAME_MAP_DIRECT);
+    if (map_result < 0) {
+        return Err(
+            Error(rstd::format("av_hwframe_map(DRM_PRIME): {}", av_err_str(map_result).as_str())));
+    }
+
+    const auto* descriptor = reinterpret_cast<const AVDRMFrameDescriptor*>(mapped->data[0]);
+    if (! descriptor) return Err(Error("av_hwframe_map: DRM_PRIME descriptor null"_str));
+
+    DrmFrameView drm_view;
+    const int    object_count = descriptor->nb_objects < 4 ? descriptor->nb_objects : 4;
+    const int    layer_count  = descriptor->nb_layers < 4 ? descriptor->nb_layers : 4;
+    drm_view.object_count     = u32(static_cast<rstd::uint32_t>(object_count));
+    for (int object = 0; object < object_count; ++object) {
+        drm_view.objects[object].fd              = descriptor->objects[object].fd;
+        drm_view.objects[object].size            = u64(descriptor->objects[object].size);
+        drm_view.objects[object].format_modifier = descriptor->objects[object].format_modifier;
+    }
+    drm_view.layer_count = u32(static_cast<rstd::uint32_t>(layer_count));
+    for (int layer = 0; layer < layer_count; ++layer) {
+        const auto& source_layer      = descriptor->layers[layer];
+        auto&       destination_layer = drm_view.layers[layer];
+        destination_layer.fourcc      = source_layer.format;
+        const int plane_count         = source_layer.nb_planes < 4 ? source_layer.nb_planes : 4;
+        destination_layer.plane_count = u32(static_cast<rstd::uint32_t>(plane_count));
+        for (int plane = 0; plane < plane_count; ++plane) {
+            destination_layer.planes[plane].object_index =
+                u32(static_cast<rstd::uint32_t>(source_layer.planes[plane].object_index));
+            destination_layer.planes[plane].offset = u64(source_layer.planes[plane].offset);
+            destination_layer.planes[plane].pitch  = u64(source_layer.planes[plane].pitch);
+        }
+    }
+    drm_view.width       = view_.width;
+    drm_view.height      = view_.height;
+    drm_view.pts_seconds = view_.pts_seconds;
+    drm_view.colorspace  = view_.colorspace;
+    drm_view.color_range = view_.color_range;
+    drm_view.bit_depth   = view_.bit_depth;
+
+    auto drm_state     = Box<DrmFrameLease::State>::make();
+    drm_state->source  = rstd::move(source_state->source);
+    drm_state->mapped  = rstd::move(mapped);
+    auto drm_state_ptr = rstd::move(drm_state).into_raw().as_raw_ptr();
+    return Ok(DrmFrameLease(drm_state_ptr, rstd::move(drm_view), resource_key_));
+}
+
 struct VideoDecoder::State {
     /* Custom-IO source (open_from_stream path). Declared first so it
      * outlives every libav object that holds avio_ctx — the destructor
@@ -301,9 +384,6 @@ struct VideoDecoder::State {
     /* Sw landing frame for vulkan→sw downloads via
      * av_hwframe_transfer_data. Allocated lazily on first hw frame. */
     FramePtr sw_frame;
-    /* DRM_PRIME mapping target frame; allocated lazily for the VAAPI
-     * zero-copy path. Holds the dup'd dma-buf fds via av_hwframe_map. */
-    FramePtr drm_frame;
     SwsPtr   sws;
     /* Hwdevice context owned by the codec when present. Best-effort: a
      * NULL `hwd` here just means we run sw decode. */
@@ -921,71 +1001,30 @@ int VideoDecoder::next_vk_frame_(VkFrameView& out, Error* err) {
     }
 }
 
-int VideoDecoder::next_drm_frame_(DrmFrameView& out, Error* err) {
+int VideoDecoder::next_vaapi_frame_(VaapiFrameView& out, Error* err) {
     if (kind_ != FrameKind::VaapiDrm) {
-        fail(err, "next_drm_frame called on non-VAAPI decoder"_str);
+        fail(err, "next_vaapi_frame called on non-VAAPI decoder"_str);
         return -1;
     }
     State& st     = *state_;
     bool   looped = false;
 
-    if (! st.drm_frame) st.drm_frame.reset(av_frame_alloc());
-    if (! st.drm_frame) {
-        fail(err, "av_frame_alloc(drm_frame) failed"_str);
-        return -1;
-    }
-
-    /* Release the decoder's working references. Returned leases keep
-     * independent frame references until Vulkan completes its read. */
+    /* Returned leases keep independent frame references, so the decoder
+     * can release and reuse its working frame before the next receive. */
     av_frame_unref(st.src_frame.get());
-    av_frame_unref(st.drm_frame.get());
 
     while (true) {
         int rc = avcodec_receive_frame(st.cctx.get(), st.src_frame.get());
         if (rc == 0) {
 #if defined(WAVSEN_HAS_VAAPI)
             if (st.src_frame->format != AV_PIX_FMT_VAAPI) {
-                fail(err, "next_drm_frame: decoder produced non-VAAPI frame"_str);
+                fail(err, "next_vaapi_frame: decoder produced non-VAAPI frame"_str);
                 return -1;
             }
 #else
-            fail(err, "next_drm_frame: VAAPI support not built"_str);
+            fail(err, "next_vaapi_frame: VAAPI support not built"_str);
             return -1;
 #endif
-            st.drm_frame->format = AV_PIX_FMT_DRM_PRIME;
-            int mrc              = av_hwframe_map(st.drm_frame.get(),
-                                                  st.src_frame.get(),
-                                                  AV_HWFRAME_MAP_READ | AV_HWFRAME_MAP_DIRECT);
-            if (mrc < 0) {
-                fail(err, rstd::format("av_hwframe_map(DRM_PRIME): {}", av_err_str(mrc).as_str()));
-                return -1;
-            }
-            const auto* desc = reinterpret_cast<const AVDRMFrameDescriptor*>(st.drm_frame->data[0]);
-            if (! desc) {
-                fail(err, "av_hwframe_map: DRM_PRIME descriptor null"_str);
-                return -1;
-            }
-            const int n_obj  = desc->nb_objects < 4 ? desc->nb_objects : 4;
-            const int n_lay  = desc->nb_layers < 4 ? desc->nb_layers : 4;
-            out.object_count = u32(static_cast<rstd::uint32_t>(n_obj));
-            for (int i = 0; i < n_obj; ++i) {
-                out.objects[i].fd              = desc->objects[i].fd;
-                out.objects[i].size            = u64(desc->objects[i].size);
-                out.objects[i].format_modifier = desc->objects[i].format_modifier;
-            }
-            out.layer_count = u32(static_cast<rstd::uint32_t>(n_lay));
-            for (int li = 0; li < n_lay; ++li) {
-                const auto& la             = desc->layers[li];
-                out.layers[li].fourcc      = la.format;
-                const int np               = la.nb_planes < 4 ? la.nb_planes : 4;
-                out.layers[li].plane_count = u32(static_cast<rstd::uint32_t>(np));
-                for (int p = 0; p < np; ++p) {
-                    out.layers[li].planes[p].object_index =
-                        u32(static_cast<rstd::uint32_t>(la.planes[p].object_index));
-                    out.layers[li].planes[p].offset = u64(la.planes[p].offset);
-                    out.layers[li].planes[p].pitch  = u64(la.planes[p].pitch);
-                }
-            }
             out.width       = u32(static_cast<rstd::uint32_t>(st.src_frame->width));
             out.height      = u32(static_cast<rstd::uint32_t>(st.src_frame->height));
             out.colorspace  = map_colorspace(st.src_frame->colorspace);
@@ -1188,34 +1227,46 @@ auto VideoDecoder::next_vk_frame(VkFrameView& out) -> Result<NextFrame, Error> {
     return Ok(NextFrame::Ok);
 }
 
-auto VideoDecoder::next_drm_frame() -> Result<DrmFramePull, Error> {
-    DrmFrameView out;
-    Error        err;
-    int          rc = next_drm_frame_(out, &err);
+auto VideoDecoder::next_vaapi_frame() -> Result<VaapiFramePull, Error> {
+    VaapiFrameView out;
+    Error          err;
+    int            rc = next_vaapi_frame_(out, &err);
     if (rc < 0) return Err(rstd::move(err));
-    if (rc == 1) return Ok(DrmFramePull { .status = NextFrame::Eof, .frame = None() });
+    if (rc == 1) return Ok(VaapiFramePull { .status = NextFrame::Eof, .frame = None() });
 
     FramePtr source(av_frame_clone(state_->src_frame.get()));
-    FramePtr mapped(av_frame_clone(state_->drm_frame.get()));
-    if (! source || ! mapped) {
-        return Err(Error("av_frame_clone(VAAPI lease) failed"_str));
-    }
+    if (! source) return Err(Error("av_frame_clone(VAAPI lease) failed"_str));
 
-    auto lease_state            = Box<DrmFrameLease::State>::make();
+    auto lease_state            = Box<VaapiFrameLease::State>::make();
     lease_state->source         = rstd::move(source);
-    lease_state->mapped         = rstd::move(mapped);
     auto       lease_state_ptr  = rstd::move(lease_state).into_raw().as_raw_ptr();
     const auto surface_identity = u64(
         static_cast<rstd::uint64_t>(reinterpret_cast<rstd::uintptr_t>(state_->src_frame->data[3])));
-    DrmFrameLease lease(lease_state_ptr,
-                        rstd::move(out),
-                        DrmResourceKey {
-                            .decoder_generation = state_->decoder_generation,
-                            .surface_identity   = surface_identity,
-                        });
-    return Ok(DrmFramePull {
+    VaapiFrameLease lease(lease_state_ptr,
+                          rstd::move(out),
+                          DrmResourceKey {
+                              .decoder_generation = state_->decoder_generation,
+                              .surface_identity   = surface_identity,
+                          });
+    return Ok(VaapiFramePull {
         .status = rc == 2 ? NextFrame::Looped : NextFrame::Ok,
         .frame  = Some(rstd::move(lease)),
+    });
+}
+
+auto VideoDecoder::next_drm_frame() -> Result<DrmFramePull, Error> {
+    auto pulled = next_vaapi_frame();
+    if (pulled.is_err()) return Err(rstd::move(pulled).unwrap_err());
+
+    auto vaapi = rstd::move(pulled).unwrap();
+    if (vaapi.frame.is_none()) {
+        return Ok(DrmFramePull { .status = vaapi.status, .frame = None() });
+    }
+    auto mapped = rstd::move(*vaapi.frame).into_drm();
+    if (mapped.is_err()) return Err(rstd::move(mapped).unwrap_err());
+    return Ok(DrmFramePull {
+        .status = vaapi.status,
+        .frame  = Some(rstd::move(mapped).unwrap()),
     });
 }
 
@@ -1241,7 +1292,6 @@ auto VideoDecoder::seek(f64 seconds) -> Result<empty, Error> {
     av_packet_unref(st.pkt.get());
     av_frame_unref(st.src_frame.get());
     if (st.sw_frame) av_frame_unref(st.sw_frame.get());
-    if (st.drm_frame) av_frame_unref(st.drm_frame.get());
     st.flushing = false;
     return Ok(empty {});
 }
