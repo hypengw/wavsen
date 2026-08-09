@@ -79,11 +79,6 @@ int prepare_vulkan_decode_frames(AVBufferRef* frames_ref) {
     vkframes->usage = static_cast<VkImageUsageFlagBits>(
         static_cast<VkImageUsageFlags>(vkframes->usage) & consumer_usage);
 
-#if LIBAVCODEC_VERSION_MAJOR < 63
-    // Older FFmpeg creates a DST-only view even when the output image is also the DPB.
-    if (vkframes->usage & VK_IMAGE_USAGE_VIDEO_DECODE_DPB_BIT_KHR) return -ENOTSUP;
-#endif
-
     VkImageUsageFlags actual_usage = vkframes->usage;
 #if LIBAVUTIL_VERSION_MAJOR >= 60
     // Newer hwcontext_vulkan versions add generic format usage during initialization.

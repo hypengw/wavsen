@@ -288,16 +288,22 @@ Option<Box<Producer>> Producer::build_(u32 width, u32 height, Option<ref<str>> r
             self->enabled_dev_exts_.push_back(extension);
     }
 
+    VkPhysicalDeviceSamplerYcbcrConversionFeatures ycbcr_features {};
+    ycbcr_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLER_YCBCR_CONVERSION_FEATURES;
     VkPhysicalDeviceVulkan12Features features12 {};
     features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
     VkPhysicalDeviceVulkan13Features features13 {};
-    features13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
-    features12.pNext = &features13;
+    features13.sType     = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+    ycbcr_features.pNext = &features12;
+    features12.pNext     = &features13;
     VkPhysicalDeviceFeatures2 features {};
     features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-    features.pNext = &features12;
+    features.pNext = &ycbcr_features;
     self->phys_.GetFeatures2KHR(features);
 
+    VkPhysicalDeviceSamplerYcbcrConversionFeatures wanted_ycbcr {};
+    wanted_ycbcr.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLER_YCBCR_CONVERSION_FEATURES;
+    wanted_ycbcr.samplerYcbcrConversion = ycbcr_features.samplerYcbcrConversion;
     VkPhysicalDeviceVulkan12Features wanted12 {};
     wanted12.sType               = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
     wanted12.timelineSemaphore   = features12.timelineSemaphore;
@@ -306,10 +312,11 @@ Option<Box<Producer>> Producer::build_(u32 width, u32 height, Option<ref<str>> r
     wanted13.sType            = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
     wanted13.synchronization2 = features13.synchronization2;
     wanted13.maintenance4     = features13.maintenance4;
+    wanted_ycbcr.pNext        = &wanted12;
     wanted12.pNext            = &wanted13;
     VkPhysicalDeviceFeatures2 wanted_features {};
     wanted_features.sType                      = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-    wanted_features.pNext                      = &wanted12;
+    wanted_features.pNext                      = &wanted_ycbcr;
     wanted_features.features.samplerAnisotropy = features.features.samplerAnisotropy;
 
     self->device_dispatch_ = vvk::DeviceDispatch { self->instance_dispatch_ };
