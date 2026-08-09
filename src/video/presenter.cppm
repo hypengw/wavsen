@@ -7,6 +7,11 @@ export namespace wavsen::video
 
 using namespace rstd::prelude;
 
+struct PresentationSchedule {
+    bool                        present { true };
+    Option<rstd::time::Instant> deadline;
+};
+
 // PTS → wall-clock pacing helper for the video plugin's render loop.
 //
 // Behavior (default — no external clock):
@@ -63,12 +68,8 @@ public:
 
     auto playback_rate() const -> f64 { return playback_rate_; }
 
-    // Returns true if the caller should render the frame now (possibly
-    // after sleeping); false if the frame is too far behind schedule and
-    // should be dropped. Always advances the baseline on drop so we
-    // recover instead of dropping every subsequent frame too.
-    bool present_frame(f64 pts_seconds) {
-        if (pts_seconds < f64()) return true;
+    PresentationSchedule schedule_frame(f64 pts_seconds) {
+        if (pts_seconds < f64()) return {};
 
         if (clock_fn_.is_some()) {
             const f64 now_pts = clock_fn_->as_mut_ptr()->operator()();
@@ -84,16 +85,19 @@ public:
                     // re-converge on a closer PTS over the next frames.
                     if (++external_drop_streak_ >= kExternalDropStreakReset) {
                         external_drop_streak_ = u32();
-                        return true;
+                        return {};
                     }
-                    return false;
+                    return { .present = false };
                 }
                 external_drop_streak_ = u32();
-                if (skew > max_sleep_s) return true;
+                if (skew > max_sleep_s) return {};
                 if (skew > f64()) {
-                    rstd::thread::sleep(Duration::from_secs_f64(skew.to_primitive()));
+                    return {
+                        .deadline =
+                            Some(TimePoint::now() + Duration::from_secs_f64(skew.to_primitive())),
+                    };
                 }
-                return true;
+                return {};
             }
             // External clock not primed yet — fall through to wall-clock.
         }
@@ -103,12 +107,12 @@ public:
             t0_wall_ = now;
             t0_pts_  = pts_seconds;
             primed_  = true;
-            return true;
+            return {};
         }
         if (pts_seconds < t0_pts_) {
             t0_wall_ = now;
             t0_pts_  = pts_seconds;
-            return true;
+            return {};
         }
 
         const auto delta =
@@ -118,16 +122,29 @@ public:
         if (target + max_lag_ < now) {
             t0_wall_ = now;
             t0_pts_  = pts_seconds;
-            return false;
+            return { .present = false };
         }
         if (now < target) {
             if (target - now > max_sleep_) {
                 t0_wall_ = now;
                 t0_pts_  = pts_seconds;
-                return true;
+                return {};
             }
-            rstd::thread::sleep(target - now);
+            return { .deadline = Some<TimePoint>(target) };
         }
+        return {};
+    }
+
+    static void wait_until(const PresentationSchedule& schedule) {
+        if (schedule.deadline.is_none()) return;
+        const auto now = TimePoint::now();
+        if (now < *schedule.deadline) rstd::thread::sleep(*schedule.deadline - now);
+    }
+
+    bool present_frame(f64 pts_seconds) {
+        const auto schedule = schedule_frame(pts_seconds);
+        if (! schedule.present) return false;
+        wait_until(schedule);
         return true;
     }
 

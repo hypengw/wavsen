@@ -118,6 +118,47 @@ struct DrmFrameView {
     u32       bit_depth { 8 };
 };
 
+struct DrmResourceKey {
+    u64 decoder_generation;
+    u64 surface_identity;
+
+    friend bool operator==(const DrmResourceKey&, const DrmResourceKey&) = default;
+};
+
+class VideoDecoder;
+
+class DrmFrameLease {
+public:
+    DrmFrameLease(const DrmFrameLease&)            = delete;
+    DrmFrameLease& operator=(const DrmFrameLease&) = delete;
+    DrmFrameLease(DrmFrameLease&& other) noexcept;
+    DrmFrameLease& operator=(DrmFrameLease&& other) noexcept;
+    ~DrmFrameLease();
+
+    const DrmFrameView& view() const noexcept { return view_; }
+    DrmResourceKey      resource_key() const noexcept { return resource_key_; }
+    bool                valid() const noexcept { return state_ != nullptr; }
+
+    struct State;
+
+private:
+    friend class VideoDecoder;
+
+    DrmFrameLease(State* state, DrmFrameView view, DrmResourceKey resource_key) noexcept
+        : state_(state), view_(rstd::move(view)), resource_key_(resource_key) {}
+
+    void reset() noexcept;
+
+    State*         state_ { nullptr };
+    DrmFrameView   view_;
+    DrmResourceKey resource_key_;
+};
+
+struct DrmFramePull {
+    NextFrame             status { NextFrame::Ok };
+    Option<DrmFrameLease> frame;
+};
+
 class VideoDecoder {
 public:
     static auto probe_native(ref<str> path) -> Result<ProbeResult, Error>;
@@ -140,7 +181,7 @@ public:
 
     auto next_frame(Nv12Frame& out) -> Result<NextFrame, Error>;
     auto next_vk_frame(VkFrameView& out) -> Result<NextFrame, Error>;
-    auto next_drm_frame(DrmFrameView& out) -> Result<NextFrame, Error>;
+    auto next_drm_frame() -> Result<DrmFramePull, Error>;
     auto seek(f64 seconds) -> Result<empty, Error>;
     auto duration() const -> Option<f64>;
 

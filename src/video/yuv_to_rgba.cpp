@@ -1,9 +1,7 @@
 module;
 
-/* convert_drm_prime_ touches a wide slice of Vulkan: external memory FD
- * import, image plane memory binding, DRM modifier image creation. The
- * vvk::ffi::vulkan module exports only a curated subset; pull the
- * full header into the GMF for the implementation. */
+/* The DRM import path needs external-memory and explicit-modifier types
+ * beyond the curated vvk::ffi::vulkan module surface. */
 #include <vulkan/vulkan.h>
 #include "nv12_to_rgba.spv.h" // generated at build time by glslangValidator
 
@@ -333,8 +331,348 @@ void barrier_dst_from_storage(const vvk::CommandBuffer& cmd, VkImage dst, Conver
 
 } // namespace
 
+namespace
+{
+
+constexpr u32 kMaxDrmContexts { 16 };
+constexpr u32 kMaxDrmImports { 64 };
+
+DrmFrameView drm_signature(const DrmFrameView& view) {
+    auto signature = view;
+    for (u32 i = u32(); i < signature.object_count; ++i) {
+        signature.objects[i.to_primitive()].fd = -1;
+    }
+    signature.pts_seconds = f64(-1.0);
+    return signature;
+}
+
+bool same_drm_signature(const DrmFrameView& lhs, const DrmFrameView& rhs) {
+    if (lhs.object_count != rhs.object_count || lhs.layer_count != rhs.layer_count ||
+        lhs.width != rhs.width || lhs.height != rhs.height || lhs.bit_depth != rhs.bit_depth) {
+        return false;
+    }
+    for (u32 i = u32(); i < lhs.object_count; ++i) {
+        const auto index = i.to_primitive();
+        if (lhs.objects[index].size != rhs.objects[index].size ||
+            lhs.objects[index].format_modifier != rhs.objects[index].format_modifier) {
+            return false;
+        }
+    }
+    for (u32 li = u32(); li < lhs.layer_count; ++li) {
+        const auto  layer_index = li.to_primitive();
+        const auto& a           = lhs.layers[layer_index];
+        const auto& b           = rhs.layers[layer_index];
+        if (a.fourcc != b.fourcc || a.plane_count != b.plane_count) return false;
+        for (u32 pi = u32(); pi < a.plane_count; ++pi) {
+            const auto  plane_index = pi.to_primitive();
+            const auto& ap          = a.planes[plane_index];
+            const auto& bp          = b.planes[plane_index];
+            if (ap.object_index != bp.object_index || ap.offset != bp.offset ||
+                ap.pitch != bp.pitch) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+struct DrmImportEntry {
+    DrmResourceKey                    key;
+    DrmFrameView                      signature;
+    rstd::vec::Vec<vvk::DeviceMemory> memories;
+    vvk::Image                        image;
+    vvk::ImageView                    y_view;
+    vvk::ImageView                    uv_view;
+    u32                               in_flight {};
+    u64                               last_use_serial {};
+    bool                              initialized { false };
+};
+
+struct DrmTargetEntry {
+    VkImage        image { VK_NULL_HANDLE };
+    VkImageView    view { VK_NULL_HANDLE };
+    u32            width {};
+    u32            height {};
+    vvk::ImageView owned_view;
+    u32            in_flight {};
+    bool           initialized { false };
+};
+
+struct DrmSubmissionContext {
+    vvk::CommandBuffers          command_buffers;
+    vvk::CommandBuffer           command;
+    vvk::DescriptorSetLease      descriptor_set;
+    vvk::Semaphore               export_semaphore;
+    Option<vvk::SubmissionToken> completion;
+    Option<DrmFrameLease>        frame;
+    DrmImportEntry*              source { nullptr };
+    DrmTargetEntry*              target { nullptr };
+    bool                         reserved { false };
+};
+
+} // namespace
+
+struct YuvToRgba::DrmPipelineState {
+    rstd::vec::Vec<rstd::boxed::Box<DrmImportEntry>>       imports;
+    rstd::vec::Vec<rstd::boxed::Box<DrmTargetEntry>>       targets;
+    rstd::vec::Vec<rstd::boxed::Box<DrmSubmissionContext>> contexts;
+    u32                                                    max_contexts { 3 };
+    u32                                                    max_imports { 32 };
+    u64                                                    use_serial {};
+};
+
+struct ConversionReservation::State {
+    YuvToRgba*            owner { nullptr };
+    DrmSubmissionContext* context { nullptr };
+    ConvertTarget         target { ConvertTarget::BridgeForeign };
+    bool                  submitted { false };
+};
+
+void ConversionReservation::reset() noexcept {
+    if (! state_) return;
+    auto state = rstd::boxed::Box<State>::from_raw(mut_ptr<State>::from_raw_parts(state_));
+    if (! state->submitted && state->context) state->context->reserved = false;
+    state_ = nullptr;
+}
+
+ConversionReservation::ConversionReservation(ConversionReservation&& other) noexcept
+    : state_(rstd::exchange(other.state_, nullptr)) {}
+
+ConversionReservation& ConversionReservation::operator=(ConversionReservation&& other) noexcept {
+    if (this == &other) return *this;
+    reset();
+    state_ = rstd::exchange(other.state_, nullptr);
+    return *this;
+}
+
+ConversionReservation::~ConversionReservation() { reset(); }
+
+namespace
+{
+
+auto create_drm_import(const vvk::Device& device, const vvk::PhysicalDevice& phys,
+                       const DrmFrameLease& frame)
+    -> Result<rstd::boxed::Box<DrmImportEntry>, Error> {
+    const auto& drm = frame.view();
+    if (drm.object_count == u32() || drm.layer_count == u32()) {
+        return Err(Error { "submit_drm_prime: empty DRM_PRIME descriptor"_str });
+    }
+
+    struct FlatPlane {
+        rstd::uint32_t object_index {};
+        rstd::uint64_t offset {};
+        rstd::uint64_t pitch {};
+    };
+    FlatPlane planes[2] {};
+    u32       plane_count {};
+    for (u32 layer_index {}; layer_index < drm.layer_count && plane_count < u32(2); ++layer_index) {
+        const auto& layer = drm.layers[layer_index.to_primitive()];
+        for (u32 index {}; index < layer.plane_count && plane_count < u32(2); ++index) {
+            const auto& plane = layer.planes[index.to_primitive()];
+            if (plane.object_index >= drm.object_count) {
+                return Err(Error { "submit_drm_prime: plane object index is out of range"_str });
+            }
+            planes[plane_count.to_primitive()] = {
+                .object_index = plane.object_index.to_primitive(),
+                .offset       = plane.offset.to_primitive(),
+                .pitch        = plane.pitch.to_primitive(),
+            };
+            ++plane_count;
+        }
+    }
+    if (plane_count != u32(2)) {
+        return Err(Error { "submit_drm_prime: expected two NV12 planes"_str });
+    }
+
+    auto entry          = rstd::boxed::Box<DrmImportEntry>::make();
+    entry->key          = frame.resource_key();
+    entry->signature    = drm_signature(drm);
+    const bool disjoint = planes[0].object_index != planes[1].object_index;
+
+    VkSubresourceLayout plane_layouts[2] {};
+    plane_layouts[0].offset   = planes[0].offset;
+    plane_layouts[0].rowPitch = planes[0].pitch;
+    plane_layouts[1].offset   = planes[1].offset;
+    plane_layouts[1].rowPitch = planes[1].pitch;
+
+    VkImageDrmFormatModifierExplicitCreateInfoEXT modifier_info {};
+    modifier_info.sType = VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_EXPLICIT_CREATE_INFO_EXT;
+    modifier_info.drmFormatModifier           = drm.objects[0].format_modifier;
+    modifier_info.drmFormatModifierPlaneCount = 2;
+    modifier_info.pPlaneLayouts               = plane_layouts;
+
+    VkExternalMemoryImageCreateInfo external_info {};
+    external_info.sType       = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO;
+    external_info.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+    external_info.pNext       = &modifier_info;
+
+    VkFormat view_formats[] = {
+        VK_FORMAT_G8_B8R8_2PLANE_420_UNORM,
+        VK_FORMAT_R8_UNORM,
+        VK_FORMAT_R8G8_UNORM,
+    };
+    VkImageFormatListCreateInfo format_info {};
+    format_info.sType           = VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO;
+    format_info.pNext           = &external_info;
+    format_info.viewFormatCount = 3;
+    format_info.pViewFormats    = view_formats;
+
+    VkImageCreateInfo image_info {};
+    image_info.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    image_info.pNext         = &format_info;
+    image_info.flags         = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+    image_info.imageType     = VK_IMAGE_TYPE_2D;
+    image_info.format        = VK_FORMAT_G8_B8R8_2PLANE_420_UNORM;
+    image_info.extent        = { drm.width.to_primitive(), drm.height.to_primitive(), 1 };
+    image_info.mipLevels     = 1;
+    image_info.arrayLayers   = 1;
+    image_info.samples       = VK_SAMPLE_COUNT_1_BIT;
+    image_info.tiling        = VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT;
+    image_info.usage         = VK_IMAGE_USAGE_SAMPLED_BIT;
+    image_info.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
+    image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    if (disjoint) image_info.flags |= VK_IMAGE_CREATE_DISJOINT_BIT;
+    if (const auto result = device.CreateImage(image_info, entry->image); result != VK_SUCCESS) {
+        return Err(Error {
+            rstd::format("vkCreateImage(DRM_PRIME): {}", vk_result_str(result)),
+        });
+    }
+
+    vvk::DeviceMemory plane_memories[2];
+    auto              import_plane = [&](u32                   plane_index,
+                                         rstd::uint32_t        object_index,
+                                         VkImageAspectFlagBits aspect) -> Result<empty, Error> {
+        const auto& object = drm.objects[object_index];
+        auto duplicate     = rstd::os::fd::BorrowedFd::borrow_raw(object.fd).try_clone_to_owned();
+        if (duplicate.is_err()) {
+            return Err(Error {
+                rstd::format("dup(dma_buf): {}", rstd::move(duplicate).unwrap_err_unchecked()) });
+        }
+        auto       duplicate_fd = rstd::move(duplicate).unwrap_unchecked();
+        const auto raw_fd       = duplicate_fd.as_raw_fd();
+
+        VkMemoryFdPropertiesKHR fd_properties {};
+        fd_properties.sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR;
+        if (const auto result = device.GetMemoryFdPropertiesKHR(
+                VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, raw_fd, fd_properties);
+            result != VK_SUCCESS) {
+            return Err(Error { vk_error("vkGetMemoryFdPropertiesKHR"_str, result) });
+        }
+
+        VkImagePlaneMemoryRequirementsInfo plane_requirements {};
+        plane_requirements.sType       = VK_STRUCTURE_TYPE_IMAGE_PLANE_MEMORY_REQUIREMENTS_INFO;
+        plane_requirements.planeAspect = aspect;
+        VkImageMemoryRequirementsInfo2 requirements_info {};
+        requirements_info.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2;
+        requirements_info.image = *entry->image;
+        if (disjoint) requirements_info.pNext = &plane_requirements;
+        const auto requirements = device.GetImageMemoryRequirements2(requirements_info);
+
+        const auto type_bits =
+            requirements.memoryRequirements.memoryTypeBits & fd_properties.memoryTypeBits;
+        const auto memory_type = pick_memory_type(phys, type_bits, 0);
+        if (memory_type == UINT32_MAX) {
+            return Err(Error {
+                "submit_drm_prime: no compatible memory type for imported DMA-BUF"_str,
+            });
+        }
+
+        VkImportMemoryFdInfoKHR import_info {};
+        import_info.sType      = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR;
+        import_info.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+        import_info.fd         = raw_fd;
+        VkMemoryDedicatedAllocateInfo dedicated_info {};
+        dedicated_info.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO;
+        dedicated_info.image = *entry->image;
+        import_info.pNext    = &dedicated_info;
+        VkMemoryAllocateInfo allocate_info {};
+        allocate_info.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocate_info.pNext           = &import_info;
+        allocate_info.allocationSize  = object.size.to_primitive();
+        allocate_info.memoryTypeIndex = memory_type;
+        if (const auto result =
+                device.AllocateMemory(allocate_info, plane_memories[plane_index.to_primitive()]);
+            result != VK_SUCCESS) {
+            return Err(Error { vk_error("vkAllocateMemory(import DMA-BUF)"_str, result) });
+        }
+        (void)rstd::move(duplicate_fd).into_raw_fd();
+        return Ok(empty {});
+    };
+
+    if (disjoint) {
+        auto y_import = import_plane(u32(), planes[0].object_index, VK_IMAGE_ASPECT_PLANE_0_BIT);
+        if (y_import.is_err()) return Err(rstd::move(y_import).unwrap_err());
+        auto uv_import = import_plane(u32(1), planes[1].object_index, VK_IMAGE_ASPECT_PLANE_1_BIT);
+        if (uv_import.is_err()) return Err(rstd::move(uv_import).unwrap_err());
+
+        VkBindImagePlaneMemoryInfo y_plane_info {};
+        y_plane_info.sType       = VK_STRUCTURE_TYPE_BIND_IMAGE_PLANE_MEMORY_INFO;
+        y_plane_info.planeAspect = VK_IMAGE_ASPECT_PLANE_0_BIT;
+        VkBindImagePlaneMemoryInfo uv_plane_info {};
+        uv_plane_info.sType       = VK_STRUCTURE_TYPE_BIND_IMAGE_PLANE_MEMORY_INFO;
+        uv_plane_info.planeAspect = VK_IMAGE_ASPECT_PLANE_1_BIT;
+        VkBindImageMemoryInfo bindings[2] {};
+        bindings[0].sType        = VK_STRUCTURE_TYPE_BIND_IMAGE_MEMORY_INFO;
+        bindings[0].pNext        = &y_plane_info;
+        bindings[0].image        = *entry->image;
+        bindings[0].memory       = *plane_memories[0];
+        bindings[0].memoryOffset = 0;
+        bindings[1].sType        = VK_STRUCTURE_TYPE_BIND_IMAGE_MEMORY_INFO;
+        bindings[1].pNext        = &uv_plane_info;
+        bindings[1].image        = *entry->image;
+        bindings[1].memory       = *plane_memories[1];
+        bindings[1].memoryOffset = 0;
+        if (const auto result = device.BindImageMemory2(
+                slice<VkBindImageMemoryInfo>::from_raw_parts(bindings, usize(2)));
+            result != VK_SUCCESS) {
+            return Err(Error { vk_error("vkBindImageMemory2(disjoint)"_str, result) });
+        }
+        entry->memories.push(rstd::move(plane_memories[0]));
+        entry->memories.push(rstd::move(plane_memories[1]));
+    } else {
+        auto imported = import_plane(u32(), planes[0].object_index, VK_IMAGE_ASPECT_COLOR_BIT);
+        if (imported.is_err()) return Err(rstd::move(imported).unwrap_err());
+        if (const auto result = entry->image.BindMemory(*plane_memories[0], 0);
+            result != VK_SUCCESS) {
+            return Err(Error { vk_error("vkBindImageMemory(joint)"_str, result) });
+        }
+        entry->memories.push(rstd::move(plane_memories[0]));
+    }
+
+    VkImageViewCreateInfo view_info {};
+    view_info.sType      = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    view_info.viewType   = VK_IMAGE_VIEW_TYPE_2D;
+    view_info.image      = *entry->image;
+    view_info.components = {
+        VK_COMPONENT_SWIZZLE_IDENTITY,
+        VK_COMPONENT_SWIZZLE_IDENTITY,
+        VK_COMPONENT_SWIZZLE_IDENTITY,
+        VK_COMPONENT_SWIZZLE_IDENTITY,
+    };
+    view_info.subresourceRange = { VK_IMAGE_ASPECT_PLANE_0_BIT, 0, 1, 0, 1 };
+    view_info.format           = VK_FORMAT_R8_UNORM;
+    if (const auto result = device.CreateImageView(view_info, entry->y_view);
+        result != VK_SUCCESS) {
+        return Err(Error { vk_error("vkCreateImageView(DRM Y)"_str, result) });
+    }
+    view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_PLANE_1_BIT;
+    view_info.format                      = VK_FORMAT_R8G8_UNORM;
+    if (const auto result = device.CreateImageView(view_info, entry->uv_view);
+        result != VK_SUCCESS) {
+        return Err(Error { vk_error("vkCreateImageView(DRM UV)"_str, result) });
+    }
+    return Ok(rstd::move(entry));
+}
+
+} // namespace
+
 YuvToRgba::~YuvToRgba() {
     if (device_) (void)device_.WaitIdle();
+    if (drm_pipeline_) {
+        auto state = rstd::boxed::Box<DrmPipelineState>::from_raw(
+            mut_ptr<DrmPipelineState>::from_raw_parts(drm_pipeline_));
+        drm_pipeline_ = nullptr;
+    }
     if (staging_map_ && staging_mem_) staging_mem_.Unmap();
     (void)completion_timeline_.take();
 }
@@ -522,9 +860,9 @@ bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device
     {
         VkDescriptorPoolSize ps[2] {};
         ps[0].type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        ps[0].descriptorCount = 2;
+        ps[0].descriptorCount = 2 * (kMaxDrmContexts.to_primitive() + 1);
         ps[1].type            = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        ps[1].descriptorCount = 1;
+        ps[1].descriptorCount = kMaxDrmContexts.to_primitive() + 1;
         const vvk::DescriptorDeviceDispatch dispatch {
             .create_pool   = device_dispatch_.vkCreateDescriptorPool,
             .destroy_pool  = device_dispatch_.vkDestroyDescriptorPool,
@@ -532,7 +870,10 @@ bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device
             .update_sets   = device_dispatch_.vkUpdateDescriptorSets,
         };
         auto arena = vvk::DescriptorArenaGeneration::Create(
-            *device_, 1, slice<VkDescriptorPoolSize>::from_raw_parts(ps, usize(2)), dispatch);
+            *device_,
+            kMaxDrmContexts.to_primitive() + 1,
+            slice<VkDescriptorPoolSize>::from_raw_parts(ps, usize(2)),
+            dispatch);
         if (! arena.created())
             return fail(err, vk_error("vkCreateDescriptorPool"_str, arena.api_result));
         descriptor_arena_ = rstd::move(arena.arena);
@@ -590,6 +931,9 @@ bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device
             return fail(err, "timeline completion observer unavailable"_str);
         }
     }
+
+    auto drm_pipeline = rstd::boxed::Box<DrmPipelineState>::make();
+    drm_pipeline_     = rstd::move(drm_pipeline).into_raw().as_raw_ptr();
 
     // Bindings 0/1 are stable across frames — write them once.
     {
@@ -1217,357 +1561,353 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im, VkImage dst, rstd:
     return sync_fd;
 }
 
-/* DRM_PRIME zero-copy NV12. Imports the AVDRMFrameDescriptor's dma-buf
- * fds as a disjoint multi-plane VkImage (G8_B8R8_2PLANE_420_UNORM with
- * VK_EXT_image_drm_format_modifier), creates two single-plane R8/R8G8
- * views, dispatches the existing nv12_to_rgba.comp into `dst`. The
- * imported VkImage and its memory objects are deferred-destroyed at the
- * *next* convert_drm_prime call (after the wait on done_fence_) so the
- * GPU has fully consumed them. fds are dup'd for Vulkan to own. */
-int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm, VkImage dst, rstd::uint32_t dst_w,
-                                  rstd::uint32_t dst_h, const ColorMatrix& cm, ConvertTarget target,
-                                  Error* err) {
-    if (dst == VK_NULL_HANDLE) {
-        fail(err, "convert_drm_prime: dst null"_str);
-        return -1;
+auto YuvToRgba::configure_drm_pipeline(u32 max_contexts, u32 max_imports) -> Result<empty, Error> {
+    if (max_contexts == u32() || max_contexts > kMaxDrmContexts || max_imports == u32() ||
+        max_imports > kMaxDrmImports) {
+        return Err(Error { "configure_drm_pipeline: limits are out of range"_str });
+    }
+    auto reclaimed = reclaim_drm_submissions();
+    if (reclaimed.is_err()) return Err(rstd::move(reclaimed).unwrap_err());
+    for (const auto& context : drm_pipeline_->contexts) {
+        if (context->completion.is_some() || context->reserved) {
+            return Err(Error { "configure_drm_pipeline: contexts are still active"_str });
+        }
+    }
+    drm_pipeline_->max_contexts = max_contexts;
+    drm_pipeline_->max_imports  = max_imports;
+    drm_pipeline_->contexts.truncate(usize(max_contexts.to_primitive()));
+    drm_pipeline_->imports.truncate(usize(max_imports.to_primitive()));
+    return Ok(empty {});
+}
+
+auto YuvToRgba::try_reserve_drm(ConvertTarget target)
+    -> Result<Option<ConversionReservation>, Error> {
+    auto reclaimed = reclaim_drm_submissions();
+    if (reclaimed.is_err()) return Err(rstd::move(reclaimed).unwrap_err());
+
+    DrmSubmissionContext* context = nullptr;
+    for (auto& candidate : drm_pipeline_->contexts) {
+        if (candidate->completion.is_none() && ! candidate->reserved) {
+            context = candidate.get();
+            break;
+        }
+    }
+    if (! context &&
+        drm_pipeline_->contexts.len() < usize(drm_pipeline_->max_contexts.to_primitive())) {
+        auto candidate = rstd::boxed::Box<DrmSubmissionContext>::make();
+        if (const auto result = cmd_pool_.Allocate(
+                usize(1), VK_COMMAND_BUFFER_LEVEL_PRIMARY, candidate->command_buffers);
+            result != VK_SUCCESS) {
+            return Err(Error { vk_error("vkAllocateCommandBuffers(DRM)"_str, result) });
+        }
+        candidate->command =
+            vvk::CommandBuffer(candidate->command_buffers[usize()], device_dispatch_);
+        auto allocation = vvk::DescriptorArenaGeneration::Allocate(*descriptor_arena_, *dsl_);
+        if (! allocation.allocated()) {
+            return Err(
+                Error { vk_error("vkAllocateDescriptorSets(DRM)"_str, allocation.api_result) });
+        }
+        candidate->descriptor_set = rstd::move(allocation.lease);
+
+        context = candidate.get();
+        drm_pipeline_->contexts.push(rstd::move(candidate));
+    }
+    if (! context) return Ok(None());
+
+    if (target_exports_sync_fd(target) && ! context->export_semaphore) {
+        VkExportSemaphoreCreateInfo export_info {};
+        export_info.sType       = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO;
+        export_info.handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
+        VkSemaphoreCreateInfo semaphore_info {};
+        semaphore_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+        semaphore_info.pNext = &export_info;
+        if (const auto result = device_.CreateSemaphore(semaphore_info, context->export_semaphore);
+            result != VK_SUCCESS) {
+            return Err(Error { vk_error("vkCreateSemaphore(DRM export)"_str, result) });
+        }
+    }
+    context->reserved = true;
+    auto state        = rstd::boxed::Box<ConversionReservation::State>::make();
+    state->owner      = this;
+    state->context    = context;
+    state->target     = target;
+    return Ok(Some(ConversionReservation(rstd::move(state).into_raw().as_raw_ptr())));
+}
+
+auto YuvToRgba::reclaim_drm_submissions() -> Result<usize, Error> {
+    bool has_pending = false;
+    for (const auto& context : drm_pipeline_->contexts) {
+        if (context->completion.is_some()) {
+            has_pending = true;
+            break;
+        }
+    }
+    if (! has_pending) return Ok(usize());
+
+    const auto observation = poll_completion();
+    if (observation.status == vvk::CompletionObservationStatus::DeviceLost ||
+        observation.status == vvk::CompletionObservationStatus::ApiError ||
+        observation.status == vvk::CompletionObservationStatus::Invalid) {
+        return Err(Error {
+            rstd::format("reclaim_drm_submissions: timeline query failed: {}",
+                         vk_result_str(observation.api_result)),
+        });
+    }
+
+    usize reclaimed {};
+    for (auto& context : drm_pipeline_->contexts) {
+        if (context->completion.is_none() || ! observation.completed.valid() ||
+            ! vvk::CompletionCovers(observation.completed, *context->completion)) {
+            continue;
+        }
+        if (context->source) --context->source->in_flight;
+        if (context->target) --context->target->in_flight;
+        context->source = nullptr;
+        context->target = nullptr;
+        (void)context->frame.take();
+        (void)context->completion.take();
+        ++reclaimed;
+    }
+    return Ok(reclaimed);
+}
+
+auto YuvToRgba::drain_drm_submissions(u64 timeout_ns) -> Result<empty, Error> {
+    Option<vvk::SubmissionToken> latest;
+    for (const auto& context : drm_pipeline_->contexts) {
+        if (context->completion.is_none()) continue;
+        if (latest.is_none() || context->completion->value > latest->value) {
+            latest = Some<vvk::SubmissionToken>(*context->completion);
+        }
+    }
+    if (latest.is_none()) return Ok(empty {});
+
+    const auto observation = wait_completion(*latest, timeout_ns);
+    if (! observation.observed() || ! observation.completed.valid() ||
+        ! vvk::CompletionCovers(observation.completed, *latest)) {
+        return Err(Error {
+            rstd::format("drain_drm_submissions: timeline wait failed: {}",
+                         vk_result_str(observation.api_result)),
+        });
+    }
+    auto reclaimed = reclaim_drm_submissions();
+    if (reclaimed.is_err()) return Err(rstd::move(reclaimed).unwrap_err());
+    return Ok(empty {});
+}
+
+auto YuvToRgba::invalidate_drm_targets() -> Result<empty, Error> {
+    auto reclaimed = reclaim_drm_submissions();
+    if (reclaimed.is_err()) return Err(rstd::move(reclaimed).unwrap_err());
+    for (const auto& context : drm_pipeline_->contexts) {
+        if (context->completion.is_some() || context->reserved) {
+            return Err(Error { "invalidate_drm_targets: contexts are still active"_str });
+        }
+    }
+    drm_pipeline_->targets.clear();
+    return Ok(empty {});
+}
+
+auto YuvToRgba::submit_drm_prime(ConversionReservation&& reservation, DrmFrameLease&& frame,
+                                 const ConversionTargetView& destination, const ColorMatrix& cm)
+    -> Result<Option<ConversionSubmission>, Error> {
+    const auto dst    = destination.image;
+    const auto dst_w  = destination.width;
+    const auto dst_h  = destination.height;
+    const auto target = destination.kind;
+    if (! reservation.valid() || reservation.state_->owner != this ||
+        reservation.state_->target != target || ! reservation.state_->context ||
+        ! reservation.state_->context->reserved ||
+        reservation.state_->context->completion.is_some()) {
+        return Err(Error { "submit_drm_prime: invalid reservation"_str });
+    }
+    if (! frame.valid()) return Err(Error { "submit_drm_prime: invalid frame lease"_str });
+    if (dst == VK_NULL_HANDLE || dst_w == u32() || dst_h == u32()) {
+        return Err(Error { "submit_drm_prime: invalid destination"_str });
+    }
+    if (target == ConvertTarget::SampledLocal && destination.view == VK_NULL_HANDLE) {
+        return Err(Error { "submit_drm_prime: local destination view is required"_str });
+    }
+    if ((dst_w % u32(2)) != u32() || (dst_h % u32(2)) != u32()) {
+        return Err(Error { "submit_drm_prime: destination dimensions must be even"_str });
+    }
+    if (dst_w > max_w_ || dst_h > max_h_) {
+        return Err(Error { "submit_drm_prime: destination exceeds configured extent"_str });
     }
     if (! device_dispatch_.vkGetMemoryFdPropertiesKHR) {
-        fail(err, "convert_drm_prime: vkGetMemoryFdPropertiesKHR missing"_str);
-        return -1;
-    }
-    if (drm.object_count == u32() || drm.layer_count == u32()) {
-        fail(err, "convert_drm_prime: empty DRM_PRIME descriptor"_str);
-        return -1;
-    }
-    if ((dst_w & 1u) || (dst_h & 1u)) {
-        fail(err, "convert_drm_prime: dst dims must be even"_str);
-        return -1;
-    }
-    if (dst_w > max_w_.to_primitive() || dst_h > max_h_.to_primitive()) {
-        fail(err, "convert_drm_prime: dst exceeds configured max extent"_str);
-        return -1;
+        return Err(Error { "submit_drm_prime: vkGetMemoryFdPropertiesKHR missing"_str });
     }
 
-    /* Wait for prior submit before we destroy last-cycle imports + reuse
-     * cmd_/dset_. */
-    if (fence_pending_) {
-        if (VkResult r = done_fence_.Wait(1'000'000'000ull); r != VK_SUCCESS) {
-            fail(err, vk_error("vkWaitForFences"_str, r));
-            return -1;
+    auto* context = reservation.state_->context;
+
+    DrmImportEntry* source      = nullptr;
+    Option<usize>   stale_index = None();
+    const auto      key         = frame.resource_key();
+    const auto&     view        = frame.view();
+    for (usize index {}; index < drm_pipeline_->imports.len(); ++index) {
+        auto* candidate = drm_pipeline_->imports[index].get();
+        if (candidate->key != key) continue;
+        if (same_drm_signature(candidate->signature, view)) {
+            if (candidate->in_flight != u32()) return Ok(None());
+            source = candidate;
+        } else {
+            if (candidate->in_flight != u32()) return Ok(None());
+            stale_index = Some(index);
         }
-        if (VkResult r = done_fence_.Reset(); r != VK_SUCCESS) {
-            fail(err, vk_error("vkResetFences"_str, r));
-            return -1;
+        break;
+    }
+    if (stale_index.is_some()) {
+        (void)drm_pipeline_->imports.remove(*stale_index);
+    }
+    if (! source) {
+        if (drm_pipeline_->imports.len() >= usize(drm_pipeline_->max_imports.to_primitive())) {
+            Option<usize> eviction;
+            u64           oldest = u64::MAX;
+            for (usize index {}; index < drm_pipeline_->imports.len(); ++index) {
+                const auto* candidate = drm_pipeline_->imports[index].get();
+                if (candidate->in_flight == u32() && candidate->last_use_serial < oldest) {
+                    oldest   = candidate->last_use_serial;
+                    eviction = Some(index);
+                }
+            }
+            if (eviction.is_none()) return Ok(None());
+            (void)drm_pipeline_->imports.remove(*eviction);
         }
-        fence_pending_ = false;
+        auto imported = create_drm_import(device_, phys_, frame);
+        if (imported.is_err()) return Err(rstd::move(imported).unwrap_err());
+        auto entry = rstd::move(imported).unwrap();
+        source     = entry.get();
+        drm_pipeline_->imports.push(rstd::move(entry));
     }
 
-    last_drm_image_.reset();
-    last_drm_memories_.clear();
+    DrmTargetEntry* target_entry = nullptr;
+    if (target == ConvertTarget::BridgeForeign) {
+        for (auto& candidate : drm_pipeline_->targets) {
+            if (candidate->image == dst && candidate->width == dst_w &&
+                candidate->height == dst_h &&
+                (destination.view == VK_NULL_HANDLE || candidate->view == destination.view)) {
+                if (candidate->in_flight != u32()) return Ok(None());
+                target_entry = candidate.get();
+                break;
+            }
+        }
+        if (! target_entry) {
+            auto entry    = rstd::boxed::Box<DrmTargetEntry>::make();
+            entry->image  = dst;
+            entry->width  = dst_w;
+            entry->height = dst_h;
+            entry->view   = destination.view;
+            if (entry->view == VK_NULL_HANDLE) {
+                VkImageViewCreateInfo view_info {};
+                view_info.sType      = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+                view_info.image      = dst;
+                view_info.viewType   = VK_IMAGE_VIEW_TYPE_2D;
+                view_info.format     = VK_FORMAT_R8G8B8A8_UNORM;
+                view_info.components = {
+                    VK_COMPONENT_SWIZZLE_IDENTITY,
+                    VK_COMPONENT_SWIZZLE_IDENTITY,
+                    VK_COMPONENT_SWIZZLE_IDENTITY,
+                    VK_COMPONENT_SWIZZLE_IDENTITY,
+                };
+                view_info.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+                if (const auto result = device_.CreateImageView(view_info, entry->owned_view);
+                    result != VK_SUCCESS) {
+                    return Err(Error { vk_error("vkCreateImageView(DRM target)"_str, result) });
+                }
+                entry->view = *entry->owned_view;
+            }
+            target_entry = entry.get();
+            drm_pipeline_->targets.push(rstd::move(entry));
+        }
+    }
 
-    /* Map (object_index, plane_index_in_layer) → flat plane index 0/1.
-     * Two valid descriptor layouts for NV12:
-     *   A) 1 layer, 2 planes  (Y=plane[0], UV=plane[1], potentially same fd)
-     *   B) 2 layers, 1 plane each (Y=layers[0].planes[0], UV=layers[1].planes[0])
-     * We collapse both to a flat planes[0]=Y, planes[1]=UV. */
-    struct FlatPlane {
-        rstd::uint32_t object_index;
-        rstd::uint64_t offset;
-        rstd::uint64_t pitch;
+    const auto            target_view = target_entry ? target_entry->view : destination.view;
+    VkDescriptorImageInfo y_info {
+        *sampler_,
+        *source->y_view,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
     };
-    FlatPlane flat[2] {};
-    int       flat_n = 0;
-    for (rstd::uint32_t li = 0; li < drm.layer_count.to_primitive() && flat_n < 2; ++li) {
-        const auto& la = drm.layers[li];
-        for (rstd::uint32_t pi = 0; pi < la.plane_count.to_primitive() && flat_n < 2; ++pi) {
-            flat[flat_n].object_index = la.planes[pi].object_index.to_primitive();
-            flat[flat_n].offset       = la.planes[pi].offset.to_primitive();
-            flat[flat_n].pitch        = la.planes[pi].pitch.to_primitive();
-            ++flat_n;
-        }
-    }
-    if (flat_n != 2) {
-        fail(err, rstd::format("convert_drm_prime: expected 2 NV12 planes, got {}", flat_n));
-        return -1;
-    }
-
-    const rstd::uint64_t modifier = drm.objects[0].format_modifier;
-
-    /* Build the multi-plane VkImage with explicit modifier + per-plane
-     * layout. DISJOINT lets us bind a separate VkDeviceMemory per plane
-     * — required when planes live in different fds. */
-    vvk::DeviceMemory plane_mem[2];
-    vvk::Image        drm_image;
-    vvk::ImageView    y_view;
-    vvk::ImageView    uv_view;
-    vvk::ImageView    dst_view;
-    bool              disjoint = (flat[0].object_index != flat[1].object_index);
-
-    {
-        VkSubresourceLayout pl[2] {};
-        pl[0].offset   = flat[0].offset;
-        pl[0].rowPitch = flat[0].pitch;
-        pl[1].offset   = flat[1].offset;
-        pl[1].rowPitch = flat[1].pitch;
-        VkImageDrmFormatModifierExplicitCreateInfoEXT mci {};
-        mci.sType = VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_EXPLICIT_CREATE_INFO_EXT;
-        mci.drmFormatModifier           = modifier;
-        mci.drmFormatModifierPlaneCount = 2;
-        mci.pPlaneLayouts               = pl;
-        VkExternalMemoryImageCreateInfo emi {};
-        emi.sType               = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO;
-        emi.handleTypes         = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
-        emi.pNext               = &mci;
-        VkFormat view_formats[] = {
-            VK_FORMAT_G8_B8R8_2PLANE_420_UNORM,
-            VK_FORMAT_R8_UNORM,
-            VK_FORMAT_R8G8_UNORM,
-        };
-        VkImageFormatListCreateInfo flci {};
-        flci.sType           = VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO;
-        flci.pNext           = &emi;
-        flci.viewFormatCount = 3;
-        flci.pViewFormats    = view_formats;
-        VkImageCreateInfo ici {};
-        ici.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-        ici.pNext         = &flci;
-        ici.flags         = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
-        ici.imageType     = VK_IMAGE_TYPE_2D;
-        ici.format        = VK_FORMAT_G8_B8R8_2PLANE_420_UNORM;
-        ici.extent        = { drm.width.to_primitive(), drm.height.to_primitive(), 1 };
-        ici.mipLevels     = 1;
-        ici.arrayLayers   = 1;
-        ici.samples       = VK_SAMPLE_COUNT_1_BIT;
-        ici.tiling        = VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT;
-        ici.usage         = VK_IMAGE_USAGE_SAMPLED_BIT;
-        ici.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
-        ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        if (disjoint) ici.flags |= VK_IMAGE_CREATE_DISJOINT_BIT;
-        if (VkResult r = device_.CreateImage(ici, drm_image); r != VK_SUCCESS) {
-            fail(err,
-                 rstd::format(
-                     "vkCreateImage(DRM_PRIME, modifier={}): {}", modifier, vk_result_str(r)));
-            return -1;
-        }
-    }
-
-    /* Per-plane memory import. Vulkan takes ownership of imported fds —
-     * dup so the AVFrame can keep its own copy alive for the next pull. */
-    auto import_plane =
-        [&](int plane_idx, rstd::uint32_t obj_idx, VkImageAspectFlagBits aspect) -> bool {
-        const int src_fd    = drm.objects[obj_idx].fd;
-        auto      duplicate = rstd::os::fd::BorrowedFd::borrow_raw(src_fd).try_clone_to_owned();
-        if (duplicate.is_err()) {
-            fail(err,
-                 rstd::format("dup(dma_buf) failed: {}",
-                              rstd::move(duplicate).unwrap_err_unchecked()));
-            return false;
-        }
-        auto duplicate_fd = rstd::move(duplicate).unwrap_unchecked();
-        auto raw_fd       = duplicate_fd.as_raw_fd();
-
-        VkMemoryFdPropertiesKHR fdp {};
-        fdp.sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR;
-        if (VkResult r = device_.GetMemoryFdPropertiesKHR(
-                VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, raw_fd, fdp);
-            r != VK_SUCCESS) {
-            fail(err, vk_error("vkGetMemoryFdPropertiesKHR"_str, r));
-            return false;
-        }
-
-        VkImagePlaneMemoryRequirementsInfo plane_req {};
-        plane_req.sType       = VK_STRUCTURE_TYPE_IMAGE_PLANE_MEMORY_REQUIREMENTS_INFO;
-        plane_req.planeAspect = aspect;
-        VkImageMemoryRequirementsInfo2 req_info {};
-        req_info.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2;
-        req_info.image = *drm_image;
-        if (disjoint) req_info.pNext = &plane_req;
-        const auto req2 = device_.GetImageMemoryRequirements2(req_info);
-
-        const rstd::uint32_t type_bits =
-            req2.memoryRequirements.memoryTypeBits & fdp.memoryTypeBits;
-        const rstd::uint32_t mtype = pick_memory_type(phys_, type_bits, 0);
-        if (mtype == UINT32_MAX) {
-            fail(err, "convert_drm_prime: no compatible memory type for imported DMA-BUF"_str);
-            return false;
-        }
-
-        VkImportMemoryFdInfoKHR ifi {};
-        ifi.sType      = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR;
-        ifi.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
-        ifi.fd         = raw_fd;
-        VkMemoryDedicatedAllocateInfo dai {};
-        dai.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO;
-        dai.image = *drm_image;
-        ifi.pNext = &dai;
-        VkMemoryAllocateInfo mai {};
-        mai.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        mai.pNext           = &ifi;
-        mai.allocationSize  = drm.objects[obj_idx].size.to_primitive();
-        mai.memoryTypeIndex = mtype;
-        if (VkResult r = device_.AllocateMemory(mai, plane_mem[plane_idx]); r != VK_SUCCESS) {
-            fail(err, vk_error("vkAllocateMemory(import DMA-BUF)"_str, r));
-            return false;
-        }
-        /* fd ownership transfers to Vulkan only after a successful import. */
-        (void)rstd::move(duplicate_fd).into_raw_fd();
-        return true;
+    VkDescriptorImageInfo uv_info {
+        *sampler_,
+        *source->uv_view,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
     };
-
-    if (disjoint) {
-        if (! import_plane(0, flat[0].object_index, VK_IMAGE_ASPECT_PLANE_0_BIT) ||
-            ! import_plane(1, flat[1].object_index, VK_IMAGE_ASPECT_PLANE_1_BIT)) {
-            return -1;
-        }
-        VkBindImagePlaneMemoryInfo bp0 {};
-        bp0.sType       = VK_STRUCTURE_TYPE_BIND_IMAGE_PLANE_MEMORY_INFO;
-        bp0.planeAspect = VK_IMAGE_ASPECT_PLANE_0_BIT;
-        VkBindImagePlaneMemoryInfo bp1 {};
-        bp1.sType       = VK_STRUCTURE_TYPE_BIND_IMAGE_PLANE_MEMORY_INFO;
-        bp1.planeAspect = VK_IMAGE_ASPECT_PLANE_1_BIT;
-        VkBindImageMemoryInfo binds[2] {};
-        binds[0].sType        = VK_STRUCTURE_TYPE_BIND_IMAGE_MEMORY_INFO;
-        binds[0].pNext        = &bp0;
-        binds[0].image        = *drm_image;
-        binds[0].memory       = *plane_mem[0];
-        binds[0].memoryOffset = 0;
-        binds[1].sType        = VK_STRUCTURE_TYPE_BIND_IMAGE_MEMORY_INFO;
-        binds[1].pNext        = &bp1;
-        binds[1].image        = *drm_image;
-        binds[1].memory       = *plane_mem[1];
-        binds[1].memoryOffset = 0;
-        if (VkResult r = device_.BindImageMemory2(
-                slice<VkBindImageMemoryInfo>::from_raw_parts(binds, usize(2)));
-            r != VK_SUCCESS) {
-            fail(err, vk_error("vkBindImageMemory2(disjoint)"_str, r));
-            return -1;
-        }
-    } else {
-        /* Both planes share one fd → one allocation, single bind. */
-        if (! import_plane(0, flat[0].object_index, VK_IMAGE_ASPECT_COLOR_BIT)) {
-            return -1;
-        }
-        if (VkResult r = drm_image.BindMemory(*plane_mem[0], 0); r != VK_SUCCESS) {
-            fail(err, vk_error("vkBindImageMemory(joint)"_str, r));
-            return -1;
-        }
+    VkDescriptorImageInfo      dst_info { VK_NULL_HANDLE, target_view, VK_IMAGE_LAYOUT_GENERAL };
+    vvk::DescriptorUpdateBatch descriptors;
+    if (! descriptors.WriteImage(context->descriptor_set.clone(),
+                                 0,
+                                 VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                 slice<VkDescriptorImageInfo>::from_raw_parts(&y_info, usize(1))) ||
+        ! descriptors.WriteImage(
+            context->descriptor_set.clone(),
+            1,
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            slice<VkDescriptorImageInfo>::from_raw_parts(&uv_info, usize(1))) ||
+        ! descriptors.WriteImage(
+            context->descriptor_set.clone(),
+            2,
+            VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+            slice<VkDescriptorImageInfo>::from_raw_parts(&dst_info, usize(1))) ||
+        ! descriptors.Commit().committed()) {
+        return Err(Error { "submit_drm_prime: failed to update descriptors"_str });
     }
 
-    /* Two single-aspect plane views: Y as R8, UV as R8G8. */
-    {
-        VkImageViewCreateInfo vci {};
-        vci.sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        vci.viewType         = VK_IMAGE_VIEW_TYPE_2D;
-        vci.image            = *drm_image;
-        vci.components       = { VK_COMPONENT_SWIZZLE_IDENTITY,
-                                 VK_COMPONENT_SWIZZLE_IDENTITY,
-                                 VK_COMPONENT_SWIZZLE_IDENTITY,
-                                 VK_COMPONENT_SWIZZLE_IDENTITY };
-        vci.subresourceRange = { VK_IMAGE_ASPECT_PLANE_0_BIT, 0, 1, 0, 1 };
-        vci.format           = VK_FORMAT_R8_UNORM;
-        if (VkResult r = device_.CreateImageView(vci, y_view); r != VK_SUCCESS) {
-            fail(err, vk_error("vkCreateImageView(DRM Y)"_str, r));
-            return -1;
-        }
-        vci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_PLANE_1_BIT;
-        vci.format                      = VK_FORMAT_R8G8_UNORM;
-        if (VkResult r = device_.CreateImageView(vci, uv_view); r != VK_SUCCESS) {
-            fail(err, vk_error("vkCreateImageView(DRM UV)"_str, r));
-            return -1;
-        }
-        vci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        vci.image                       = dst;
-        vci.format                      = VK_FORMAT_R8G8B8A8_UNORM;
-        if (VkResult r = device_.CreateImageView(vci, dst_view); r != VK_SUCCESS) {
-            fail(err, vk_error("vkCreateImageView(DRM dst)"_str, r));
-            return -1;
-        }
+    if (const auto result = context->command.Reset(); result != VK_SUCCESS) {
+        return Err(Error { vk_error("vkResetCommandBuffer(DRM)"_str, result) });
+    }
+    VkCommandBufferBeginInfo begin_info {};
+    begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    if (const auto result = context->command.Begin(begin_info); result != VK_SUCCESS) {
+        return Err(Error { vk_error("vkBeginCommandBuffer(DRM)"_str, result) });
     }
 
-    /* Descriptor write — same shape as the AVVkFrame path. */
-    {
-        VkDescriptorImageInfo      dii_y { *sampler_,
-                                           *y_view,
-                                           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-        VkDescriptorImageInfo      dii_uv { *sampler_,
-                                            *uv_view,
-                                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-        VkDescriptorImageInfo      dii_d { VK_NULL_HANDLE, *dst_view, VK_IMAGE_LAYOUT_GENERAL };
-        vvk::DescriptorUpdateBatch batch;
-        if (! batch.WriteImage(descriptor_set_.clone(),
-                               0,
-                               VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                               slice<VkDescriptorImageInfo>::from_raw_parts(&dii_y, usize(1))) ||
-            ! batch.WriteImage(descriptor_set_.clone(),
-                               1,
-                               VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                               slice<VkDescriptorImageInfo>::from_raw_parts(&dii_uv, usize(1))) ||
-            ! batch.WriteImage(descriptor_set_.clone(),
-                               2,
-                               VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                               slice<VkDescriptorImageInfo>::from_raw_parts(&dii_d, usize(1))) ||
-            ! batch.Commit().committed()) {
-            fail(err, "failed to update DRM PRIME descriptors"_str);
-            return -1;
-        }
-    }
-
-    if (VkResult r = cmd_.Reset(); r != VK_SUCCESS) {
-        fail(err, vk_error("vkResetCommandBuffer"_str, r));
-        return -1;
-    }
-    VkCommandBufferBeginInfo bi {};
-    bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    if (VkResult r = cmd_.Begin(bi); r != VK_SUCCESS) {
-        fail(err, vk_error("vkBeginCommandBuffer"_str, r));
-        return -1;
-    }
-
-    /* Acquire imported image from FOREIGN queue family → ours, transition
-     * UNDEFINED → SHADER_READ_ONLY (we only read). UNDEFINED is correct
-     * because Vulkan must NOT preserve anything across the import — VAAPI
-     * already wrote NV12 contents into the dma-buf; the foreign-queue
-     * acquire grants us read access. */
-    barrier_image(cmd_,
-                  *drm_image,
+    barrier_image(context->command,
+                  *source->image,
                   0,
                   VK_ACCESS_SHADER_READ_BIT,
-                  VK_IMAGE_LAYOUT_UNDEFINED,
+                  source->initialized ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED,
                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                   VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                   VK_QUEUE_FAMILY_FOREIGN_EXT,
                   queue_family_.to_primitive());
-    barrier_dst_to_storage(cmd_, dst, target);
-
-    cmd_.BindPipeline(VK_PIPELINE_BIND_POINT_COMPUTE, *pipeline_);
-    const VkDescriptorSet descriptor_set = descriptor_set_.handle;
-    cmd_.BindDescriptorSets(VK_PIPELINE_BIND_POINT_COMPUTE,
-                            *pipeline_layout_,
-                            0,
-                            slice<VkDescriptorSet>::from_raw_parts(&descriptor_set, usize(1)),
-                            {});
-    ShaderPushConstants pc {};
-    pc.dst_w = dst_w;
-    pc.dst_h = dst_h;
-    for (int i = 0; i < 3; ++i) {
-        pc.m_r[i]    = cm.m_r[i];
-        pc.m_g[i]    = cm.m_g[i];
-        pc.m_b[i]    = cm.m_b[i];
-        pc.offset[i] = cm.offset[i];
+    if (target_entry) {
+        barrier_image(
+            context->command,
+            dst,
+            0,
+            VK_ACCESS_SHADER_WRITE_BIT,
+            target_entry->initialized ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_GENERAL,
+            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            target_entry->initialized ? VK_QUEUE_FAMILY_FOREIGN_EXT : VK_QUEUE_FAMILY_IGNORED,
+            target_entry->initialized ? queue_family_.to_primitive() : VK_QUEUE_FAMILY_IGNORED);
+    } else {
+        barrier_dst_to_storage(context->command, dst, target);
     }
-    cmd_.PushConstants(*pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT, pc);
-    const rstd::uint32_t gx = (dst_w + 7) / 8;
-    const rstd::uint32_t gy = (dst_h + 7) / 8;
-    cmd_.Dispatch(gx, gy, 1);
 
-    /* Release dst to FOREIGN queue family for the bridge consumer. The
-     * imported drm_image goes back to FOREIGN too — VAAPI doesn't track
-     * Vulkan layouts, but the foreign-queue release is the spec-required
-     * way to relinquish ownership of an external resource. */
-    barrier_image(cmd_,
-                  *drm_image,
+    context->command.BindPipeline(VK_PIPELINE_BIND_POINT_COMPUTE, *pipeline_);
+    const auto descriptor_set = context->descriptor_set.handle;
+    context->command.BindDescriptorSets(
+        VK_PIPELINE_BIND_POINT_COMPUTE,
+        *pipeline_layout_,
+        0,
+        slice<VkDescriptorSet>::from_raw_parts(&descriptor_set, usize(1)),
+        {});
+    ShaderPushConstants push_constants {};
+    push_constants.dst_w = dst_w.to_primitive();
+    push_constants.dst_h = dst_h.to_primitive();
+    for (int index = 0; index < 3; ++index) {
+        push_constants.m_r[index]    = cm.m_r[index];
+        push_constants.m_g[index]    = cm.m_g[index];
+        push_constants.m_b[index]    = cm.m_b[index];
+        push_constants.offset[index] = cm.offset[index];
+    }
+    context->command.PushConstants(*pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT, push_constants);
+    context->command.Dispatch((dst_w.to_primitive() + 7) / 8, (dst_h.to_primitive() + 7) / 8, 1);
+
+    barrier_image(context->command,
+                  *source->image,
                   VK_ACCESS_SHADER_READ_BIT,
                   0,
                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -1576,60 +1916,68 @@ int YuvToRgba::convert_drm_prime_(const DrmFrameView& drm, VkImage dst, rstd::ui
                   VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
                   queue_family_.to_primitive(),
                   VK_QUEUE_FAMILY_FOREIGN_EXT);
-    barrier_dst_from_storage(cmd_, dst, target, queue_family_.to_primitive());
-
-    if (VkResult r = cmd_.End(); r != VK_SUCCESS) {
-        fail(err, vk_error("vkEndCommandBuffer"_str, r));
-        return -1;
+    barrier_dst_from_storage(context->command, dst, target, queue_family_.to_primitive());
+    if (const auto result = context->command.End(); result != VK_SUCCESS) {
+        return Err(Error { vk_error("vkEndCommandBuffer(DRM)"_str, result) });
     }
 
-    /* Single binary signal_sem_ for the bridge SYNC_FD export — no
-     * wait semaphore: VAAPI submits its own decode work synchronously
-     * to the dma-buf via implicit sync; the foreign-queue acquire
-     * barrier above is the cross-API sync point. */
-    auto next_completion_value = completion_value_ + u64(1);
-    if (next_completion_value == u64()) ++next_completion_value;
-    VkSemaphore    signal_sems[2] = { (*completion_timeline_)->handle(), *signal_sem_ };
-    rstd::uint64_t signal_vals[2] = { next_completion_value.to_primitive(), 0 };
-    const auto     signal_count   = target_exports_sync_fd(target) ? 2u : 1u;
+    auto completion_value = completion_value_ + u64(1);
+    if (completion_value == u64()) ++completion_value;
+    VkSemaphore    signal_semaphores[2] = { (*completion_timeline_)->handle(), VK_NULL_HANDLE };
+    rstd::uint64_t signal_values[2]     = { completion_value.to_primitive(), 0 };
+    const auto     signal_count         = target_exports_sync_fd(target) ? 2u : 1u;
+    if (signal_count == 2u) signal_semaphores[1] = *context->export_semaphore;
     VkTimelineSemaphoreSubmitInfo timeline_info {};
     timeline_info.sType                     = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
     timeline_info.signalSemaphoreValueCount = signal_count;
-    timeline_info.pSignalSemaphoreValues    = signal_vals;
-    VkSubmitInfo si {};
-    si.sType                             = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    si.pNext                             = &timeline_info;
-    si.commandBufferCount                = 1;
-    const VkCommandBuffer command_buffer = *cmd_;
-    si.pCommandBuffers                   = &command_buffer;
-    si.signalSemaphoreCount              = signal_count;
-    si.pSignalSemaphores                 = signal_sems;
-    if (VkResult r = queue_.Submit(si, *done_fence_); r != VK_SUCCESS) {
-        fail(err, vk_error("vkQueueSubmit"_str, r));
-        return -1;
+    timeline_info.pSignalSemaphoreValues    = signal_values;
+    const auto   command_buffer             = *context->command;
+    VkSubmitInfo submit_info {};
+    submit_info.sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit_info.pNext                = &timeline_info;
+    submit_info.commandBufferCount   = 1;
+    submit_info.pCommandBuffers      = &command_buffer;
+    submit_info.signalSemaphoreCount = signal_count;
+    submit_info.pSignalSemaphores    = signal_semaphores;
+    if (const auto result = queue_.Submit(submit_info); result != VK_SUCCESS) {
+        return Err(Error { vk_error("vkQueueSubmit(DRM)"_str, result) });
     }
-    fence_pending_ = true;
-    publish_submission(dst, u32(dst_w), u32(dst_h), target, next_completion_value);
 
-    last_dst_view_  = rstd::move(dst_view);
-    last_y_view_    = rstd::move(y_view);
-    last_uv_view_   = rstd::move(uv_view);
-    last_drm_image_ = rstd::move(drm_image);
-    last_drm_memories_.push(rstd::move(plane_mem[0]));
-    if (disjoint) last_drm_memories_.push(rstd::move(plane_mem[1]));
+    const vvk::SubmissionToken token {
+        (*completion_timeline_)->source(),
+        completion_value,
+    };
+    source->initialized     = true;
+    source->last_use_serial = ++drm_pipeline_->use_serial;
+    ++source->in_flight;
+    if (target_entry) {
+        target_entry->initialized = true;
+        ++target_entry->in_flight;
+    }
+    context->source               = source;
+    context->target               = target_entry;
+    context->completion           = Some<vvk::SubmissionToken>(token);
+    context->frame                = Some(rstd::move(frame));
+    context->reserved             = false;
+    reservation.state_->submitted = true;
+    publish_submission(dst, dst_w, dst_h, target, completion_value);
 
     int sync_fd = -1;
     if (target_exports_sync_fd(target)) {
-        VkSemaphoreGetFdInfoKHR sgfi {};
-        sgfi.sType      = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR;
-        sgfi.semaphore  = *signal_sem_;
-        sgfi.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
-        if (VkResult r = device_.GetSemaphoreFdKHR(sgfi, &sync_fd); r != VK_SUCCESS) {
-            fail(err, vk_error("vkGetSemaphoreFdKHR"_str, r));
-            return -1;
+        VkSemaphoreGetFdInfoKHR fd_info {};
+        fd_info.sType      = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR;
+        fd_info.semaphore  = *context->export_semaphore;
+        fd_info.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
+        if (const auto result = device_.GetSemaphoreFdKHR(fd_info, &sync_fd);
+            result != VK_SUCCESS) {
+            (void)drain_drm_submissions(u64(1'000'000'000));
+            return Err(Error { vk_error("vkGetSemaphoreFdKHR(DRM)"_str, result) });
         }
     }
-    return sync_fd;
+
+    auto submission    = last_submission_->clone();
+    submission.sync_fd = sync_fd;
+    return Ok(Some(rstd::move(submission)));
 }
 
 void YuvToRgba::publish_submission(VkImage dst, u32 dst_w, u32 dst_h, ConvertTarget target,
@@ -1728,35 +2076,6 @@ auto YuvToRgba::submit_av_vk_frame(const VkFrameImports& imports, VkImage dst, u
     Error err;
     int   fd = convert_av_vk_frame_(
         imports, dst, dst_w.to_primitive(), dst_h.to_primitive(), cm, target, &err);
-    if (fd < 0 && ! err.message.is_empty()) return Err(rstd::move(err));
-    if (! last_submission_ || ! last_submission_->submitted()) {
-        return Err(Error { "YuvToRgba: conversion returned without a submission"_str });
-    }
-    auto submission    = last_submission_->clone();
-    submission.sync_fd = fd;
-    return Ok(rstd::move(submission));
-}
-
-auto YuvToRgba::convert_drm_prime(const DrmFrameView& drm, VkImage dst, u32 dst_w, u32 dst_h,
-                                  const ColorMatrix& cm) -> Result<int, Error> {
-    return convert_drm_prime(drm, dst, dst_w, dst_h, cm, ConvertTarget::BridgeForeign);
-}
-
-auto YuvToRgba::convert_drm_prime(const DrmFrameView& drm, VkImage dst, u32 dst_w, u32 dst_h,
-                                  const ColorMatrix& cm, ConvertTarget target)
-    -> Result<int, Error> {
-    auto submitted = submit_drm_prime(drm, dst, dst_w, dst_h, cm, target);
-    if (submitted.is_err()) return Err(rstd::move(submitted).unwrap_err());
-    return Ok(rstd::move(submitted).unwrap().sync_fd);
-}
-
-auto YuvToRgba::submit_drm_prime(const DrmFrameView& drm, VkImage dst, u32 dst_w, u32 dst_h,
-                                 const ColorMatrix& cm, ConvertTarget target)
-    -> Result<ConversionSubmission, Error> {
-    (void)last_submission_.take();
-    Error err;
-    int   fd =
-        convert_drm_prime_(drm, dst, dst_w.to_primitive(), dst_h.to_primitive(), cm, target, &err);
     if (fd < 0 && ! err.message.is_empty()) return Err(rstd::move(err));
     if (! last_submission_ || ! last_submission_->submitted()) {
         return Err(Error { "YuvToRgba: conversion returned without a submission"_str });

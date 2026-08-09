@@ -43,6 +43,14 @@ enum class ConvertTarget : rstd::uint32_t
     SampledLocal  = 1,
 };
 
+struct ConversionTargetView {
+    VkImage       image { VK_NULL_HANDLE };
+    VkImageView   view { VK_NULL_HANDLE };
+    u32           width {};
+    u32           height {};
+    ConvertTarget kind { ConvertTarget::BridgeForeign };
+};
+
 struct ConversionSubmission {
     VkImage                          target { VK_NULL_HANDLE };
     u32                              width {};
@@ -80,6 +88,29 @@ struct ConversionSubmission {
 // Derive the ColorMatrix to push to the shader. Defaults to BT.709
 // limited when either argument is the canonical "unknown" sentinel.
 ColorMatrix make_color_matrix(ColorSpace cs, ColorRange cr);
+
+class YuvToRgba;
+
+class ConversionReservation {
+public:
+    ConversionReservation(const ConversionReservation&)            = delete;
+    ConversionReservation& operator=(const ConversionReservation&) = delete;
+    ConversionReservation(ConversionReservation&& other) noexcept;
+    ConversionReservation& operator=(ConversionReservation&& other) noexcept;
+    ~ConversionReservation();
+
+    bool valid() const noexcept { return state_ != nullptr; }
+
+    struct State;
+
+private:
+    friend class YuvToRgba;
+
+    explicit ConversionReservation(State* state) noexcept: state_(state) {}
+    void reset() noexcept;
+
+    State* state_ { nullptr };
+};
 
 class YuvToRgba {
 public:
@@ -125,18 +156,14 @@ public:
                             const ColorMatrix& cm, ConvertTarget target)
         -> rstd::Result<ConversionSubmission, Error>;
 
-    /* Zero-copy VAAPI path: imports the DrmFrameView's dma-buf fds as
-     * a disjoint multi-plane VkImage (NV12 → R8 + R8G8 plane views),
-     * runs the same nv12_to_rgba.comp into `dst`. The transient
-     * VkImage / VkDeviceMemory / fd dups live until the *next*
-     * convert_drm_prime call returns (cycled via last_drm_*). */
-    auto convert_drm_prime(const DrmFrameView& drm, VkImage dst, u32 dst_w, u32 dst_h,
-                           const ColorMatrix& cm) -> rstd::Result<int, Error>;
-    auto convert_drm_prime(const DrmFrameView& drm, VkImage dst, u32 dst_w, u32 dst_h,
-                           const ColorMatrix& cm, ConvertTarget target) -> rstd::Result<int, Error>;
-    auto submit_drm_prime(const DrmFrameView& drm, VkImage dst, u32 dst_w, u32 dst_h,
-                          const ColorMatrix& cm, ConvertTarget target)
-        -> rstd::Result<ConversionSubmission, Error>;
+    auto configure_drm_pipeline(u32 max_contexts, u32 max_imports) -> Result<empty, Error>;
+    auto try_reserve_drm(ConvertTarget target) -> Result<Option<ConversionReservation>, Error>;
+    auto submit_drm_prime(ConversionReservation&& reservation, DrmFrameLease&& drm,
+                          const ConversionTargetView& destination, const ColorMatrix& cm)
+        -> Result<Option<ConversionSubmission>, Error>;
+    auto reclaim_drm_submissions() -> Result<usize, Error>;
+    auto drain_drm_submissions(u64 timeout_ns) -> Result<empty, Error>;
+    auto invalidate_drm_targets() -> Result<empty, Error>;
 
     vvk::CompletionObservation   poll_completion() const noexcept;
     vvk::CompletionObservation   wait_completion(const vvk::SubmissionToken& required,
@@ -152,11 +179,10 @@ private:
     int  convert_av_vk_frame_(const VkFrameImports& imports, VkImage dst, rstd::uint32_t dst_w,
                               rstd::uint32_t dst_h, const ColorMatrix& cm, ConvertTarget target,
                               Error* err);
-    int  convert_drm_prime_(const DrmFrameView& drm, VkImage dst, rstd::uint32_t dst_w,
-                            rstd::uint32_t dst_h, const ColorMatrix& cm, ConvertTarget target,
-                            Error* err);
     void publish_submission(VkImage dst, u32 dst_w, u32 dst_h, ConvertTarget target,
                             u64 completion_value);
+
+    struct DrmPipelineState;
 
     vvk::InstanceDispatch instance_dispatch_;
     vvk::DeviceDispatch   device_dispatch_;
@@ -208,10 +234,7 @@ private:
     vvk::ImageView last_y_view_;
     vvk::ImageView last_uv_view_;
 
-    /* Cycle of imported DRM-PRIME resources kept alive for one extra
-     * frame so the prior submit's GPU work can drain before destroy. */
-    rstd::vec::Vec<vvk::DeviceMemory> last_drm_memories_;
-    vvk::Image                        last_drm_image_;
+    DrmPipelineState* drm_pipeline_ { nullptr };
 };
 
 } // namespace wavsen::video

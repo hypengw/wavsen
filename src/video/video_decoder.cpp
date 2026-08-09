@@ -247,7 +247,41 @@ auto av_err_str(int rc) -> rstd::string::String {
     return rstd::string::String::make(rstd::cppstd::as_str(buf).unwrap());
 }
 
+u64 next_decoder_generation() {
+    static rstd::sync::atomic::Atomic<u64> next { u64(1) };
+    auto value = next.fetch_add(u64(1), rstd::sync::atomic::Ordering::Relaxed);
+    if (value == u64()) value = next.fetch_add(u64(1), rstd::sync::atomic::Ordering::Relaxed);
+    return value;
+}
+
 } // namespace
+
+struct DrmFrameLease::State {
+    FramePtr source;
+    FramePtr mapped;
+};
+
+void DrmFrameLease::reset() noexcept {
+    if (! state_) return;
+    auto state = rstd::boxed::Box<State>::from_raw(mut_ptr<State>::from_raw_parts(state_));
+    state_     = nullptr;
+}
+
+DrmFrameLease::DrmFrameLease(DrmFrameLease&& other) noexcept
+    : state_(rstd::exchange(other.state_, nullptr)),
+      view_(rstd::move(other.view_)),
+      resource_key_(other.resource_key_) {}
+
+DrmFrameLease& DrmFrameLease::operator=(DrmFrameLease&& other) noexcept {
+    if (this == &other) return *this;
+    reset();
+    state_        = rstd::exchange(other.state_, nullptr);
+    view_         = rstd::move(other.view_);
+    resource_key_ = other.resource_key_;
+    return *this;
+}
+
+DrmFrameLease::~DrmFrameLease() { reset(); }
 
 struct VideoDecoder::State {
     /* Custom-IO source (open_from_stream path). Declared first so it
@@ -277,6 +311,7 @@ struct VideoDecoder::State {
     int           sws_src_h { 0 };
     int           video_idx { -1 };
     AVRational    stream_tb { 0, 1 };
+    u64           decoder_generation;
     bool          flushing { false };
 
     ~State() {
@@ -594,12 +629,13 @@ auto VideoDecoder::build_internal(InputSpec input, u32 target_width, u32 target_
     if (target_width % u32(2) != u32()) ++target_width;
     if (target_height % u32(2) != u32()) ++target_height;
 
-    auto state           = rstd::boxed::Box<VideoDecoder::State>::make();
-    auto state_ptr       = rstd::move(state).into_raw().as_raw_ptr();
-    auto self            = rstd::boxed::Box<VideoDecoder>::make(state_ptr);
-    self->target_width_  = target_width;
-    self->target_height_ = target_height;
-    self->loop_          = loop;
+    auto state                       = rstd::boxed::Box<VideoDecoder::State>::make();
+    auto state_ptr                   = rstd::move(state).into_raw().as_raw_ptr();
+    auto self                        = rstd::boxed::Box<VideoDecoder>::make(state_ptr);
+    self->target_width_              = target_width;
+    self->target_height_             = target_height;
+    self->loop_                      = loop;
+    self->state_->decoder_generation = next_decoder_generation();
     /* Provisional; downgraded to Sw below if hwdevice attach fails. */
     self->kind_ = requested_kind;
     /* Take ownership of the caller's hwdevice ref immediately so that
@@ -900,7 +936,8 @@ int VideoDecoder::next_drm_frame_(DrmFrameView& out, Error* err) {
         return -1;
     }
 
-    /* Release prior pull's mapped fds before grabbing the next surface. */
+    /* Release the decoder's working references. Returned leases keep
+     * independent frame references until Vulkan completes its read. */
     av_frame_unref(st.src_frame.get());
     av_frame_unref(st.drm_frame.get());
 
@@ -1152,13 +1189,35 @@ auto VideoDecoder::next_vk_frame(VkFrameView& out) -> Result<NextFrame, Error> {
     return Ok(NextFrame::Ok);
 }
 
-auto VideoDecoder::next_drm_frame(DrmFrameView& out) -> Result<NextFrame, Error> {
-    Error err;
-    int   rc = next_drm_frame_(out, &err);
+auto VideoDecoder::next_drm_frame() -> Result<DrmFramePull, Error> {
+    DrmFrameView out;
+    Error        err;
+    int          rc = next_drm_frame_(out, &err);
     if (rc < 0) return Err(rstd::move(err));
-    if (rc == 1) return Ok(NextFrame::Eof);
-    if (rc == 2) return Ok(NextFrame::Looped);
-    return Ok(NextFrame::Ok);
+    if (rc == 1) return Ok(DrmFramePull { .status = NextFrame::Eof, .frame = None() });
+
+    FramePtr source(av_frame_clone(state_->src_frame.get()));
+    FramePtr mapped(av_frame_clone(state_->drm_frame.get()));
+    if (! source || ! mapped) {
+        return Err(Error("av_frame_clone(VAAPI lease) failed"_str));
+    }
+
+    auto lease_state            = rstd::boxed::Box<DrmFrameLease::State>::make();
+    lease_state->source         = rstd::move(source);
+    lease_state->mapped         = rstd::move(mapped);
+    auto       lease_state_ptr  = rstd::move(lease_state).into_raw().as_raw_ptr();
+    const auto surface_identity = u64(
+        static_cast<rstd::uint64_t>(reinterpret_cast<rstd::uintptr_t>(state_->src_frame->data[3])));
+    DrmFrameLease lease(lease_state_ptr,
+                        rstd::move(out),
+                        DrmResourceKey {
+                            .decoder_generation = state_->decoder_generation,
+                            .surface_identity   = surface_identity,
+                        });
+    return Ok(DrmFramePull {
+        .status = rc == 2 ? NextFrame::Looped : NextFrame::Ok,
+        .frame  = Some(rstd::move(lease)),
+    });
 }
 
 auto VideoDecoder::seek(f64 seconds) -> Result<empty, Error> {
