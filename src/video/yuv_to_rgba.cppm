@@ -52,6 +52,16 @@ struct ConversionTargetView {
     ConvertTarget kind { ConvertTarget::BridgeForeign };
 };
 
+struct ConversionLimits {
+    u32 max_in_flight { 3 };
+    u32 max_drm_imports { 32 };
+};
+
+struct ConversionReservationRequest {
+    ConversionTargetView        target;
+    Option<rstd::time::Instant> deadline;
+};
+
 struct ConversionSubmission {
     VkImage                          target { VK_NULL_HANDLE };
     u32                              width {};
@@ -148,22 +158,17 @@ public:
         // 8 → R8 / R8G8 image views (NV12). 16 → R16 / R16G16 (P010 / P016).
         u32 bit_depth;
     };
-    auto convert_av_vk_frame(const VkFrameImports& imports, VkImage dst, u32 dst_w, u32 dst_h,
-                             const ColorMatrix& cm) -> Result<int, Error>;
-    auto convert_av_vk_frame(const VkFrameImports& imports, VkImage dst, u32 dst_w, u32 dst_h,
-                             const ColorMatrix& cm, ConvertTarget target) -> Result<int, Error>;
-    auto submit_av_vk_frame(const VkFrameImports& imports, VkImage dst, u32 dst_w, u32 dst_h,
-                            const ColorMatrix& cm, ConvertTarget target)
-        -> Result<ConversionSubmission, Error>;
+    auto submit_av_vk_frame(ConversionReservation&& reservation, const VkFrameImports& imports,
+                            const ColorMatrix& cm) -> Result<ConversionSubmission, Error>;
 
-    auto configure_drm_pipeline(u32 max_contexts, u32 max_imports) -> Result<empty, Error>;
-    auto try_reserve_drm(ConvertTarget target) -> Result<Option<ConversionReservation>, Error>;
+    auto configure_pipeline(ConversionLimits limits) -> Result<empty, Error>;
+    auto reserve(ConversionReservationRequest request)
+        -> Result<Option<ConversionReservation>, Error>;
     auto submit_drm_prime(ConversionReservation&& reservation, DrmFrameLease&& drm,
-                          const ConversionTargetView& destination, const ColorMatrix& cm)
-        -> Result<Option<ConversionSubmission>, Error>;
-    auto reclaim_drm_submissions() -> Result<usize, Error>;
-    auto drain_drm_submissions(u64 timeout_ns) -> Result<empty, Error>;
-    auto invalidate_drm_targets() -> Result<empty, Error>;
+                          const ColorMatrix& cm) -> Result<Option<ConversionSubmission>, Error>;
+    auto reclaim_submissions() -> Result<usize, Error>;
+    auto drain_submissions(u64 timeout_ns) -> Result<empty, Error>;
+    auto invalidate_targets() -> Result<empty, Error>;
 
     vvk::CompletionObservation   poll_completion() const noexcept;
     vvk::CompletionObservation   wait_completion(const vvk::SubmissionToken& required,
@@ -176,13 +181,12 @@ private:
     int  convert_nv12_(VkImage dst, rstd::uint32_t dst_w, rstd::uint32_t dst_h,
                        const rstd::uint8_t* nv12, usize nv12_size, const ColorMatrix& cm,
                        ConvertTarget target, Error* err);
-    int  convert_av_vk_frame_(const VkFrameImports& imports, VkImage dst, rstd::uint32_t dst_w,
-                              rstd::uint32_t dst_h, const ColorMatrix& cm, ConvertTarget target,
-                              Error* err);
+    auto convert_av_vk_frame_(ConversionReservation& reservation, const VkFrameImports& imports,
+                              const ColorMatrix& cm) -> Result<int, Error>;
     void publish_submission(VkImage dst, u32 dst_w, u32 dst_h, ConvertTarget target,
                             u64 completion_value);
 
-    struct DrmPipelineState;
+    struct ConversionPipelineState;
 
     vvk::InstanceDispatch instance_dispatch_;
     vvk::DeviceDispatch   device_dispatch_;
@@ -215,12 +219,12 @@ private:
     VkDeviceSize      staging_size_ { 0 };
 
     vvk::CommandPool    cmd_pool_;
-    vvk::CommandBuffers command_buffers_;
-    vvk::CommandBuffer  cmd_;
+    vvk::CommandBuffers software_command_buffers_;
+    vvk::CommandBuffer  software_command_;
 
-    vvk::Semaphore signal_sem_;
-    vvk::Fence     done_fence_;
-    bool           fence_pending_ { false };
+    vvk::Semaphore software_export_semaphore_;
+    vvk::Fence     software_fence_;
+    bool           software_fence_pending_ { false };
 
     u64                                           completion_value_ { 0 };
     Option<Arc<vvk::TimelineSemaphoreGeneration>> completion_timeline_;
@@ -228,13 +232,11 @@ private:
     Option<ConversionSubmission>                  last_submission_;
 
     Option<Arc<vvk::DescriptorArenaGeneration>> descriptor_arena_;
-    vvk::DescriptorSetLease                     descriptor_set_;
+    vvk::DescriptorSetLease                     software_descriptor_set_;
 
-    vvk::ImageView last_dst_view_;
-    vvk::ImageView last_y_view_;
-    vvk::ImageView last_uv_view_;
+    vvk::ImageView software_target_view_;
 
-    DrmPipelineState* drm_pipeline_ { nullptr };
+    ConversionPipelineState* pipeline_state_ { nullptr };
 };
 
 } // namespace wavsen::video

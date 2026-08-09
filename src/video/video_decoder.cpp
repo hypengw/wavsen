@@ -919,9 +919,9 @@ int VideoDecoder::next_vk_frame_(VkFrameView& out, Error* err) {
     bool   looped = false;
 
     /* Release the previously-yielded AVVkFrame back to the pool. The
-     * caller's GPU work that referenced it has been queue-submitted by
-     * now (the contract of next_vk_frame), so it's safe to unref —
-     * the AVVkFrame survives in the pool's hwframe context. */
+     * caller has either queue-submitted all GPU work that references it
+     * or explicitly discarded it. Submitted work updates the frame's
+     * timeline value before the next pull. */
     av_frame_unref(st.src_frame.get());
 
     while (true) {

@@ -270,6 +270,33 @@ void barrier_image2(const vvk::CommandBuffer& cmd, VkImage img, VkPipelineStageF
 
 bool target_exports_sync_fd(ConvertTarget target) { return target == ConvertTarget::BridgeForeign; }
 
+VkResult submit_conversion(const vvk::Queue& queue, const VkSubmitInfo& conversion,
+                           ConvertTarget target, VkSemaphore completion_timeline,
+                           rstd::uint64_t completion_value, VkSemaphore export_semaphore) {
+    if (! target_exports_sync_fd(target)) return queue.Submit(conversion);
+
+    const VkPipelineStageFlags    wait_stage          = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+    const rstd::uint64_t          binary_signal_value = 0;
+    VkTimelineSemaphoreSubmitInfo handoff_timeline {};
+    handoff_timeline.sType                     = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
+    handoff_timeline.waitSemaphoreValueCount   = 1;
+    handoff_timeline.pWaitSemaphoreValues      = &completion_value;
+    handoff_timeline.signalSemaphoreValueCount = 1;
+    handoff_timeline.pSignalSemaphoreValues    = &binary_signal_value;
+
+    VkSubmitInfo handoff {};
+    handoff.sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    handoff.pNext                = &handoff_timeline;
+    handoff.waitSemaphoreCount   = 1;
+    handoff.pWaitSemaphores      = &completion_timeline;
+    handoff.pWaitDstStageMask    = &wait_stage;
+    handoff.signalSemaphoreCount = 1;
+    handoff.pSignalSemaphores    = &export_semaphore;
+
+    VkSubmitInfo submissions[2] = { conversion, handoff };
+    return queue.Submit(slice<VkSubmitInfo>::from_raw_parts(submissions, usize(2)));
+}
+
 u64 next_completion_generation() {
     static Atomic<u64> next { u64(1) };
     auto               value = next.fetch_add(u64(1), Ordering::Relaxed);
@@ -336,7 +363,7 @@ void barrier_dst_from_storage(const vvk::CommandBuffer& cmd, VkImage dst, Conver
 namespace
 {
 
-constexpr u32 kMaxDrmContexts { 16 };
+constexpr u32 kMaxConversionContexts { 16 };
 constexpr u32 kMaxDrmImports { 64 };
 
 DrmFrameView drm_signature(const DrmFrameView& view) {
@@ -390,50 +417,100 @@ struct DrmImportEntry {
     bool                   initialized { false };
 };
 
-struct DrmTargetEntry {
-    VkImage        image { VK_NULL_HANDLE };
-    VkImageView    view { VK_NULL_HANDLE };
-    u32            width {};
-    u32            height {};
-    vvk::ImageView owned_view;
-    u32            in_flight {};
-    bool           initialized { false };
+struct ConversionTargetEntry {
+    VkImage                      image { VK_NULL_HANDLE };
+    VkImageView                  view { VK_NULL_HANDLE };
+    u32                          width {};
+    u32                          height {};
+    ConvertTarget                kind { ConvertTarget::BridgeForeign };
+    vvk::ImageView               owned_view;
+    Option<vvk::SubmissionToken> last_completion;
+    bool                         reserved { false };
+    bool                         initialized { false };
 };
 
-struct DrmSubmissionContext {
+struct ConversionSubmissionContext {
     vvk::CommandBuffers          command_buffers;
     vvk::CommandBuffer           command;
     vvk::DescriptorSetLease      descriptor_set;
     vvk::Semaphore               export_semaphore;
     Option<vvk::SubmissionToken> completion;
+    vvk::ImageView               source_y_view;
+    vvk::ImageView               source_uv_view;
     Option<DrmFrameLease>        frame;
     DrmImportEntry*              source { nullptr };
-    DrmTargetEntry*              target { nullptr };
+    ConversionTargetEntry*       target { nullptr };
     bool                         reserved { false };
 };
 
+auto find_or_create_target(const vvk::Device& device, Vec<Box<ConversionTargetEntry>>& targets,
+                           const ConversionTargetView& destination)
+    -> Result<ConversionTargetEntry*, Error> {
+    for (auto& candidate : targets) {
+        if (candidate->image != destination.image || candidate->width != destination.width ||
+            candidate->height != destination.height || candidate->kind != destination.kind ||
+            (destination.view != VK_NULL_HANDLE && candidate->view != destination.view)) {
+            continue;
+        }
+        return Ok(candidate.get());
+    }
+
+    auto entry    = Box<ConversionTargetEntry>::make();
+    entry->image  = destination.image;
+    entry->width  = destination.width;
+    entry->height = destination.height;
+    entry->view   = destination.view;
+    entry->kind   = destination.kind;
+    if (entry->view == VK_NULL_HANDLE) {
+        VkImageViewCreateInfo view_info {};
+        view_info.sType      = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        view_info.image      = destination.image;
+        view_info.viewType   = VK_IMAGE_VIEW_TYPE_2D;
+        view_info.format     = VK_FORMAT_R8G8B8A8_UNORM;
+        view_info.components = {
+            VK_COMPONENT_SWIZZLE_IDENTITY,
+            VK_COMPONENT_SWIZZLE_IDENTITY,
+            VK_COMPONENT_SWIZZLE_IDENTITY,
+            VK_COMPONENT_SWIZZLE_IDENTITY,
+        };
+        view_info.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        if (const auto result = device.CreateImageView(view_info, entry->owned_view);
+            result != VK_SUCCESS) {
+            return Err(Error { vk_error("vkCreateImageView(conversion target)"_str, result) });
+        }
+        entry->view = *entry->owned_view;
+    }
+    auto* result = entry.get();
+    targets.push(rstd::move(entry));
+    return Ok(result);
+}
+
 } // namespace
 
-struct YuvToRgba::DrmPipelineState {
-    Vec<Box<DrmImportEntry>>       imports;
-    Vec<Box<DrmTargetEntry>>       targets;
-    Vec<Box<DrmSubmissionContext>> contexts;
-    u32                            max_contexts { 3 };
-    u32                            max_imports { 32 };
-    u64                            use_serial {};
+struct YuvToRgba::ConversionPipelineState {
+    Vec<Box<DrmImportEntry>>              imports;
+    Vec<Box<ConversionTargetEntry>>       targets;
+    Vec<Box<ConversionSubmissionContext>> contexts;
+    u32                                   max_contexts { 3 };
+    u32                                   max_imports { 32 };
+    u64                                   use_serial {};
 };
 
 struct ConversionReservation::State {
-    YuvToRgba*            owner { nullptr };
-    DrmSubmissionContext* context { nullptr };
-    ConvertTarget         target { ConvertTarget::BridgeForeign };
-    bool                  submitted { false };
+    YuvToRgba*                   owner { nullptr };
+    ConversionSubmissionContext* context { nullptr };
+    ConversionTargetEntry*       target { nullptr };
+    ConversionTargetView         destination;
+    bool                         submitted { false };
 };
 
 void ConversionReservation::reset() noexcept {
     if (! state_) return;
     auto state = Box<State>::from_raw(mut_ptr<State>::from_raw_parts(state_));
-    if (! state->submitted && state->context) state->context->reserved = false;
+    if (! state->submitted) {
+        if (state->context) state->context->reserved = false;
+        if (state->target) state->target->reserved = false;
+    }
     state_ = nullptr;
 }
 
@@ -669,10 +746,10 @@ auto create_drm_import(const vvk::Device& device, const vvk::PhysicalDevice& phy
 
 YuvToRgba::~YuvToRgba() {
     if (device_) (void)device_.WaitIdle();
-    if (drm_pipeline_) {
-        auto state = Box<DrmPipelineState>::from_raw(
-            mut_ptr<DrmPipelineState>::from_raw_parts(drm_pipeline_));
-        drm_pipeline_ = nullptr;
+    if (pipeline_state_) {
+        auto state = Box<ConversionPipelineState>::from_raw(
+            mut_ptr<ConversionPipelineState>::from_raw_parts(pipeline_state_));
+        pipeline_state_ = nullptr;
     }
     if (staging_map_ && staging_mem_) staging_mem_.Unmap();
     (void)completion_timeline_.take();
@@ -861,9 +938,9 @@ bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device
     {
         VkDescriptorPoolSize ps[2] {};
         ps[0].type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        ps[0].descriptorCount = 2 * (kMaxDrmContexts.to_primitive() + 1);
+        ps[0].descriptorCount = 2 * (kMaxConversionContexts.to_primitive() + 1);
         ps[1].type            = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        ps[1].descriptorCount = kMaxDrmContexts.to_primitive() + 1;
+        ps[1].descriptorCount = kMaxConversionContexts.to_primitive() + 1;
         const vvk::DescriptorDeviceDispatch dispatch {
             .create_pool   = device_dispatch_.vkCreateDescriptorPool,
             .destroy_pool  = device_dispatch_.vkDestroyDescriptorPool,
@@ -872,7 +949,7 @@ bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device
         };
         auto arena = vvk::DescriptorArenaGeneration::Create(
             *device_,
-            kMaxDrmContexts.to_primitive() + 1,
+            kMaxConversionContexts.to_primitive() + 1,
             slice<VkDescriptorPoolSize>::from_raw_parts(ps, usize(2)),
             dispatch);
         if (! arena.created())
@@ -881,7 +958,7 @@ bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device
         auto allocation   = vvk::DescriptorArenaGeneration::Allocate(*descriptor_arena_, *dsl_);
         if (! allocation.allocated())
             return fail(err, vk_error("vkAllocateDescriptorSets"_str, allocation.api_result));
-        descriptor_set_ = rstd::move(allocation.lease);
+        software_descriptor_set_ = rstd::move(allocation.lease);
     }
 
     // ----- Cmd pool + buffer + per-submit fence + signal semaphore -----
@@ -892,15 +969,16 @@ bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device
         cpi.queueFamilyIndex = queue_family_raw;
         if (VkResult r = device_.CreateCommandPool(cpi, cmd_pool_); r != VK_SUCCESS)
             return fail(err, vk_error("vkCreateCommandPool"_str, r));
-        if (VkResult r =
-                cmd_pool_.Allocate(usize(1), VK_COMMAND_BUFFER_LEVEL_PRIMARY, command_buffers_);
+        if (VkResult r = cmd_pool_.Allocate(
+                usize(1), VK_COMMAND_BUFFER_LEVEL_PRIMARY, software_command_buffers_);
             r != VK_SUCCESS)
             return fail(err, vk_error("vkAllocateCommandBuffers"_str, r));
-        cmd_ = vvk::CommandBuffer(command_buffers_[usize()], device_dispatch_);
+        software_command_ =
+            vvk::CommandBuffer(software_command_buffers_[usize()], device_dispatch_);
 
         VkFenceCreateInfo fci {};
         fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-        if (VkResult r = device_.CreateFence(fci, done_fence_); r != VK_SUCCESS)
+        if (VkResult r = device_.CreateFence(fci, software_fence_); r != VK_SUCCESS)
             return fail(err, vk_error("vkCreateFence"_str, r));
 
         VkExportSemaphoreCreateInfo es {};
@@ -909,7 +987,7 @@ bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device
         VkSemaphoreCreateInfo sci {};
         sci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
         sci.pNext = &es;
-        if (VkResult r = device_.CreateSemaphore(sci, signal_sem_); r != VK_SUCCESS)
+        if (VkResult r = device_.CreateSemaphore(sci, software_export_semaphore_); r != VK_SUCCESS)
             return fail(err, vk_error("vkCreateSemaphore(signal)"_str, r));
 
         const auto generation = next_completion_generation();
@@ -933,8 +1011,8 @@ bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device
         }
     }
 
-    auto drm_pipeline = Box<DrmPipelineState>::make();
-    drm_pipeline_     = rstd::move(drm_pipeline).into_raw().as_raw_ptr();
+    auto pipeline   = Box<ConversionPipelineState>::make();
+    pipeline_state_ = rstd::move(pipeline).into_raw().as_raw_ptr();
 
     // Bindings 0/1 are stable across frames — write them once.
     {
@@ -947,11 +1025,11 @@ bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device
         dii_uv.imageView   = *uv_view_;
         dii_uv.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         vvk::DescriptorUpdateBatch batch;
-        if (! batch.WriteImage(descriptor_set_.clone(),
+        if (! batch.WriteImage(software_descriptor_set_.clone(),
                                0,
                                VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                slice<VkDescriptorImageInfo>::from_raw_parts(&dii_y, usize(1))) ||
-            ! batch.WriteImage(descriptor_set_.clone(),
+            ! batch.WriteImage(software_descriptor_set_.clone(),
                                1,
                                VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                slice<VkDescriptorImageInfo>::from_raw_parts(&dii_uv, usize(1))) ||
@@ -987,17 +1065,17 @@ int YuvToRgba::convert_nv12_(VkImage dst, rstd::uint32_t dst_w, rstd::uint32_t d
         return -1;
     }
 
-    /* Wait for prior submit — protects cmd_/staging_/dset_ from races. */
-    if (fence_pending_) {
-        if (VkResult r = done_fence_.Wait(1'000'000'000ull); r != VK_SUCCESS) {
+    /* Software upload reuses one mapped staging allocation and command context. */
+    if (software_fence_pending_) {
+        if (VkResult r = software_fence_.Wait(1'000'000'000ull); r != VK_SUCCESS) {
             fail(err, vk_error("vkWaitForFences"_str, r));
             return -1;
         }
-        if (VkResult r = done_fence_.Reset(); r != VK_SUCCESS) {
+        if (VkResult r = software_fence_.Reset(); r != VK_SUCCESS) {
             fail(err, vk_error("vkResetFences"_str, r));
             return -1;
         }
-        fence_pending_ = false;
+        software_fence_pending_ = false;
     }
 
     /* Copy NV12 bytes into staging. */
@@ -1030,7 +1108,7 @@ int YuvToRgba::convert_nv12_(VkImage dst, rstd::uint32_t dst_w, rstd::uint32_t d
         dii.imageView   = *dst_view;
         dii.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
         vvk::DescriptorUpdateBatch batch;
-        if (! batch.WriteImage(descriptor_set_.clone(),
+        if (! batch.WriteImage(software_descriptor_set_.clone(),
                                2,
                                VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                                slice<VkDescriptorImageInfo>::from_raw_parts(&dii, usize(1))) ||
@@ -1041,20 +1119,20 @@ int YuvToRgba::convert_nv12_(VkImage dst, rstd::uint32_t dst_w, rstd::uint32_t d
     }
 
     /* Reset + record. */
-    if (VkResult r = cmd_.Reset(); r != VK_SUCCESS) {
+    if (VkResult r = software_command_.Reset(); r != VK_SUCCESS) {
         fail(err, vk_error("vkResetCommandBuffer"_str, r));
         return -1;
     }
     VkCommandBufferBeginInfo bi {};
     bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    if (VkResult r = cmd_.Begin(bi); r != VK_SUCCESS) {
+    if (VkResult r = software_command_.Begin(bi); r != VK_SUCCESS) {
         fail(err, vk_error("vkBeginCommandBuffer"_str, r));
         return -1;
     }
 
     /* Y plane: UNDEFINED → TRANSFER_DST. */
-    barrier_image(cmd_,
+    barrier_image(software_command_,
                   *y_image_,
                   0,
                   VK_ACCESS_TRANSFER_WRITE_BIT,
@@ -1063,7 +1141,7 @@ int YuvToRgba::convert_nv12_(VkImage dst, rstd::uint32_t dst_w, rstd::uint32_t d
                   VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                   VK_PIPELINE_STAGE_TRANSFER_BIT);
     /* UV plane: UNDEFINED → TRANSFER_DST. */
-    barrier_image(cmd_,
+    barrier_image(software_command_,
                   *uv_image_,
                   0,
                   VK_ACCESS_TRANSFER_WRITE_BIT,
@@ -1082,7 +1160,8 @@ int YuvToRgba::convert_nv12_(VkImage dst, rstd::uint32_t dst_w, rstd::uint32_t d
         bic.imageSubresource.layerCount = 1;
         bic.imageOffset                 = { 0, 0, 0 };
         bic.imageExtent                 = { dst_w, dst_h, 1 };
-        cmd_.CopyBufferToImage(*staging_buf_, *y_image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, bic);
+        software_command_.CopyBufferToImage(
+            *staging_buf_, *y_image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, bic);
     }
     /* Copy UV from staging[W*H..W*H + W*H/2]. */
     {
@@ -1094,12 +1173,12 @@ int YuvToRgba::convert_nv12_(VkImage dst, rstd::uint32_t dst_w, rstd::uint32_t d
         bic.imageSubresource.layerCount = 1;
         bic.imageOffset                 = { 0, 0, 0 };
         bic.imageExtent                 = { dst_w / 2, dst_h / 2, 1 };
-        cmd_.CopyBufferToImage(
+        software_command_.CopyBufferToImage(
             *staging_buf_, *uv_image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, bic);
     }
 
     /* Y/UV: TRANSFER_DST → SHADER_READ_ONLY. */
-    barrier_image(cmd_,
+    barrier_image(software_command_,
                   *y_image_,
                   VK_ACCESS_TRANSFER_WRITE_BIT,
                   VK_ACCESS_SHADER_READ_BIT,
@@ -1107,7 +1186,7 @@ int YuvToRgba::convert_nv12_(VkImage dst, rstd::uint32_t dst_w, rstd::uint32_t d
                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                   VK_PIPELINE_STAGE_TRANSFER_BIT,
                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
-    barrier_image(cmd_,
+    barrier_image(software_command_,
                   *uv_image_,
                   VK_ACCESS_TRANSFER_WRITE_BIT,
                   VK_ACCESS_SHADER_READ_BIT,
@@ -1116,16 +1195,17 @@ int YuvToRgba::convert_nv12_(VkImage dst, rstd::uint32_t dst_w, rstd::uint32_t d
                   VK_PIPELINE_STAGE_TRANSFER_BIT,
                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 
-    barrier_dst_to_storage(cmd_, dst, target);
+    barrier_dst_to_storage(software_command_, dst, target);
 
     /* Bind + dispatch. */
-    cmd_.BindPipeline(VK_PIPELINE_BIND_POINT_COMPUTE, *pipeline_);
-    const VkDescriptorSet descriptor_set = descriptor_set_.handle;
-    cmd_.BindDescriptorSets(VK_PIPELINE_BIND_POINT_COMPUTE,
-                            *pipeline_layout_,
-                            0,
-                            slice<VkDescriptorSet>::from_raw_parts(&descriptor_set, usize(1)),
-                            {});
+    software_command_.BindPipeline(VK_PIPELINE_BIND_POINT_COMPUTE, *pipeline_);
+    const VkDescriptorSet descriptor_set = software_descriptor_set_.handle;
+    software_command_.BindDescriptorSets(
+        VK_PIPELINE_BIND_POINT_COMPUTE,
+        *pipeline_layout_,
+        0,
+        slice<VkDescriptorSet>::from_raw_parts(&descriptor_set, usize(1)),
+        {});
     ShaderPushConstants pc {};
     pc.dst_w = dst_w;
     pc.dst_h = dst_h;
@@ -1135,23 +1215,23 @@ int YuvToRgba::convert_nv12_(VkImage dst, rstd::uint32_t dst_w, rstd::uint32_t d
         pc.m_b[i]    = cm.m_b[i];
         pc.offset[i] = cm.offset[i];
     }
-    cmd_.PushConstants(*pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT, pc);
+    software_command_.PushConstants(*pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT, pc);
     const rstd::uint32_t gx = (dst_w + 7) / 8;
     const rstd::uint32_t gy = (dst_h + 7) / 8;
-    cmd_.Dispatch(gx, gy, 1);
+    software_command_.Dispatch(gx, gy, 1);
 
-    barrier_dst_from_storage(cmd_, dst, target, queue_family_.to_primitive());
+    barrier_dst_from_storage(software_command_, dst, target, queue_family_.to_primitive());
 
-    if (VkResult r = cmd_.End(); r != VK_SUCCESS) {
+    if (VkResult r = software_command_.End(); r != VK_SUCCESS) {
         fail(err, vk_error("vkEndCommandBuffer"_str, r));
         return -1;
     }
 
     auto next_completion_value = completion_value_ + u64(1);
     if (next_completion_value == u64()) ++next_completion_value;
-    VkSemaphore    signal_sems[2] = { (*completion_timeline_)->handle(), *signal_sem_ };
-    rstd::uint64_t signal_vals[2] = { next_completion_value.to_primitive(), 0 };
-    const auto     signal_count   = target_exports_sync_fd(target) ? 2u : 1u;
+    VkSemaphore signal_sems[2] = { (*completion_timeline_)->handle(), *software_export_semaphore_ };
+    rstd::uint64_t                signal_vals[2] = { next_completion_value.to_primitive(), 0 };
+    const auto                    signal_count   = target_exports_sync_fd(target) ? 2u : 1u;
     VkTimelineSemaphoreSubmitInfo timeline_info {};
     timeline_info.sType                     = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
     timeline_info.signalSemaphoreValueCount = signal_count;
@@ -1160,23 +1240,23 @@ int YuvToRgba::convert_nv12_(VkImage dst, rstd::uint32_t dst_w, rstd::uint32_t d
     si.sType                             = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     si.pNext                             = &timeline_info;
     si.commandBufferCount                = 1;
-    const VkCommandBuffer command_buffer = *cmd_;
+    const VkCommandBuffer command_buffer = *software_command_;
     si.pCommandBuffers                   = &command_buffer;
     si.signalSemaphoreCount              = signal_count;
     si.pSignalSemaphores                 = signal_sems;
-    if (VkResult r = queue_.Submit(si, *done_fence_); r != VK_SUCCESS) {
+    if (VkResult r = queue_.Submit(si, *software_fence_); r != VK_SUCCESS) {
         fail(err, vk_error("vkQueueSubmit"_str, r));
         return -1;
     }
-    fence_pending_ = true;
+    software_fence_pending_ = true;
     publish_submission(dst, u32(dst_w), u32(dst_h), target, next_completion_value);
-    last_dst_view_ = rstd::move(dst_view);
+    software_target_view_ = rstd::move(dst_view);
 
     int sync_fd = -1;
     if (target_exports_sync_fd(target)) {
         VkSemaphoreGetFdInfoKHR sgfi {};
         sgfi.sType      = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR;
-        sgfi.semaphore  = *signal_sem_;
+        sgfi.semaphore  = *software_export_semaphore_;
         sgfi.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
         if (VkResult r = device_.GetSemaphoreFdKHR(sgfi, &sync_fd); r != VK_SUCCESS) {
             fail(err, vk_error("vkGetSemaphoreFdKHR"_str, r));
@@ -1186,16 +1266,24 @@ int YuvToRgba::convert_nv12_(VkImage dst, rstd::uint32_t dst_w, rstd::uint32_t d
     return sync_fd;
 }
 
-int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im, VkImage dst, rstd::uint32_t dst_w,
-                                    rstd::uint32_t dst_h, const ColorMatrix& cm,
-                                    ConvertTarget target, Error* err) {
+auto YuvToRgba::convert_av_vk_frame_(ConversionReservation& reservation, const VkFrameImports& im,
+                                     const ColorMatrix& cm) -> Result<int, Error> {
+    if (! reservation.valid() || reservation.state_->owner != this ||
+        ! reservation.state_->context || ! reservation.state_->target ||
+        ! reservation.state_->context->reserved || ! reservation.state_->target->reserved ||
+        reservation.state_->context->completion.is_some()) {
+        return Err(Error { "convert_av_vk_frame: invalid reservation"_str });
+    }
+    const auto& destination = reservation.state_->destination;
+    const auto  dst         = destination.image;
+    const auto  dst_w       = destination.width.to_primitive();
+    const auto  dst_h       = destination.height.to_primitive();
+    const auto  target      = destination.kind;
     if (dst == VK_NULL_HANDLE) {
-        fail(err, "convert_av_vk_frame: dst null"_str);
-        return -1;
+        return Err(Error { "convert_av_vk_frame: dst null"_str });
     }
     if (im.y_image == VK_NULL_HANDLE) {
-        fail(err, "convert_av_vk_frame: AVVkFrame y_image NULL"_str);
-        return -1;
+        return Err(Error { "convert_av_vk_frame: AVVkFrame y_image NULL"_str });
     }
     /* Two layouts the producer can hand us:
      *   - disjoint:           y_image != uv_image, two separate VkImages
@@ -1209,31 +1297,17 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im, VkImage dst, rstd:
      * In single-image mode we sample plane 0 / plane 1 via aspect masks. */
     const bool single_image = (im.uv_image == VK_NULL_HANDLE) || (im.uv_image == im.y_image);
     if ((dst_w & 1u) || (dst_h & 1u)) {
-        fail(err, "convert_av_vk_frame: dst dims must be even"_str);
-        return -1;
+        return Err(Error { "convert_av_vk_frame: dst dims must be even"_str });
     }
     if (dst_w > max_w_.to_primitive() || dst_h > max_h_.to_primitive()) {
-        fail(err, "convert_av_vk_frame: dst exceeds configured max extent"_str);
-        return -1;
+        return Err(Error { "convert_av_vk_frame: dst exceeds configured max extent"_str });
     }
 
-    /* Wait for prior submit before reusing cmd_/dset_ — same protection
-     * as convert_nv12; the in-flight last_*_view_ destruction below also
-     * relies on this. */
-    if (fence_pending_) {
-        if (VkResult r = done_fence_.Wait(1'000'000'000ull); r != VK_SUCCESS) {
-            fail(err, vk_error("vkWaitForFences"_str, r));
-            return -1;
-        }
-        if (VkResult r = done_fence_.Reset(); r != VK_SUCCESS) {
-            fail(err, vk_error("vkResetFences"_str, r));
-            return -1;
-        }
-        fence_pending_ = false;
-    }
+    auto*      context      = reservation.state_->context;
+    auto*      target_entry = reservation.state_->target;
+    const auto target_view  = target_entry->view;
 
     /* Build per-call image views aliasing the AVVkFrame planes + dst. */
-    vvk::ImageView dst_view;
     vvk::ImageView y_view;
     vvk::ImageView uv_view;
 
@@ -1241,9 +1315,6 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im, VkImage dst, rstd:
         VkImageViewUsageCreateInfo sampled_usage {};
         sampled_usage.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO;
         sampled_usage.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
-        VkImageViewUsageCreateInfo storage_usage {};
-        storage_usage.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO;
-        storage_usage.usage = VK_IMAGE_USAGE_STORAGE_BIT;
         VkImageViewCreateInfo vci {};
         vci.sType      = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
         vci.pNext      = &sampled_usage;
@@ -1280,23 +1351,13 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im, VkImage dst, rstd:
         vci.format           = y_fmt;
         vci.subresourceRange = { y_aspect, 0, 1, 0, 1 };
         if (VkResult r = device_.CreateImageView(vci, y_view); r != VK_SUCCESS) {
-            fail(err, vk_error("vkCreateImageView(Y, AVVkFrame)"_str, r));
-            return -1;
+            return Err(Error { vk_error("vkCreateImageView(Y, AVVkFrame)"_str, r) });
         }
         vci.image            = single_image ? im.y_image : im.uv_image;
         vci.format           = uv_fmt;
         vci.subresourceRange = { uv_aspect, 0, 1, 0, 1 };
         if (VkResult r = device_.CreateImageView(vci, uv_view); r != VK_SUCCESS) {
-            fail(err, vk_error("vkCreateImageView(UV, AVVkFrame)"_str, r));
-            return -1;
-        }
-        vci.image            = dst;
-        vci.pNext            = &storage_usage;
-        vci.format           = VK_FORMAT_R8G8B8A8_UNORM;
-        vci.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-        if (VkResult r = device_.CreateImageView(vci, dst_view); r != VK_SUCCESS) {
-            fail(err, vk_error("vkCreateImageView(dst, AVVkFrame)"_str, r));
-            return -1;
+            return Err(Error { vk_error("vkCreateImageView(UV, AVVkFrame)"_str, r) });
         }
     }
 
@@ -1309,36 +1370,33 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im, VkImage dst, rstd:
         VkDescriptorImageInfo      dii_uv { *sampler_,
                                             *uv_view,
                                             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-        VkDescriptorImageInfo      dii_d { VK_NULL_HANDLE, *dst_view, VK_IMAGE_LAYOUT_GENERAL };
+        VkDescriptorImageInfo      dii_d { VK_NULL_HANDLE, target_view, VK_IMAGE_LAYOUT_GENERAL };
         vvk::DescriptorUpdateBatch batch;
-        if (! batch.WriteImage(descriptor_set_.clone(),
+        if (! batch.WriteImage(context->descriptor_set.clone(),
                                0,
                                VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                slice<VkDescriptorImageInfo>::from_raw_parts(&dii_y, usize(1))) ||
-            ! batch.WriteImage(descriptor_set_.clone(),
+            ! batch.WriteImage(context->descriptor_set.clone(),
                                1,
                                VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                slice<VkDescriptorImageInfo>::from_raw_parts(&dii_uv, usize(1))) ||
-            ! batch.WriteImage(descriptor_set_.clone(),
+            ! batch.WriteImage(context->descriptor_set.clone(),
                                2,
                                VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                                slice<VkDescriptorImageInfo>::from_raw_parts(&dii_d, usize(1))) ||
             ! batch.Commit().committed()) {
-            fail(err, "failed to update AVVkFrame descriptors"_str);
-            return -1;
+            return Err(Error { "failed to update AVVkFrame descriptors"_str });
         }
     }
 
-    if (VkResult r = cmd_.Reset(); r != VK_SUCCESS) {
-        fail(err, vk_error("vkResetCommandBuffer"_str, r));
-        return -1;
+    if (VkResult r = context->command.Reset(); r != VK_SUCCESS) {
+        return Err(Error { vk_error("vkResetCommandBuffer"_str, r) });
     }
     VkCommandBufferBeginInfo bi {};
     bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    if (VkResult r = cmd_.Begin(bi); r != VK_SUCCESS) {
-        fail(err, vk_error("vkBeginCommandBuffer"_str, r));
-        return -1;
+    if (VkResult r = context->command.Begin(bi); r != VK_SUCCESS) {
+        return Err(Error { vk_error("vkBeginCommandBuffer"_str, r) });
     }
 
     /* Acquire Y/UV from FFmpeg's image. FFmpeg's vulkan hwframes pool
@@ -1372,7 +1430,7 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im, VkImage dst, rstd:
     // srcAccess=0: the semaphore release covers memory visibility.
     auto [y_acq_src, y_acq_dst]   = qfot_pair(y_avvk_qf);
     auto [uv_acq_src, uv_acq_dst] = qfot_pair(uv_avvk_qf);
-    barrier_image2(cmd_,
+    barrier_image2(context->command,
                    im.y_image,
                    VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                    0,
@@ -1383,7 +1441,7 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im, VkImage dst, rstd:
                    y_acq_src,
                    y_acq_dst);
     if (! single_image) {
-        barrier_image2(cmd_,
+        barrier_image2(context->command,
                        im.uv_image,
                        VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                        0,
@@ -1395,15 +1453,30 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im, VkImage dst, rstd:
                        uv_acq_dst);
     }
 
-    barrier_dst_to_storage(cmd_, dst, target);
+    if (target == ConvertTarget::BridgeForeign) {
+        barrier_image(
+            context->command,
+            dst,
+            0,
+            VK_ACCESS_SHADER_WRITE_BIT,
+            target_entry->initialized ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_GENERAL,
+            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            target_entry->initialized ? VK_QUEUE_FAMILY_FOREIGN_EXT : VK_QUEUE_FAMILY_IGNORED,
+            target_entry->initialized ? queue_family_.to_primitive() : VK_QUEUE_FAMILY_IGNORED);
+    } else {
+        barrier_dst_to_storage(context->command, dst, target);
+    }
 
-    cmd_.BindPipeline(VK_PIPELINE_BIND_POINT_COMPUTE, *pipeline_);
-    const VkDescriptorSet descriptor_set = descriptor_set_.handle;
-    cmd_.BindDescriptorSets(VK_PIPELINE_BIND_POINT_COMPUTE,
-                            *pipeline_layout_,
-                            0,
-                            slice<VkDescriptorSet>::from_raw_parts(&descriptor_set, usize(1)),
-                            {});
+    context->command.BindPipeline(VK_PIPELINE_BIND_POINT_COMPUTE, *pipeline_);
+    const VkDescriptorSet descriptor_set = context->descriptor_set.handle;
+    context->command.BindDescriptorSets(
+        VK_PIPELINE_BIND_POINT_COMPUTE,
+        *pipeline_layout_,
+        0,
+        slice<VkDescriptorSet>::from_raw_parts(&descriptor_set, usize(1)),
+        {});
     ShaderPushConstants pc {};
     pc.dst_w = dst_w;
     pc.dst_h = dst_h;
@@ -1413,10 +1486,10 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im, VkImage dst, rstd:
         pc.m_b[i]    = cm.m_b[i];
         pc.offset[i] = cm.offset[i];
     }
-    cmd_.PushConstants(*pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT, pc);
+    context->command.PushConstants(*pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT, pc);
     const rstd::uint32_t gx = (dst_w + 7) / 8;
     const rstd::uint32_t gy = (dst_h + 7) / 8;
-    cmd_.Dispatch(gx, gy, 1);
+    context->command.Dispatch(gx, gy, 1);
 
     /* Release Y/UV back in GENERAL layout (FFmpeg's next decode submit
      * expects that), and release dst to FOREIGN for the bridge consumer.
@@ -1436,7 +1509,7 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im, VkImage dst, rstd:
     // semaphore signal happens after all our cmds (sync1 vkQueueSubmit
     // signals at ALL_COMMANDS implicitly), so dstStage=ALL_COMMANDS,
     // dstAccess=0 just sequences the layout transition before signal.
-    barrier_image2(cmd_,
+    barrier_image2(context->command,
                    im.y_image,
                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                    VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
@@ -1447,7 +1520,7 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im, VkImage dst, rstd:
                    y_rel_src,
                    y_rel_dst);
     if (! single_image) {
-        barrier_image2(cmd_,
+        barrier_image2(context->command,
                        im.uv_image,
                        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
@@ -1458,16 +1531,15 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im, VkImage dst, rstd:
                        uv_rel_src,
                        uv_rel_dst);
     }
-    barrier_dst_from_storage(cmd_, dst, target, queue_family_.to_primitive());
+    barrier_dst_from_storage(context->command, dst, target, queue_family_.to_primitive());
 
-    if (VkResult r = cmd_.End(); r != VK_SUCCESS) {
-        fail(err, vk_error("vkEndCommandBuffer"_str, r));
-        return -1;
+    if (VkResult r = context->command.End(); r != VK_SUCCESS) {
+        return Err(Error { vk_error("vkEndCommandBuffer"_str, r) });
     }
 
     /* Wait on AVVkFrame's timeline semaphores at their current values,
-     * signal incremented values back. Plus our binary signal_sem_ for
-     * the bridge SYNC_FD export. Single-image path uses one shared
+     * signal incremented values back. Bridge targets also signal the
+     * binary semaphore used for SYNC_FD export. Single-image path uses one shared
      * timeline; main.cpp aliases y/uv to the same sem/value pointer
      * so we deduplicate here to avoid waiting on the same semaphore
      * twice (Vulkan UB). */
@@ -1485,12 +1557,12 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im, VkImage dst, rstd:
     };
     const rstd::uint32_t wait_count = sem_shared ? 1u : 2u;
 
-    /* Signal FFmpeg timeline semaphore(s), the converter completion
-     * timeline, and the bridge binary semaphore when requested. */
+    /* Signal FFmpeg timeline semaphore(s) and converter completion.
+     * Bridge handoff waits on completion before signaling its binary semaphore. */
     auto next_completion_value = completion_value_ + u64(1);
     if (next_completion_value == u64()) ++next_completion_value;
-    VkSemaphore    signal_sems[4] {};
-    rstd::uint64_t signal_vals[4] {};
+    VkSemaphore    signal_sems[3] {};
+    rstd::uint64_t signal_vals[3] {};
     rstd::uint32_t signal_count = 0;
     signal_sems[signal_count]   = im.y_sem;
     signal_vals[signal_count]   = y_signal_val;
@@ -1498,11 +1570,6 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im, VkImage dst, rstd:
     if (! sem_shared) {
         signal_sems[signal_count] = im.uv_sem;
         signal_vals[signal_count] = uv_signal_val;
-        ++signal_count;
-    }
-    if (target_exports_sync_fd(target)) {
-        signal_sems[signal_count] = *signal_sem_;
-        signal_vals[signal_count] = 0;
         ++signal_count;
     }
     signal_sems[signal_count] = (*completion_timeline_)->handle();
@@ -1523,15 +1590,33 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im, VkImage dst, rstd:
     si.pWaitSemaphores                   = wait_sems;
     si.pWaitDstStageMask                 = wait_stages;
     si.commandBufferCount                = 1;
-    const VkCommandBuffer command_buffer = *cmd_;
+    const VkCommandBuffer command_buffer = *context->command;
     si.pCommandBuffers                   = &command_buffer;
     si.signalSemaphoreCount              = signal_count;
     si.pSignalSemaphores                 = signal_sems;
-    if (VkResult r = queue_.Submit(si, *done_fence_); r != VK_SUCCESS) {
-        fail(err, vk_error("vkQueueSubmit"_str, r));
-        return -1;
+    if (VkResult r = submit_conversion(queue_,
+                                       si,
+                                       target,
+                                       (*completion_timeline_)->handle(),
+                                       next_completion_value.to_primitive(),
+                                       target_exports_sync_fd(target) ? *context->export_semaphore
+                                                                      : VK_NULL_HANDLE);
+        r != VK_SUCCESS) {
+        return Err(Error { vk_error("vkQueueSubmit"_str, r) });
     }
-    fence_pending_ = true;
+    vvk::SubmissionToken completion {
+        (*completion_timeline_)->source(),
+        next_completion_value,
+    };
+    context->source_y_view        = rstd::move(y_view);
+    context->source_uv_view       = rstd::move(uv_view);
+    context->target               = target_entry;
+    context->completion           = Some(completion);
+    context->reserved             = false;
+    reservation.state_->submitted = true;
+    target_entry->initialized     = true;
+    target_entry->reserved        = false;
+    target_entry->last_completion = Some(completion);
     publish_submission(dst, u32(dst_w), u32(dst_h), target, next_completion_value);
 
     /* Update the AVVkFrame's tracked state — caller's contract. */
@@ -1544,78 +1629,116 @@ int YuvToRgba::convert_av_vk_frame_(const VkFrameImports& im, VkImage dst, rstd:
     *im.y_qf_in_out  = y_avvk_qf;
     *im.uv_qf_in_out = uv_avvk_qf;
 
-    last_dst_view_ = rstd::move(dst_view);
-    last_y_view_   = rstd::move(y_view);
-    last_uv_view_  = rstd::move(uv_view);
-
     int sync_fd = -1;
     if (target_exports_sync_fd(target)) {
         VkSemaphoreGetFdInfoKHR sgfi {};
         sgfi.sType      = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR;
-        sgfi.semaphore  = *signal_sem_;
+        sgfi.semaphore  = *context->export_semaphore;
         sgfi.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
         if (VkResult r = device_.GetSemaphoreFdKHR(sgfi, &sync_fd); r != VK_SUCCESS) {
-            fail(err, vk_error("vkGetSemaphoreFdKHR"_str, r));
-            return -1;
+            (void)drain_submissions(u64(1'000'000'000));
+            return Err(Error { vk_error("vkGetSemaphoreFdKHR"_str, r) });
         }
     }
-    return sync_fd;
+    return Ok(sync_fd);
 }
 
-auto YuvToRgba::configure_drm_pipeline(u32 max_contexts, u32 max_imports) -> Result<empty, Error> {
-    if (max_contexts == u32() || max_contexts > kMaxDrmContexts || max_imports == u32() ||
-        max_imports > kMaxDrmImports) {
-        return Err(Error { "configure_drm_pipeline: limits are out of range"_str });
+auto YuvToRgba::configure_pipeline(ConversionLimits limits) -> Result<empty, Error> {
+    if (limits.max_in_flight == u32() || limits.max_in_flight > kMaxConversionContexts ||
+        limits.max_drm_imports == u32() || limits.max_drm_imports > kMaxDrmImports) {
+        return Err(Error { "configure_pipeline: limits are out of range"_str });
     }
-    auto reclaimed = reclaim_drm_submissions();
+    auto reclaimed = reclaim_submissions();
     if (reclaimed.is_err()) return Err(rstd::move(reclaimed).unwrap_err());
-    for (const auto& context : drm_pipeline_->contexts) {
+    for (const auto& context : pipeline_state_->contexts) {
         if (context->completion.is_some() || context->reserved) {
-            return Err(Error { "configure_drm_pipeline: contexts are still active"_str });
+            return Err(Error { "configure_pipeline: contexts are still active"_str });
         }
     }
-    drm_pipeline_->max_contexts = max_contexts;
-    drm_pipeline_->max_imports  = max_imports;
-    drm_pipeline_->contexts.truncate(usize(max_contexts.to_primitive()));
-    drm_pipeline_->imports.truncate(usize(max_imports.to_primitive()));
+    pipeline_state_->max_contexts = limits.max_in_flight;
+    pipeline_state_->max_imports  = limits.max_drm_imports;
+    pipeline_state_->contexts.truncate(usize(limits.max_in_flight.to_primitive()));
+    pipeline_state_->imports.truncate(usize(limits.max_drm_imports.to_primitive()));
     return Ok(empty {});
 }
 
-auto YuvToRgba::try_reserve_drm(ConvertTarget target)
+auto YuvToRgba::reserve(ConversionReservationRequest request)
     -> Result<Option<ConversionReservation>, Error> {
-    auto reclaimed = reclaim_drm_submissions();
+    const auto& destination = request.target;
+    if (destination.image == VK_NULL_HANDLE || destination.width == u32() ||
+        destination.height == u32()) {
+        return Err(Error { "reserve: invalid destination"_str });
+    }
+    if ((destination.width % u32(2)) != u32() || (destination.height % u32(2)) != u32()) {
+        return Err(Error { "reserve: destination dimensions must be even"_str });
+    }
+    if (destination.width > max_w_ || destination.height > max_h_) {
+        return Err(Error { "reserve: destination exceeds configured extent"_str });
+    }
+    if (destination.kind == ConvertTarget::SampledLocal && destination.view == VK_NULL_HANDLE) {
+        return Err(Error { "reserve: local destination view is required"_str });
+    }
+
+    auto reclaimed = reclaim_submissions();
     if (reclaimed.is_err()) return Err(rstd::move(reclaimed).unwrap_err());
 
-    DrmSubmissionContext* context = nullptr;
-    for (auto& candidate : drm_pipeline_->contexts) {
+    auto resolved = find_or_create_target(device_, pipeline_state_->targets, destination);
+    if (resolved.is_err()) return Err(rstd::move(resolved).unwrap_err());
+    auto* target = rstd::move(resolved).unwrap();
+    if (target->reserved) return Ok(None());
+
+    if (target->last_completion.is_some()) {
+        if (request.deadline.is_none()) return Ok(None());
+        const auto now = rstd::time::Instant::now();
+        if (now >= *request.deadline) return Ok(None());
+        auto       timeout_ns  = rstd::try_from<u64>((*request.deadline - now).as_nanos())
+                                     .unwrap_or(u64(u64::MAX.to_primitive()));
+        const auto observation = wait_completion(*target->last_completion, timeout_ns);
+        if (observation.status == vvk::CompletionObservationStatus::Pending) return Ok(None());
+        if (! observation.observed() || ! observation.completed.valid() ||
+            ! vvk::CompletionCovers(observation.completed, *target->last_completion)) {
+            return Err(Error {
+                rstd::format("reserve: target completion wait failed: {}",
+                             vk_result_str(observation.api_result)),
+            });
+        }
+        reclaimed = reclaim_submissions();
+        if (reclaimed.is_err()) return Err(rstd::move(reclaimed).unwrap_err());
+        if (target->last_completion.is_some()) {
+            return Err(Error { "reserve: completed target remains in flight"_str });
+        }
+    }
+
+    ConversionSubmissionContext* context = nullptr;
+    for (auto& candidate : pipeline_state_->contexts) {
         if (candidate->completion.is_none() && ! candidate->reserved) {
             context = candidate.get();
             break;
         }
     }
     if (! context &&
-        drm_pipeline_->contexts.len() < usize(drm_pipeline_->max_contexts.to_primitive())) {
-        auto candidate = Box<DrmSubmissionContext>::make();
+        pipeline_state_->contexts.len() < usize(pipeline_state_->max_contexts.to_primitive())) {
+        auto candidate = Box<ConversionSubmissionContext>::make();
         if (const auto result = cmd_pool_.Allocate(
                 usize(1), VK_COMMAND_BUFFER_LEVEL_PRIMARY, candidate->command_buffers);
             result != VK_SUCCESS) {
-            return Err(Error { vk_error("vkAllocateCommandBuffers(DRM)"_str, result) });
+            return Err(Error { vk_error("vkAllocateCommandBuffers(conversion)"_str, result) });
         }
         candidate->command =
             vvk::CommandBuffer(candidate->command_buffers[usize()], device_dispatch_);
         auto allocation = vvk::DescriptorArenaGeneration::Allocate(*descriptor_arena_, *dsl_);
         if (! allocation.allocated()) {
-            return Err(
-                Error { vk_error("vkAllocateDescriptorSets(DRM)"_str, allocation.api_result) });
+            return Err(Error {
+                vk_error("vkAllocateDescriptorSets(conversion)"_str, allocation.api_result) });
         }
         candidate->descriptor_set = rstd::move(allocation.lease);
 
         context = candidate.get();
-        drm_pipeline_->contexts.push(rstd::move(candidate));
+        pipeline_state_->contexts.push(rstd::move(candidate));
     }
     if (! context) return Ok(None());
 
-    if (target_exports_sync_fd(target) && ! context->export_semaphore) {
+    if (target_exports_sync_fd(destination.kind) && ! context->export_semaphore) {
         VkExportSemaphoreCreateInfo export_info {};
         export_info.sType       = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO;
         export_info.handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
@@ -1624,20 +1747,22 @@ auto YuvToRgba::try_reserve_drm(ConvertTarget target)
         semaphore_info.pNext = &export_info;
         if (const auto result = device_.CreateSemaphore(semaphore_info, context->export_semaphore);
             result != VK_SUCCESS) {
-            return Err(Error { vk_error("vkCreateSemaphore(DRM export)"_str, result) });
+            return Err(Error { vk_error("vkCreateSemaphore(conversion export)"_str, result) });
         }
     }
-    context->reserved = true;
-    auto state        = Box<ConversionReservation::State>::make();
-    state->owner      = this;
-    state->context    = context;
-    state->target     = target;
+    context->reserved  = true;
+    target->reserved   = true;
+    auto state         = Box<ConversionReservation::State>::make();
+    state->owner       = this;
+    state->context     = context;
+    state->target      = target;
+    state->destination = destination;
     return Ok(Some(ConversionReservation(rstd::move(state).into_raw().as_raw_ptr())));
 }
 
-auto YuvToRgba::reclaim_drm_submissions() -> Result<usize, Error> {
+auto YuvToRgba::reclaim_submissions() -> Result<usize, Error> {
     bool has_pending = false;
-    for (const auto& context : drm_pipeline_->contexts) {
+    for (const auto& context : pipeline_state_->contexts) {
         if (context->completion.is_some()) {
             has_pending = true;
             break;
@@ -1650,31 +1775,37 @@ auto YuvToRgba::reclaim_drm_submissions() -> Result<usize, Error> {
         observation.status == vvk::CompletionObservationStatus::ApiError ||
         observation.status == vvk::CompletionObservationStatus::Invalid) {
         return Err(Error {
-            rstd::format("reclaim_drm_submissions: timeline query failed: {}",
+            rstd::format("reclaim_submissions: timeline query failed: {}",
                          vk_result_str(observation.api_result)),
         });
     }
 
     usize reclaimed {};
-    for (auto& context : drm_pipeline_->contexts) {
+    for (auto& context : pipeline_state_->contexts) {
         if (context->completion.is_none() || ! observation.completed.valid() ||
             ! vvk::CompletionCovers(observation.completed, *context->completion)) {
             continue;
         }
+        if (context->target && (context->target->last_completion.is_none() ||
+                                *context->target->last_completion != *context->completion)) {
+            return Err(Error { "reclaim_submissions: target completion mismatch"_str });
+        }
         if (context->source) --context->source->in_flight;
-        if (context->target) --context->target->in_flight;
+        if (context->target) (void)context->target->last_completion.take();
         context->source = nullptr;
         context->target = nullptr;
         (void)context->frame.take();
+        context->source_y_view  = {};
+        context->source_uv_view = {};
         (void)context->completion.take();
         ++reclaimed;
     }
     return Ok(reclaimed);
 }
 
-auto YuvToRgba::drain_drm_submissions(u64 timeout_ns) -> Result<empty, Error> {
+auto YuvToRgba::drain_submissions(u64 timeout_ns) -> Result<empty, Error> {
     Option<vvk::SubmissionToken> latest;
-    for (const auto& context : drm_pipeline_->contexts) {
+    for (const auto& context : pipeline_state_->contexts) {
         if (context->completion.is_none()) continue;
         if (latest.is_none() || context->completion->value > latest->value) {
             latest = Some<vvk::SubmissionToken>(*context->completion);
@@ -1686,40 +1817,46 @@ auto YuvToRgba::drain_drm_submissions(u64 timeout_ns) -> Result<empty, Error> {
     if (! observation.observed() || ! observation.completed.valid() ||
         ! vvk::CompletionCovers(observation.completed, *latest)) {
         return Err(Error {
-            rstd::format("drain_drm_submissions: timeline wait failed: {}",
+            rstd::format("drain_submissions: timeline wait failed: {}",
                          vk_result_str(observation.api_result)),
         });
     }
-    auto reclaimed = reclaim_drm_submissions();
+    auto reclaimed = reclaim_submissions();
     if (reclaimed.is_err()) return Err(rstd::move(reclaimed).unwrap_err());
     return Ok(empty {});
 }
 
-auto YuvToRgba::invalidate_drm_targets() -> Result<empty, Error> {
-    auto reclaimed = reclaim_drm_submissions();
+auto YuvToRgba::invalidate_targets() -> Result<empty, Error> {
+    auto reclaimed = reclaim_submissions();
     if (reclaimed.is_err()) return Err(rstd::move(reclaimed).unwrap_err());
-    for (const auto& context : drm_pipeline_->contexts) {
+    for (const auto& context : pipeline_state_->contexts) {
         if (context->completion.is_some() || context->reserved) {
-            return Err(Error { "invalidate_drm_targets: contexts are still active"_str });
+            return Err(Error { "invalidate_targets: contexts are still active"_str });
         }
     }
-    drm_pipeline_->targets.clear();
+    for (const auto& target : pipeline_state_->targets) {
+        if (target->reserved || target->last_completion.is_some()) {
+            return Err(Error { "invalidate_targets: targets are still active"_str });
+        }
+    }
+    pipeline_state_->targets.clear();
     return Ok(empty {});
 }
 
 auto YuvToRgba::submit_drm_prime(ConversionReservation&& reservation, DrmFrameLease&& frame,
-                                 const ConversionTargetView& destination, const ColorMatrix& cm)
+                                 const ColorMatrix& cm)
     -> Result<Option<ConversionSubmission>, Error> {
-    const auto dst    = destination.image;
-    const auto dst_w  = destination.width;
-    const auto dst_h  = destination.height;
-    const auto target = destination.kind;
     if (! reservation.valid() || reservation.state_->owner != this ||
-        reservation.state_->target != target || ! reservation.state_->context ||
-        ! reservation.state_->context->reserved ||
+        ! reservation.state_->context || ! reservation.state_->target ||
+        ! reservation.state_->context->reserved || ! reservation.state_->target->reserved ||
         reservation.state_->context->completion.is_some()) {
         return Err(Error { "submit_drm_prime: invalid reservation"_str });
     }
+    const auto& destination = reservation.state_->destination;
+    const auto  dst         = destination.image;
+    const auto  dst_w       = destination.width;
+    const auto  dst_h       = destination.height;
+    const auto  target      = destination.kind;
     if (! frame.valid()) return Err(Error { "submit_drm_prime: invalid frame lease"_str });
     if (dst == VK_NULL_HANDLE || dst_w == u32() || dst_h == u32()) {
         return Err(Error { "submit_drm_prime: invalid destination"_str });
@@ -1737,14 +1874,15 @@ auto YuvToRgba::submit_drm_prime(ConversionReservation&& reservation, DrmFrameLe
         return Err(Error { "submit_drm_prime: vkGetMemoryFdPropertiesKHR missing"_str });
     }
 
-    auto* context = reservation.state_->context;
+    auto* context      = reservation.state_->context;
+    auto* target_entry = reservation.state_->target;
 
     DrmImportEntry* source      = nullptr;
     Option<usize>   stale_index = None();
     const auto      key         = frame.resource_key();
     const auto&     view        = frame.view();
-    for (usize index {}; index < drm_pipeline_->imports.len(); ++index) {
-        auto* candidate = drm_pipeline_->imports[index].get();
+    for (usize index {}; index < pipeline_state_->imports.len(); ++index) {
+        auto* candidate = pipeline_state_->imports[index].get();
         if (candidate->key != key) continue;
         if (same_drm_signature(candidate->signature, view)) {
             if (candidate->in_flight != u32()) return Ok(None());
@@ -1756,71 +1894,30 @@ auto YuvToRgba::submit_drm_prime(ConversionReservation&& reservation, DrmFrameLe
         break;
     }
     if (stale_index.is_some()) {
-        (void)drm_pipeline_->imports.remove(*stale_index);
+        (void)pipeline_state_->imports.remove(*stale_index);
     }
     if (! source) {
-        if (drm_pipeline_->imports.len() >= usize(drm_pipeline_->max_imports.to_primitive())) {
+        if (pipeline_state_->imports.len() >= usize(pipeline_state_->max_imports.to_primitive())) {
             Option<usize> eviction;
             u64           oldest = u64::MAX;
-            for (usize index {}; index < drm_pipeline_->imports.len(); ++index) {
-                const auto* candidate = drm_pipeline_->imports[index].get();
+            for (usize index {}; index < pipeline_state_->imports.len(); ++index) {
+                const auto* candidate = pipeline_state_->imports[index].get();
                 if (candidate->in_flight == u32() && candidate->last_use_serial < oldest) {
                     oldest   = candidate->last_use_serial;
                     eviction = Some(index);
                 }
             }
             if (eviction.is_none()) return Ok(None());
-            (void)drm_pipeline_->imports.remove(*eviction);
+            (void)pipeline_state_->imports.remove(*eviction);
         }
         auto imported = create_drm_import(device_, phys_, frame);
         if (imported.is_err()) return Err(rstd::move(imported).unwrap_err());
         auto entry = rstd::move(imported).unwrap();
         source     = entry.get();
-        drm_pipeline_->imports.push(rstd::move(entry));
+        pipeline_state_->imports.push(rstd::move(entry));
     }
 
-    DrmTargetEntry* target_entry = nullptr;
-    if (target == ConvertTarget::BridgeForeign) {
-        for (auto& candidate : drm_pipeline_->targets) {
-            if (candidate->image == dst && candidate->width == dst_w &&
-                candidate->height == dst_h &&
-                (destination.view == VK_NULL_HANDLE || candidate->view == destination.view)) {
-                if (candidate->in_flight != u32()) return Ok(None());
-                target_entry = candidate.get();
-                break;
-            }
-        }
-        if (! target_entry) {
-            auto entry    = Box<DrmTargetEntry>::make();
-            entry->image  = dst;
-            entry->width  = dst_w;
-            entry->height = dst_h;
-            entry->view   = destination.view;
-            if (entry->view == VK_NULL_HANDLE) {
-                VkImageViewCreateInfo view_info {};
-                view_info.sType      = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-                view_info.image      = dst;
-                view_info.viewType   = VK_IMAGE_VIEW_TYPE_2D;
-                view_info.format     = VK_FORMAT_R8G8B8A8_UNORM;
-                view_info.components = {
-                    VK_COMPONENT_SWIZZLE_IDENTITY,
-                    VK_COMPONENT_SWIZZLE_IDENTITY,
-                    VK_COMPONENT_SWIZZLE_IDENTITY,
-                    VK_COMPONENT_SWIZZLE_IDENTITY,
-                };
-                view_info.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-                if (const auto result = device_.CreateImageView(view_info, entry->owned_view);
-                    result != VK_SUCCESS) {
-                    return Err(Error { vk_error("vkCreateImageView(DRM target)"_str, result) });
-                }
-                entry->view = *entry->owned_view;
-            }
-            target_entry = entry.get();
-            drm_pipeline_->targets.push(rstd::move(entry));
-        }
-    }
-
-    const auto            target_view = target_entry ? target_entry->view : destination.view;
+    const auto            target_view = target_entry->view;
     VkDescriptorImageInfo y_info {
         *sampler_,
         *source->y_view,
@@ -1871,7 +1968,7 @@ auto YuvToRgba::submit_drm_prime(ConversionReservation&& reservation, DrmFrameLe
                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                   VK_QUEUE_FAMILY_FOREIGN_EXT,
                   queue_family_.to_primitive());
-    if (target_entry) {
+    if (target == ConvertTarget::BridgeForeign) {
         barrier_image(
             context->command,
             dst,
@@ -1924,23 +2021,28 @@ auto YuvToRgba::submit_drm_prime(ConversionReservation&& reservation, DrmFrameLe
 
     auto completion_value = completion_value_ + u64(1);
     if (completion_value == u64()) ++completion_value;
-    VkSemaphore    signal_semaphores[2] = { (*completion_timeline_)->handle(), VK_NULL_HANDLE };
-    rstd::uint64_t signal_values[2]     = { completion_value.to_primitive(), 0 };
-    const auto     signal_count         = target_exports_sync_fd(target) ? 2u : 1u;
-    if (signal_count == 2u) signal_semaphores[1] = *context->export_semaphore;
+    const VkSemaphore             signal_semaphore = (*completion_timeline_)->handle();
+    const auto                    signal_value     = completion_value.to_primitive();
     VkTimelineSemaphoreSubmitInfo timeline_info {};
     timeline_info.sType                     = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
-    timeline_info.signalSemaphoreValueCount = signal_count;
-    timeline_info.pSignalSemaphoreValues    = signal_values;
+    timeline_info.signalSemaphoreValueCount = 1;
+    timeline_info.pSignalSemaphoreValues    = &signal_value;
     const auto   command_buffer             = *context->command;
     VkSubmitInfo submit_info {};
     submit_info.sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submit_info.pNext                = &timeline_info;
     submit_info.commandBufferCount   = 1;
     submit_info.pCommandBuffers      = &command_buffer;
-    submit_info.signalSemaphoreCount = signal_count;
-    submit_info.pSignalSemaphores    = signal_semaphores;
-    if (const auto result = queue_.Submit(submit_info); result != VK_SUCCESS) {
+    submit_info.signalSemaphoreCount = 1;
+    submit_info.pSignalSemaphores    = &signal_semaphore;
+    if (const auto result = submit_conversion(
+            queue_,
+            submit_info,
+            target,
+            signal_semaphore,
+            signal_value,
+            target_exports_sync_fd(target) ? *context->export_semaphore : VK_NULL_HANDLE);
+        result != VK_SUCCESS) {
         return Err(Error { vk_error("vkQueueSubmit(DRM)"_str, result) });
     }
 
@@ -1949,12 +2051,11 @@ auto YuvToRgba::submit_drm_prime(ConversionReservation&& reservation, DrmFrameLe
         completion_value,
     };
     source->initialized     = true;
-    source->last_use_serial = ++drm_pipeline_->use_serial;
+    source->last_use_serial = ++pipeline_state_->use_serial;
     ++source->in_flight;
-    if (target_entry) {
-        target_entry->initialized = true;
-        ++target_entry->in_flight;
-    }
+    target_entry->initialized     = true;
+    target_entry->reserved        = false;
+    target_entry->last_completion = Some<vvk::SubmissionToken>(token);
     context->source               = source;
     context->target               = target_entry;
     context->completion           = Some<vvk::SubmissionToken>(token);
@@ -1971,7 +2072,7 @@ auto YuvToRgba::submit_drm_prime(ConversionReservation&& reservation, DrmFrameLe
         fd_info.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
         if (const auto result = device_.GetSemaphoreFdKHR(fd_info, &sync_fd);
             result != VK_SUCCESS) {
-            (void)drain_drm_submissions(u64(1'000'000'000));
+            (void)drain_submissions(u64(1'000'000'000));
             return Err(Error { vk_error("vkGetSemaphoreFdKHR(DRM)"_str, result) });
         }
     }
@@ -2057,27 +2158,13 @@ auto YuvToRgba::submit_nv12(VkImage dst, u32 dst_w, u32 dst_h, const rstd::uint8
     return Ok(rstd::move(submission));
 }
 
-auto YuvToRgba::convert_av_vk_frame(const VkFrameImports& imports, VkImage dst, u32 dst_w,
-                                    u32 dst_h, const ColorMatrix& cm) -> Result<int, Error> {
-    return convert_av_vk_frame(imports, dst, dst_w, dst_h, cm, ConvertTarget::BridgeForeign);
-}
-
-auto YuvToRgba::convert_av_vk_frame(const VkFrameImports& imports, VkImage dst, u32 dst_w,
-                                    u32 dst_h, const ColorMatrix& cm, ConvertTarget target)
-    -> Result<int, Error> {
-    auto submitted = submit_av_vk_frame(imports, dst, dst_w, dst_h, cm, target);
-    if (submitted.is_err()) return Err(rstd::move(submitted).unwrap_err());
-    return Ok(rstd::move(submitted).unwrap().sync_fd);
-}
-
-auto YuvToRgba::submit_av_vk_frame(const VkFrameImports& imports, VkImage dst, u32 dst_w, u32 dst_h,
-                                   const ColorMatrix& cm, ConvertTarget target)
+auto YuvToRgba::submit_av_vk_frame(ConversionReservation&& reservation,
+                                   const VkFrameImports& imports, const ColorMatrix& cm)
     -> Result<ConversionSubmission, Error> {
     (void)last_submission_.take();
-    Error err;
-    int   fd = convert_av_vk_frame_(
-        imports, dst, dst_w.to_primitive(), dst_h.to_primitive(), cm, target, &err);
-    if (fd < 0 && ! err.message.is_empty()) return Err(rstd::move(err));
+    auto converted = convert_av_vk_frame_(reservation, imports, cm);
+    if (converted.is_err()) return Err(rstd::move(converted).unwrap_err());
+    auto fd = rstd::move(converted).unwrap();
     if (! last_submission_ || ! last_submission_->submitted()) {
         return Err(Error { "YuvToRgba: conversion returned without a submission"_str });
     }
