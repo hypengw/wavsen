@@ -437,6 +437,7 @@ struct ConversionSubmissionContext {
     Option<vvk::SubmissionToken> completion;
     vvk::ImageView               source_y_view;
     vvk::ImageView               source_uv_view;
+    Option<VkFrameLease>         vk_frame;
     Option<DrmFrameLease>        frame;
     DrmImportEntry*              source { nullptr };
     ConversionTargetEntry*       target { nullptr };
@@ -1266,7 +1267,7 @@ int YuvToRgba::convert_nv12_(VkImage dst, rstd::uint32_t dst_w, rstd::uint32_t d
     return sync_fd;
 }
 
-auto YuvToRgba::convert_av_vk_frame_(ConversionReservation& reservation, const VkFrameImports& im,
+auto YuvToRgba::convert_av_vk_frame_(ConversionReservation& reservation, const VkFrameView& frame,
                                      const ColorMatrix& cm) -> Result<int, Error> {
     if (! reservation.valid() || reservation.state_->owner != this ||
         ! reservation.state_->context || ! reservation.state_->target ||
@@ -1282,7 +1283,22 @@ auto YuvToRgba::convert_av_vk_frame_(ConversionReservation& reservation, const V
     if (dst == VK_NULL_HANDLE) {
         return Err(Error { "convert_av_vk_frame: dst null"_str });
     }
-    if (im.y_image == VK_NULL_HANDLE) {
+    const VkImage     y_image         = frame.img[0];
+    const VkImage     uv_image        = frame.plane_count > u32(1) ? frame.img[1] : VK_NULL_HANDLE;
+    const VkSemaphore y_sem           = frame.sem[0];
+    const VkSemaphore uv_sem          = frame.plane_count > u32(1) ? frame.sem[1] : frame.sem[0];
+    auto*             y_access_in_out = &frame.access[0];
+    auto* uv_access_in_out = frame.plane_count > u32(1) ? &frame.access[1] : &frame.access[0];
+    auto* y_sem_val_in_out = &frame.sem_value[0];
+    auto* uv_sem_val_in_out =
+        frame.plane_count > u32(1) ? &frame.sem_value[1] : &frame.sem_value[0];
+    auto* y_layout_in_out  = &frame.layout[0];
+    auto* uv_layout_in_out = frame.plane_count > u32(1) ? &frame.layout[1] : &frame.layout[0];
+    auto* y_qf_in_out      = &frame.queue_family[0];
+    auto* uv_qf_in_out =
+        frame.plane_count > u32(1) ? &frame.queue_family[1] : &frame.queue_family[0];
+
+    if (y_image == VK_NULL_HANDLE) {
         return Err(Error { "convert_av_vk_frame: AVVkFrame y_image NULL"_str });
     }
     /* Two layouts the producer can hand us:
@@ -1295,7 +1311,7 @@ auto YuvToRgba::convert_av_vk_frame_(ConversionReservation& reservation, const V
      *                         DISABLE_MULTIPLANE is silently ignored for
      *                         the DPB by the spec).
      * In single-image mode we sample plane 0 / plane 1 via aspect masks. */
-    const bool single_image = (im.uv_image == VK_NULL_HANDLE) || (im.uv_image == im.y_image);
+    const bool single_image = (uv_image == VK_NULL_HANDLE) || (uv_image == y_image);
     if ((dst_w & 1u) || (dst_h & 1u)) {
         return Err(Error { "convert_av_vk_frame: dst dims must be even"_str });
     }
@@ -1336,8 +1352,8 @@ auto YuvToRgba::convert_av_vk_frame_(ConversionReservation& reservation, const V
             y_fmt  = VK_FORMAT_R8_UNORM;
             uv_fmt = VK_FORMAT_R8G8_UNORM;
         } else {
-            y_fmt  = im.bit_depth >= u32(16) ? VK_FORMAT_R16_UNORM : VK_FORMAT_R8_UNORM;
-            uv_fmt = im.bit_depth >= u32(16) ? VK_FORMAT_R16G16_UNORM : VK_FORMAT_R8G8_UNORM;
+            y_fmt  = frame.bit_depth >= u32(16) ? VK_FORMAT_R16_UNORM : VK_FORMAT_R8_UNORM;
+            uv_fmt = frame.bit_depth >= u32(16) ? VK_FORMAT_R16G16_UNORM : VK_FORMAT_R8G8_UNORM;
         }
 
         const VkImageAspectFlags y_aspect  = single_image
@@ -1347,13 +1363,13 @@ auto YuvToRgba::convert_av_vk_frame_(ConversionReservation& reservation, const V
                                                  ? VkImageAspectFlags(VK_IMAGE_ASPECT_PLANE_1_BIT)
                                                  : VkImageAspectFlags(VK_IMAGE_ASPECT_COLOR_BIT);
 
-        vci.image            = im.y_image;
+        vci.image            = y_image;
         vci.format           = y_fmt;
         vci.subresourceRange = { y_aspect, 0, 1, 0, 1 };
         if (VkResult r = device_.CreateImageView(vci, y_view); r != VK_SUCCESS) {
             return Err(Error { vk_error("vkCreateImageView(Y, AVVkFrame)"_str, r) });
         }
-        vci.image            = single_image ? im.y_image : im.uv_image;
+        vci.image            = single_image ? y_image : uv_image;
         vci.format           = uv_fmt;
         vci.subresourceRange = { uv_aspect, 0, 1, 0, 1 };
         if (VkResult r = device_.CreateImageView(vci, uv_view); r != VK_SUCCESS) {
@@ -1410,8 +1426,8 @@ auto YuvToRgba::convert_av_vk_frame_(ConversionReservation& reservation, const V
      * barrier's srcStageMask to VIDEO_DECODE so the validation layer's
      * per-resource hazard tracker can relate them. Single-image path
      * emits ONE barrier on the shared VkImage (covers all planes). */
-    const rstd::uint32_t y_avvk_qf  = *im.y_qf_in_out;
-    const rstd::uint32_t uv_avvk_qf = *im.uv_qf_in_out;
+    const rstd::uint32_t y_avvk_qf  = *y_qf_in_out;
+    const rstd::uint32_t uv_avvk_qf = *uv_qf_in_out;
     struct QueueTransfer {
         rstd::uint32_t source;
         rstd::uint32_t destination;
@@ -1431,23 +1447,23 @@ auto YuvToRgba::convert_av_vk_frame_(ConversionReservation& reservation, const V
     auto [y_acq_src, y_acq_dst]   = qfot_pair(y_avvk_qf);
     auto [uv_acq_src, uv_acq_dst] = qfot_pair(uv_avvk_qf);
     barrier_image2(context->command,
-                   im.y_image,
+                   y_image,
                    VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                    0,
                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                    VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                   *im.y_layout_in_out,
+                   *y_layout_in_out,
                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                    y_acq_src,
                    y_acq_dst);
     if (! single_image) {
         barrier_image2(context->command,
-                       im.uv_image,
+                       uv_image,
                        VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                        0,
                        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                       *im.uv_layout_in_out,
+                       *uv_layout_in_out,
                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                        uv_acq_src,
                        uv_acq_dst);
@@ -1510,7 +1526,7 @@ auto YuvToRgba::convert_av_vk_frame_(ConversionReservation& reservation, const V
     // signals at ALL_COMMANDS implicitly), so dstStage=ALL_COMMANDS,
     // dstAccess=0 just sequences the layout transition before signal.
     barrier_image2(context->command,
-                   im.y_image,
+                   y_image,
                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                    VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                    VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
@@ -1521,7 +1537,7 @@ auto YuvToRgba::convert_av_vk_frame_(ConversionReservation& reservation, const V
                    y_rel_dst);
     if (! single_image) {
         barrier_image2(context->command,
-                       im.uv_image,
+                       uv_image,
                        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                        VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
@@ -1543,13 +1559,13 @@ auto YuvToRgba::convert_av_vk_frame_(ConversionReservation& reservation, const V
      * timeline; main.cpp aliases y/uv to the same sem/value pointer
      * so we deduplicate here to avoid waiting on the same semaphore
      * twice (Vulkan UB). */
-    const bool           sem_shared    = (im.y_sem == im.uv_sem);
-    const rstd::uint64_t y_wait_val    = *im.y_sem_val_in_out;
-    const rstd::uint64_t uv_wait_val   = *im.uv_sem_val_in_out;
+    const bool           sem_shared    = (y_sem == uv_sem);
+    const rstd::uint64_t y_wait_val    = *y_sem_val_in_out;
+    const rstd::uint64_t uv_wait_val   = *uv_sem_val_in_out;
     const rstd::uint64_t y_signal_val  = y_wait_val + 1;
     const rstd::uint64_t uv_signal_val = uv_wait_val + 1;
 
-    VkSemaphore          wait_sems[2]   = { im.y_sem, im.uv_sem };
+    VkSemaphore          wait_sems[2]   = { y_sem, uv_sem };
     rstd::uint64_t       wait_vals[2]   = { y_wait_val, uv_wait_val };
     VkPipelineStageFlags wait_stages[2] = {
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
@@ -1564,11 +1580,11 @@ auto YuvToRgba::convert_av_vk_frame_(ConversionReservation& reservation, const V
     VkSemaphore    signal_sems[3] {};
     rstd::uint64_t signal_vals[3] {};
     rstd::uint32_t signal_count = 0;
-    signal_sems[signal_count]   = im.y_sem;
+    signal_sems[signal_count]   = y_sem;
     signal_vals[signal_count]   = y_signal_val;
     ++signal_count;
     if (! sem_shared) {
-        signal_sems[signal_count] = im.uv_sem;
+        signal_sems[signal_count] = uv_sem;
         signal_vals[signal_count] = uv_signal_val;
         ++signal_count;
     }
@@ -1620,14 +1636,16 @@ auto YuvToRgba::convert_av_vk_frame_(ConversionReservation& reservation, const V
     publish_submission(dst, u32(dst_w), u32(dst_h), target, next_completion_value);
 
     /* Update the AVVkFrame's tracked state — caller's contract. */
-    *im.y_sem_val_in_out  = y_signal_val;
-    *im.uv_sem_val_in_out = uv_signal_val;
-    *im.y_layout_in_out   = VK_IMAGE_LAYOUT_GENERAL;
-    *im.uv_layout_in_out  = VK_IMAGE_LAYOUT_GENERAL;
+    *y_sem_val_in_out  = y_signal_val;
+    *uv_sem_val_in_out = uv_signal_val;
+    *y_access_in_out   = 0;
+    *uv_access_in_out  = 0;
+    *y_layout_in_out   = VK_IMAGE_LAYOUT_GENERAL;
+    *uv_layout_in_out  = VK_IMAGE_LAYOUT_GENERAL;
     // CONCURRENT pool: both stay IGNORED. Cross-family QFOT: we just
     // released back to the family AVVkFrame had on entry — preserve it.
-    *im.y_qf_in_out  = y_avvk_qf;
-    *im.uv_qf_in_out = uv_avvk_qf;
+    *y_qf_in_out  = y_avvk_qf;
+    *uv_qf_in_out = uv_avvk_qf;
 
     int sync_fd = -1;
     if (target_exports_sync_fd(target)) {
@@ -1794,6 +1812,7 @@ auto YuvToRgba::reclaim_submissions() -> Result<usize, Error> {
         if (context->target) (void)context->target->last_completion.take();
         context->source = nullptr;
         context->target = nullptr;
+        (void)context->vk_frame.take();
         (void)context->frame.take();
         context->source_y_view  = {};
         context->source_uv_view = {};
@@ -2158,13 +2177,16 @@ auto YuvToRgba::submit_nv12(VkImage dst, u32 dst_w, u32 dst_h, const rstd::uint8
     return Ok(rstd::move(submission));
 }
 
-auto YuvToRgba::submit_av_vk_frame(ConversionReservation&& reservation,
-                                   const VkFrameImports& imports, const ColorMatrix& cm)
-    -> Result<ConversionSubmission, Error> {
+auto YuvToRgba::submit_av_vk_frame(ConversionReservation&& reservation, VkFrameLease&& frame,
+                                   const ColorMatrix& cm) -> Result<ConversionSubmission, Error> {
     (void)last_submission_.take();
-    auto converted = convert_av_vk_frame_(reservation, imports, cm);
+    auto accessed = frame.lock();
+    if (accessed.is_err()) return Err(rstd::move(accessed).unwrap_err());
+    auto access    = rstd::move(accessed).unwrap();
+    auto converted = convert_av_vk_frame_(reservation, access.view(), cm);
     if (converted.is_err()) return Err(rstd::move(converted).unwrap_err());
-    auto fd = rstd::move(converted).unwrap();
+    auto fd                               = rstd::move(converted).unwrap();
+    reservation.state_->context->vk_frame = Some(rstd::move(frame));
     if (! last_submission_ || ! last_submission_->submitted()) {
         return Err(Error { "YuvToRgba: conversion returned without a submission"_str });
     }

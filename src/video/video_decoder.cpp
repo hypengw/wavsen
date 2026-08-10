@@ -258,6 +258,99 @@ u64 next_decoder_generation() {
 
 } // namespace
 
+struct VkFrameLease::State {
+    FramePtr source;
+};
+
+struct VkFrameAccess::State {
+    FramePtr               source;
+    AVHWFramesContext*     frames { nullptr };
+    AVVulkanFramesContext* vulkan { nullptr };
+    AVVkFrame*             frame { nullptr };
+};
+
+static_assert(sizeof(static_cast<AVVkFrame*>(nullptr)->access[0]) == sizeof(rstd::uint32_t));
+
+void VkFrameAccess::reset() noexcept {
+    if (! state_) return;
+    auto state = Box<State>::from_raw(mut_ptr<State>::from_raw_parts(state_));
+    state_     = nullptr;
+    state->vulkan->unlock_frame(state->frames, state->frame);
+}
+
+VkFrameAccess::VkFrameAccess(VkFrameAccess&& other) noexcept
+    : state_(rstd::exchange(other.state_, nullptr)), view_(rstd::move(other.view_)) {}
+
+VkFrameAccess& VkFrameAccess::operator=(VkFrameAccess&& other) noexcept {
+    if (this == &other) return *this;
+    reset();
+    state_ = rstd::exchange(other.state_, nullptr);
+    view_  = rstd::move(other.view_);
+    return *this;
+}
+
+VkFrameAccess::~VkFrameAccess() { reset(); }
+
+void VkFrameLease::reset() noexcept {
+    if (! state_) return;
+    auto state = Box<State>::from_raw(mut_ptr<State>::from_raw_parts(state_));
+    state_     = nullptr;
+}
+
+VkFrameLease::VkFrameLease(VkFrameLease&& other) noexcept
+    : state_(rstd::exchange(other.state_, nullptr)), info_(rstd::move(other.info_)) {}
+
+VkFrameLease& VkFrameLease::operator=(VkFrameLease&& other) noexcept {
+    if (this == &other) return *this;
+    reset();
+    state_ = rstd::exchange(other.state_, nullptr);
+    info_  = rstd::move(other.info_);
+    return *this;
+}
+
+VkFrameLease::~VkFrameLease() { reset(); }
+
+auto VkFrameLease::lock() const -> Result<VkFrameAccess, Error> {
+    if (! state_ || ! state_->source || ! state_->source->hw_frames_ctx ||
+        ! state_->source->data[0]) {
+        return Err(Error("lock called on invalid Vulkan frame lease"_str));
+    }
+
+    FramePtr source(av_frame_clone(state_->source.get()));
+    if (! source) return Err(Error("av_frame_clone(Vulkan access) failed"_str));
+
+    auto* frames = reinterpret_cast<AVHWFramesContext*>(source->hw_frames_ctx->data);
+    auto* vulkan = reinterpret_cast<AVVulkanFramesContext*>(frames->hwctx);
+    auto* frame  = reinterpret_cast<AVVkFrame*>(source->data[0]);
+    if (! vulkan || ! vulkan->lock_frame || ! vulkan->unlock_frame) {
+        return Err(Error("Vulkan frame lock callbacks are unavailable"_str));
+    }
+
+    vulkan->lock_frame(frames, frame);
+    auto access_state    = Box<VkFrameAccess::State>::make();
+    access_state->source = rstd::move(source);
+    access_state->frames = frames;
+    access_state->vulkan = vulkan;
+    access_state->frame  = frame;
+    auto state_ptr       = rstd::move(access_state).into_raw().as_raw_ptr();
+    return Ok(VkFrameAccess(state_ptr,
+                            VkFrameView {
+                                .img          = frame->img,
+                                .access       = reinterpret_cast<rstd::uint32_t*>(frame->access),
+                                .layout       = frame->layout,
+                                .sem          = frame->sem,
+                                .sem_value    = frame->sem_value,
+                                .queue_family = frame->queue_family,
+                                .plane_count  = frame->img[1] != VK_NULL_HANDLE ? u32(2) : u32(1),
+                                .width        = info_.width,
+                                .height       = info_.height,
+                                .pts_seconds  = info_.pts_seconds,
+                                .colorspace   = info_.colorspace,
+                                .color_range  = info_.color_range,
+                                .bit_depth    = info_.bit_depth,
+                            }));
+}
+
 struct DrmFrameLease::State {
     FramePtr source;
     FramePtr mapped;
@@ -918,7 +1011,7 @@ auto VideoDecoder::build_internal(InputSpec input, u32 target_width, u32 target_
     return Some(rstd::move(self));
 }
 
-int VideoDecoder::next_vk_frame_(VkFrameView& out, Error* err) {
+int VideoDecoder::next_vk_frame_(VkFrameInfo& out, Error* err) {
     if (kind_ != FrameKind::VulkanShared) {
         fail(err, "next_vk_frame called on non-shared-device decoder"_str);
         return -1;
@@ -939,17 +1032,10 @@ int VideoDecoder::next_vk_frame_(VkFrameView& out, Error* err) {
                 fail(err, "next_vk_frame: decoder produced non-vulkan frame"_str);
                 return -1;
             }
-            auto* vkf        = reinterpret_cast<AVVkFrame*>(st.src_frame->data[0]);
-            out.img          = vkf->img;
-            out.layout       = vkf->layout;
-            out.sem          = vkf->sem;
-            out.sem_value    = vkf->sem_value;
-            out.queue_family = vkf->queue_family;
-            out.plane_count  = vkf->img[1] != VK_NULL_HANDLE ? u32(2) : u32(1);
-            out.width        = u32(static_cast<rstd::uint32_t>(st.src_frame->width));
-            out.height       = u32(static_cast<rstd::uint32_t>(st.src_frame->height));
-            out.colorspace   = map_colorspace(st.src_frame->colorspace);
-            out.color_range  = map_range(st.src_frame->color_range);
+            out.width       = u32(static_cast<rstd::uint32_t>(st.src_frame->width));
+            out.height      = u32(static_cast<rstd::uint32_t>(st.src_frame->height));
+            out.colorspace  = map_colorspace(st.src_frame->colorspace);
+            out.color_range = map_range(st.src_frame->color_range);
             /* Look up the AVHWFramesContext's sw_format to know whether
              * the GPU images we're about to sample are 8-bit (NV12) or
              * 10-bit (P010). Both are 2-image disjoint formats here. */
@@ -1226,13 +1312,23 @@ auto VideoDecoder::next_frame(Nv12Frame& out) -> Result<NextFrame, Error> {
     return Ok(NextFrame::Ok);
 }
 
-auto VideoDecoder::next_vk_frame(VkFrameView& out) -> Result<NextFrame, Error> {
-    Error err;
-    int   rc = next_vk_frame_(out, &err);
+auto VideoDecoder::next_vk_frame() -> Result<VkFramePull, Error> {
+    VkFrameInfo out;
+    Error       err;
+    int         rc = next_vk_frame_(out, &err);
     if (rc < 0) return Err(rstd::move(err));
-    if (rc == 1) return Ok(NextFrame::Eof);
-    if (rc == 2) return Ok(NextFrame::Looped);
-    return Ok(NextFrame::Ok);
+    if (rc == 1) return Ok(VkFramePull { .status = NextFrame::Eof, .frame = None() });
+
+    FramePtr source(av_frame_clone(state_->src_frame.get()));
+    if (! source) return Err(Error("av_frame_clone(Vulkan lease) failed"_str));
+
+    auto lease_state    = Box<VkFrameLease::State>::make();
+    lease_state->source = rstd::move(source);
+    auto state_ptr      = rstd::move(lease_state).into_raw().as_raw_ptr();
+    return Ok(VkFramePull {
+        .status = rc == 2 ? NextFrame::Looped : NextFrame::Ok,
+        .frame  = Some(VkFrameLease(state_ptr, rstd::move(out))),
+    });
 }
 
 auto VideoDecoder::next_vaapi_frame() -> Result<VaapiFramePull, Error> {

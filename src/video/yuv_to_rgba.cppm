@@ -142,23 +142,7 @@ public:
                      const ColorMatrix& cm, ConvertTarget target)
         -> Result<ConversionSubmission, Error>;
 
-    struct VkFrameImports {
-        VkImage         y_image;
-        VkImage         uv_image;
-        VkSemaphore     y_sem;
-        VkSemaphore     uv_sem;
-        rstd::uint64_t* y_sem_val_in_out;
-        rstd::uint64_t* uv_sem_val_in_out;
-        VkImageLayout*  y_layout_in_out;
-        VkImageLayout*  uv_layout_in_out;
-        rstd::uint32_t* y_qf_in_out;
-        rstd::uint32_t* uv_qf_in_out;
-        u32             src_w;
-        u32             src_h;
-        // 8 → R8 / R8G8 image views (NV12). 16 → R16 / R16G16 (P010 / P016).
-        u32 bit_depth;
-    };
-    auto submit_av_vk_frame(ConversionReservation&& reservation, const VkFrameImports& imports,
+    auto submit_av_vk_frame(ConversionReservation&& reservation, VkFrameLease&& frame,
                             const ColorMatrix& cm) -> Result<ConversionSubmission, Error>;
 
     auto configure_pipeline(ConversionLimits limits) -> Result<empty, Error>;
@@ -181,7 +165,7 @@ private:
     int  convert_nv12_(VkImage dst, rstd::uint32_t dst_w, rstd::uint32_t dst_h,
                        const rstd::uint8_t* nv12, usize nv12_size, const ColorMatrix& cm,
                        ConvertTarget target, Error* err);
-    auto convert_av_vk_frame_(ConversionReservation& reservation, const VkFrameImports& imports,
+    auto convert_av_vk_frame_(ConversionReservation& reservation, const VkFrameView& frame,
                               const ColorMatrix& cm) -> Result<int, Error>;
     void publish_submission(VkImage dst, u32 dst_w, u32 dst_h, ConvertTarget target,
                             u64 completion_value);

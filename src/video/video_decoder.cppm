@@ -30,8 +30,18 @@ enum class NextFrame
     Eof,
 };
 
+struct VkFrameInfo {
+    u32 width;
+    u32 height;
+    f64 pts_seconds { -1.0 };
+    u32 colorspace {};
+    u32 color_range {};
+    u32 bit_depth { 8 };
+};
+
 struct VkFrameView {
     VkImage*        img;
+    rstd::uint32_t* access;
     VkImageLayout*  layout;
     VkSemaphore*    sem;
     rstd::uint64_t* sem_value;
@@ -43,6 +53,63 @@ struct VkFrameView {
     u32             colorspace {};
     u32             color_range {};
     u32             bit_depth { 8 };
+};
+
+class VkFrameLease;
+
+class VkFrameAccess {
+public:
+    VkFrameAccess(const VkFrameAccess&)            = delete;
+    VkFrameAccess& operator=(const VkFrameAccess&) = delete;
+    VkFrameAccess(VkFrameAccess&& other) noexcept;
+    VkFrameAccess& operator=(VkFrameAccess&& other) noexcept;
+    ~VkFrameAccess();
+
+    const VkFrameView& view() const noexcept { return view_; }
+    bool               valid() const noexcept { return state_ != nullptr; }
+
+    struct State;
+
+private:
+    friend class VkFrameLease;
+
+    VkFrameAccess(State* state, VkFrameView view) noexcept
+        : state_(state), view_(rstd::move(view)) {}
+
+    void reset() noexcept;
+
+    State*      state_ { nullptr };
+    VkFrameView view_;
+};
+
+class VkFrameLease {
+public:
+    VkFrameLease(const VkFrameLease&)            = delete;
+    VkFrameLease& operator=(const VkFrameLease&) = delete;
+    VkFrameLease(VkFrameLease&& other) noexcept;
+    VkFrameLease& operator=(VkFrameLease&& other) noexcept;
+    ~VkFrameLease();
+
+    const VkFrameInfo& info() const noexcept { return info_; }
+    bool               valid() const noexcept { return state_ != nullptr; }
+    auto               lock() const -> Result<VkFrameAccess, Error>;
+
+    struct State;
+
+private:
+    friend class VideoDecoder;
+
+    VkFrameLease(State* state, VkFrameInfo info) noexcept: state_(state), info_(rstd::move(info)) {}
+
+    void reset() noexcept;
+
+    State*      state_ { nullptr };
+    VkFrameInfo info_;
+};
+
+struct VkFramePull {
+    NextFrame            status { NextFrame::Ok };
+    Option<VkFrameLease> frame;
 };
 
 enum class HwAccel
@@ -222,7 +289,7 @@ public:
     VideoDecoder& operator=(const VideoDecoder&) = delete;
 
     auto next_frame(Nv12Frame& out) -> Result<NextFrame, Error>;
-    auto next_vk_frame(VkFrameView& out) -> Result<NextFrame, Error>;
+    auto next_vk_frame() -> Result<VkFramePull, Error>;
     auto next_vaapi_frame() -> Result<VaapiFramePull, Error>;
     auto next_drm_frame() -> Result<DrmFramePull, Error>;
     auto seek(f64 seconds) -> Result<empty, Error>;
@@ -263,7 +330,7 @@ private:
         -> Option<Box<VideoDecoder>>;
 
     int next_frame_(Nv12Frame& out, Error* err);
-    int next_vk_frame_(VkFrameView& out, Error* err);
+    int next_vk_frame_(VkFrameInfo& out, Error* err);
     int next_vaapi_frame_(VaapiFrameView& out, Error* err);
 
     StateOwner state_;
