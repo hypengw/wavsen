@@ -440,11 +440,19 @@ bool ensure_sws(VideoDecoder::State& st, int src_w, int src_h, AVPixelFormat src
     return true;
 }
 
+void reset_after_seek(VideoDecoder::State& st) {
+    avcodec_flush_buffers(st.cctx.get());
+    av_packet_unref(st.pkt.get());
+    av_frame_unref(st.src_frame.get());
+    if (st.sw_frame) av_frame_unref(st.sw_frame.get());
+    st.flushing           = false;
+    st.decoder_generation = next_decoder_generation();
+}
+
 bool seek_to_start(VideoDecoder::State& st) {
     int rc = av_seek_frame(st.fmt.get(), -1, 0, AVSEEK_FLAG_BACKWARD);
     if (rc < 0) return false;
-    avcodec_flush_buffers(st.cctx.get());
-    st.flushing = false;
+    reset_after_seek(st);
     return true;
 }
 
@@ -888,7 +896,7 @@ auto VideoDecoder::build_internal(InputSpec input, u32 target_width, u32 target_
             av_packet_free(&probe);
 
             if (av_seek_frame(self->state_->fmt.get(), -1, 0, AVSEEK_FLAG_BACKWARD) >= 0) {
-                avcodec_flush_buffers(self->state_->cctx.get());
+                reset_after_seek(*self->state_);
             }
         }
 
@@ -1288,11 +1296,7 @@ auto VideoDecoder::seek(f64 seconds) -> Result<empty, Error> {
         return Err(Error(rstd::format("av_seek_frame: {}", av_err_str(rc).as_str())));
     }
 
-    avcodec_flush_buffers(st.cctx.get());
-    av_packet_unref(st.pkt.get());
-    av_frame_unref(st.src_frame.get());
-    if (st.sw_frame) av_frame_unref(st.sw_frame.get());
-    st.flushing = false;
+    reset_after_seek(st);
     return Ok(empty {});
 }
 
