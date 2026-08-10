@@ -1,7 +1,7 @@
 build/
 build-*/
-/.tenon/
-/tenon.lock
+/.lito/
+/lito.lock
 .cache/
 compile_commands.json
 .vscode/
