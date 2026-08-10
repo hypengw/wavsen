@@ -1573,6 +1573,20 @@ auto YuvToRgba::convert_av_vk_frame_(ConversionReservation& reservation, const V
     };
     const rstd::uint32_t wait_count = sem_shared ? 1u : 2u;
 
+    /* FFmpeg Vulkan decode on RADV has produced intermittent stale frames when
+     * readiness is consumed only by the conversion queue. Complete source
+     * readiness on the host; the queue wait below preserves AVVkFrame handoff. */
+    VkSemaphoreWaitInfoKHR source_wait {};
+    source_wait.sType          = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO_KHR;
+    source_wait.semaphoreCount = wait_count;
+    source_wait.pSemaphores    = wait_sems;
+    source_wait.pValues        = wait_vals;
+    if (const auto result =
+            device_dispatch_.vkWaitSemaphoresKHR(*device_, &source_wait, ~rstd::uint64_t(0));
+        result != VK_SUCCESS) {
+        return Err(Error { vk_error("vkWaitSemaphores(AVVkFrame)"_str, result) });
+    }
+
     /* Signal FFmpeg timeline semaphore(s) and converter completion.
      * Bridge handoff waits on completion before signaling its binary semaphore. */
     auto next_completion_value = completion_value_ + u64(1);
