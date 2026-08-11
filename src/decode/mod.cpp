@@ -2,10 +2,7 @@ module wavsen.decode;
 
 import rstd.cppstd;
 import rstd;
-import avutil;
-import avcodec;
-import avformat;
-import swscale;
+import wavsen.ffi.ffmpeg;
 
 using namespace rstd::prelude;
 

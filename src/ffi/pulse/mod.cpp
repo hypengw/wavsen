@@ -2,7 +2,7 @@ module;
 
 #include <pulse/pulseaudio.h>
 
-module pulse;
+module wavsen.ffi.pulse;
 
 import rstd;
 import rstd.dlopn;

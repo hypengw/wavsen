@@ -4,7 +4,7 @@ extern "C" {
 #include <libswresample/swresample.h>
 }
 
-export module swresample;
+export module wavsen.ffi.ffmpeg:swresample;
 
 export {
     using ::SwrContext;

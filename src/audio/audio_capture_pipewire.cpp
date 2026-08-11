@@ -2,7 +2,7 @@ module wavsen.audio.capture;
 
 import rstd;
 import rstd.log;
-import pipewire;
+import wavsen.ffi.pipewire;
 import wavsen.audio.capture_window;
 
 using namespace rstd::prelude;

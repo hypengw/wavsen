@@ -4,7 +4,7 @@ extern "C" {
 #include <libswscale/swscale.h>
 }
 
-export module swscale;
+export module wavsen.ffi.ffmpeg:swscale;
 
 #if LIBSWSCALE_VERSION_MAJOR < 9
 constexpr auto M_SWS_FAST_BILINEAR = SWS_FAST_BILINEAR;

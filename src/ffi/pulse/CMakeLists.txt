@@ -10,9 +10,9 @@ target_compile_options(wavsen_ffi_pulse PRIVATE
 
 target_sources(wavsen_ffi_pulse
     PUBLIC FILE_SET CXX_MODULES FILES
-        pulse.cppm
+        mod.cppm
     PRIVATE
-        pulse.cpp
+        mod.cpp
 )
 
 target_include_directories(wavsen_ffi_pulse SYSTEM PRIVATE

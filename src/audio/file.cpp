@@ -7,10 +7,7 @@ import :byte_stream;
 import :core;  // DeviceDesc
 import :mixer; // SoundStream
 import :file;
-import avutil;
-import avcodec;
-import avformat;
-import swresample;
+import wavsen.ffi.ffmpeg;
 
 using namespace rstd::prelude;
 

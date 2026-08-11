@@ -3,7 +3,7 @@ module;
 #include <pipewire/pipewire.h>
 #include <spa/param/audio/format-utils.h>
 
-export module pipewire;
+export module wavsen.ffi.pipewire;
 export import rstd.core;
 
 export namespace wavsen::ffi::pipewire

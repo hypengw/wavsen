@@ -1,7 +1,6 @@
 export module wavsen.video:yuv_to_rgba;
 
 import rstd;
-import vulkan;
 import vvk;
 import :vk_device;     // Error
 import :video_decoder; // DrmFrameView

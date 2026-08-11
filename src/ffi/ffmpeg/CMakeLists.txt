@@ -1,5 +1,5 @@
 # wavsen::ffi::ffmpeg — C++20 module wrappers for libav* + swscale (+ swresample).
-# Consumers `import avutil; import avcodec; import avformat; import swscale; [import swresample;]`.
+# Consumers import wavsen.ffi.ffmpeg.
 
 add_library(wavsen_ffi_ffmpeg STATIC)
 add_library(wavsen::ffi::ffmpeg ALIAS wavsen_ffi_ffmpeg)
@@ -11,6 +11,7 @@ target_compile_options(wavsen_ffi_ffmpeg PRIVATE
 
 target_sources(wavsen_ffi_ffmpeg
     PUBLIC FILE_SET CXX_MODULES FILES
+        mod.cppm
         avutil.cppm
         avcodec.cppm
         avformat.cppm
@@ -24,10 +25,7 @@ target_link_libraries(wavsen_ffi_ffmpeg
         PkgConfig::WAVSEN_AVUTIL
         PkgConfig::WAVSEN_SWSCALE
     PRIVATE
-        # avutil.cppm GMF #includes <vulkan/vulkan.h> for hwcontext_vulkan.h.
-        # Consumers that touch AVVulkanDeviceContext-bearing fields need to
-        # link vvk::ffi::vulkan separately (or include vulkan.h themselves).
-        vvk::ffi::vulkan
+        vvk::vvk
 )
 
 # swresample is optional at the workspace level (only audio targets need it).

@@ -2,7 +2,7 @@ module;
 
 #include <pulse/pulseaudio.h>
 
-export module pulse;
+export module wavsen.ffi.pulse;
 export import rstd.core;
 
 export namespace wavsen::ffi::pulse

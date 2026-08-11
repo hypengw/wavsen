@@ -18,7 +18,7 @@ inline constexpr int k_AVFMT_FLAG_CUSTOM_IO = AVFMT_FLAG_CUSTOM_IO;
 #undef AVSEEK_SIZE
 #undef AVFMT_FLAG_CUSTOM_IO
 
-export module avformat;
+export module wavsen.ffi.ffmpeg:avformat;
 
 export {
     inline constexpr int AVSEEK_FLAG_BACKWARD = _wv_avformat::k_AVSEEK_FLAG_BACKWARD;

@@ -46,10 +46,10 @@ target_compile_features(wavsen_decode PUBLIC cxx_std_20)
 
 target_sources(wavsen_decode
     PUBLIC FILE_SET CXX_MODULES FILES
-        src/decode/decoder.cppm
+        src/decode/mod.cppm
 )
 target_sources(wavsen_decode PRIVATE
-    src/decode/decoder.cpp
+    src/decode/mod.cpp
 )
 
 target_link_libraries(wavsen_decode
@@ -70,7 +70,7 @@ add_library(wavsen::video ALIAS wavsen_video)
 target_compile_features(wavsen_video PUBLIC cxx_std_20)
 target_sources(wavsen_video
     PUBLIC FILE_SET CXX_MODULES FILES
-        src/video/wavsen_video.cppm
+        src/video/mod.cppm
         src/video/vk_device.cppm
         src/video/video_decoder.cppm
         src/video/yuv_to_rgba.cppm
@@ -107,29 +107,28 @@ target_compile_features(wavsen_audio PUBLIC cxx_std_20)
 target_sources(wavsen_audio
     PUBLIC FILE_SET CXX_MODULES FILES
         src/audio/byte_stream.cppm
-        src/audio/audio_device.cppm
-        src/audio/sound_manager.cppm
-        src/audio/stream_decoder.cppm
-        src/audio/av_player.cppm
-        src/audio/audio_capture.cppm
-        # aggregator must come last (depends on the partitions above)
-        src/audio/audio.cppm
+        src/audio/core.cppm
+        src/audio/mixer.cppm
+        src/audio/file.cppm
+        src/audio/av_sync.cppm
+        src/audio/capture.cppm
+        src/audio/mod.cppm
 )
 target_sources(wavsen_audio
     PRIVATE FILE_SET wavsen_audio_internal_modules TYPE CXX_MODULES FILES
-        src/audio/audio_gain.cppm
-        src/audio/audio_capture_window.cppm
+        src/audio/gain.cppm
+        src/audio/capture_window.cppm
 )
 target_sources(wavsen_audio PRIVATE
-    src/audio/stream_decoder.cpp
-    src/audio/sound_manager.cpp
-    src/audio/av_player.cpp
+    src/audio/file.cpp
+    src/audio/mixer.cpp
+    src/audio/av_sync.cpp
 )
 
 if(WAVSEN_AUDIO_BACKEND STREQUAL "pulse")
     target_sources(wavsen_audio PRIVATE
-        src/audio/audio_device_pulse.cpp
-        src/audio/audio_capture_pulse.cpp
+        src/audio/mod.cpp
+        src/audio/capture.cpp
     )
     set(_wavsen_audio_backend_target wavsen::ffi::pulse)
 else()
@@ -160,8 +159,8 @@ if(WAVSEN_BUILD_TESTS)
     target_compile_features(wavsen_audio_capture_window_tests PRIVATE cxx_std_20)
     target_sources(wavsen_audio_capture_window_tests
         PRIVATE FILE_SET CXX_MODULES FILES
-            src/audio/audio_capture.cppm
-            src/audio/audio_capture_window.cppm
+            src/audio/capture.cppm
+            src/audio/capture_window.cppm
     )
     target_link_libraries(wavsen_audio_capture_window_tests PRIVATE rstd::rstd)
     add_test(NAME wavsen_audio_capture_window_tests
@@ -173,7 +172,7 @@ if(WAVSEN_BUILD_TESTS)
     target_compile_features(wavsen_audio_gain_tests PRIVATE cxx_std_20)
     target_sources(wavsen_audio_gain_tests
         PRIVATE FILE_SET CXX_MODULES FILES
-            src/audio/audio_gain.cppm
+            src/audio/gain.cppm
     )
     target_link_libraries(wavsen_audio_gain_tests PRIVATE rstd::rstd)
     add_test(NAME wavsen_audio_gain_tests

@@ -46,7 +46,7 @@ inline constexpr AVPixelFormat k_AV_PIX_FMT_P016 = AV_PIX_FMT_P016;
 #undef AV_PIX_FMT_P010
 #undef AV_PIX_FMT_P016
 
-export module avutil;
+export module wavsen.ffi.ffmpeg:avutil;
 
 export {
     inline constexpr int     AV_TIME_BASE             = _wv_avutil::k_AV_TIME_BASE;

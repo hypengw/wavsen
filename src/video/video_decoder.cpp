@@ -3,13 +3,10 @@ module wavsen.video;
 import rstd;
 import rstd.cppstd;
 import rstd.log;
-import vulkan;
+import vvk;
 import :vk_device;
 import :video_decoder;
-import avutil;
-import avcodec;
-import avformat;
-import swscale;
+import wavsen.ffi.ffmpeg;
 
 using namespace rstd::prelude;
 using namespace rstd::literals;

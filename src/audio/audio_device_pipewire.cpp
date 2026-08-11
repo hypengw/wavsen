@@ -5,7 +5,7 @@ module wavsen.audio;
 import rstd.cppstd;
 import rstd;
 import rstd.log;
-import pipewire;
+import wavsen.ffi.pipewire;
 import wavsen.audio.gain;
 import :core;
 

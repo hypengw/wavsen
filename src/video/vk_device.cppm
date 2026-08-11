@@ -1,8 +1,7 @@
 export module wavsen.video:vk_device;
 
 import rstd;
-export import vulkan;
-import vvk;
+export import vvk;
 
 using namespace rstd::prelude;
 

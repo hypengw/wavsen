@@ -10,9 +10,9 @@ target_compile_options(wavsen_ffi_pipewire PRIVATE
 
 target_sources(wavsen_ffi_pipewire
     PUBLIC FILE_SET CXX_MODULES FILES
-        pipewire.cppm
+        mod.cppm
     PRIVATE
-        pipewire.cpp
+        mod.cpp
 )
 
 target_include_directories(wavsen_ffi_pipewire SYSTEM PRIVATE

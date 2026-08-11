@@ -3,7 +3,7 @@ module;
 #include <pipewire/pipewire.h>
 #include <spa/param/audio/format-utils.h>
 
-module pipewire;
+module wavsen.ffi.pipewire;
 
 import rstd;
 import rstd.dlopn;

@@ -1,14 +1,11 @@
 module;
-
-/* The DRM import path needs external-memory and explicit-modifier types
- * beyond the curated vvk::ffi::vulkan module surface. */
-#include <vulkan/vulkan.h>
+#include <cstdint>
 #include "nv12_to_rgba.spv.h" // generated at build time by glslangValidator
 
 module wavsen.video;
 
 import rstd;
-import vulkan;
+import vvk;
 import :vk_device;
 import :yuv_to_rgba;
 

@@ -13,7 +13,7 @@ extern "C" {
 #include <libavutil/version.h>
 }
 
-export module avcodec;
+export module wavsen.ffi.ffmpeg:avcodec;
 
 namespace _wv_avcodec
 {
