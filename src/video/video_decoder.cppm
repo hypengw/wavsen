@@ -41,7 +41,6 @@ struct VkFrameInfo {
 
 struct VkFrameView {
     VkImage*        img;
-    rstd::uint32_t* access;
     VkImageLayout*  layout;
     VkSemaphore*    sem;
     rstd::uint64_t* sem_value;
@@ -56,6 +55,7 @@ struct VkFrameView {
 };
 
 class VkFrameLease;
+class YuvToRgba;
 
 class VkFrameAccess {
 public:
@@ -72,11 +72,13 @@ public:
 
 private:
     friend class VkFrameLease;
+    friend class YuvToRgba;
 
     VkFrameAccess(State* state, VkFrameView view) noexcept
         : state_(state), view_(rstd::move(view)) {}
 
     void reset() noexcept;
+    void clear_access(u32 plane) noexcept;
 
     State*      state_ { nullptr };
     VkFrameView view_;

@@ -266,8 +266,6 @@ struct VkFrameAccess::State {
     AVVkFrame*             frame { nullptr };
 };
 
-static_assert(sizeof(static_cast<AVVkFrame*>(nullptr)->access[0]) == sizeof(rstd::uint32_t));
-
 void VkFrameAccess::reset() noexcept {
     if (! state_) return;
     auto state = Box<State>::from_raw(mut_ptr<State>::from_raw_parts(state_));
@@ -287,6 +285,10 @@ VkFrameAccess& VkFrameAccess::operator=(VkFrameAccess&& other) noexcept {
 }
 
 VkFrameAccess::~VkFrameAccess() { reset(); }
+
+void VkFrameAccess::clear_access(u32 plane) noexcept {
+    state_->frame->access[plane.to_primitive()] = {};
+}
 
 void VkFrameLease::reset() noexcept {
     if (! state_) return;
@@ -333,7 +335,6 @@ auto VkFrameLease::lock() const -> Result<VkFrameAccess, Error> {
     return Ok(VkFrameAccess(state_ptr,
                             VkFrameView {
                                 .img          = frame->img,
-                                .access       = reinterpret_cast<rstd::uint32_t*>(frame->access),
                                 .layout       = frame->layout,
                                 .sem          = frame->sem,
                                 .sem_value    = frame->sem_value,

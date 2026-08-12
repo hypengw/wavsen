@@ -1264,7 +1264,7 @@ int YuvToRgba::convert_nv12_(VkImage dst, rstd::uint32_t dst_w, rstd::uint32_t d
     return sync_fd;
 }
 
-auto YuvToRgba::convert_av_vk_frame_(ConversionReservation& reservation, const VkFrameView& frame,
+auto YuvToRgba::convert_av_vk_frame_(ConversionReservation& reservation, VkFrameAccess& access,
                                      const ColorMatrix& cm) -> Result<int, Error> {
     if (! reservation.valid() || reservation.state_->owner != this ||
         ! reservation.state_->context || ! reservation.state_->target ||
@@ -1272,6 +1272,7 @@ auto YuvToRgba::convert_av_vk_frame_(ConversionReservation& reservation, const V
         reservation.state_->context->completion.is_some()) {
         return Err(Error { "convert_av_vk_frame: invalid reservation"_str });
     }
+    const auto& frame       = access.view();
     const auto& destination = reservation.state_->destination;
     const auto  dst         = destination.image;
     const auto  dst_w       = destination.width.to_primitive();
@@ -1280,14 +1281,12 @@ auto YuvToRgba::convert_av_vk_frame_(ConversionReservation& reservation, const V
     if (dst == VK_NULL_HANDLE) {
         return Err(Error { "convert_av_vk_frame: dst null"_str });
     }
-    const VkImage     y_image         = frame.img[0];
-    const VkImage     uv_image        = frame.plane_count > u32(1) ? frame.img[1] : VK_NULL_HANDLE;
-    const VkSemaphore y_sem           = frame.sem[0];
-    const VkSemaphore uv_sem          = frame.plane_count > u32(1) ? frame.sem[1] : frame.sem[0];
-    auto*             y_access_in_out = &frame.access[0];
-    auto* uv_access_in_out = frame.plane_count > u32(1) ? &frame.access[1] : &frame.access[0];
-    auto* y_sem_val_in_out = &frame.sem_value[0];
-    auto* uv_sem_val_in_out =
+    const VkImage     y_image          = frame.img[0];
+    const VkImage     uv_image         = frame.plane_count > u32(1) ? frame.img[1] : VK_NULL_HANDLE;
+    const VkSemaphore y_sem            = frame.sem[0];
+    const VkSemaphore uv_sem           = frame.plane_count > u32(1) ? frame.sem[1] : frame.sem[0];
+    auto*             y_sem_val_in_out = &frame.sem_value[0];
+    auto*             uv_sem_val_in_out =
         frame.plane_count > u32(1) ? &frame.sem_value[1] : &frame.sem_value[0];
     auto* y_layout_in_out  = &frame.layout[0];
     auto* uv_layout_in_out = frame.plane_count > u32(1) ? &frame.layout[1] : &frame.layout[0];
@@ -1649,10 +1648,10 @@ auto YuvToRgba::convert_av_vk_frame_(ConversionReservation& reservation, const V
     /* Update the AVVkFrame's tracked state — caller's contract. */
     *y_sem_val_in_out  = y_signal_val;
     *uv_sem_val_in_out = uv_signal_val;
-    *y_access_in_out   = 0;
-    *uv_access_in_out  = 0;
-    *y_layout_in_out   = VK_IMAGE_LAYOUT_GENERAL;
-    *uv_layout_in_out  = VK_IMAGE_LAYOUT_GENERAL;
+    access.clear_access(u32(0));
+    if (frame.plane_count > u32(1)) access.clear_access(u32(1));
+    *y_layout_in_out  = VK_IMAGE_LAYOUT_GENERAL;
+    *uv_layout_in_out = VK_IMAGE_LAYOUT_GENERAL;
     // CONCURRENT pool: both stay IGNORED. Cross-family QFOT: we just
     // released back to the family AVVkFrame had on entry — preserve it.
     *y_qf_in_out  = y_avvk_qf;
@@ -2194,7 +2193,7 @@ auto YuvToRgba::submit_av_vk_frame(ConversionReservation&& reservation, VkFrameL
     auto accessed = frame.lock();
     if (accessed.is_err()) return Err(rstd::move(accessed).unwrap_err());
     auto access    = rstd::move(accessed).unwrap();
-    auto converted = convert_av_vk_frame_(reservation, access.view(), cm);
+    auto converted = convert_av_vk_frame_(reservation, access, cm);
     if (converted.is_err()) return Err(rstd::move(converted).unwrap_err());
     auto fd                               = rstd::move(converted).unwrap();
     reservation.state_->context->vk_frame = Some(rstd::move(frame));

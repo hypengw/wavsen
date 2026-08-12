@@ -164,7 +164,7 @@ private:
     int  convert_nv12_(VkImage dst, rstd::uint32_t dst_w, rstd::uint32_t dst_h,
                        const rstd::uint8_t* nv12, usize nv12_size, const ColorMatrix& cm,
                        ConvertTarget target, Error* err);
-    auto convert_av_vk_frame_(ConversionReservation& reservation, const VkFrameView& frame,
+    auto convert_av_vk_frame_(ConversionReservation& reservation, VkFrameAccess& access,
                               const ColorMatrix& cm) -> Result<int, Error>;
     void publish_submission(VkImage dst, u32 dst_w, u32 dst_h, ConvertTarget target,
                             u64 completion_value);
