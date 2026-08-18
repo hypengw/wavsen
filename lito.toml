@@ -72,7 +72,10 @@ module = "libpulse"
 version = ">= 14.0"
 visibility = "private"
 
-[external-dependencies.cmake.wavsen-shader]
-find-package = "WavsenShader"
+[external-sources.wavsen-shader]
 path = "shaders"
+
+[external-dependencies.cmake.wavsen-shader]
+package = "WavsenShader"
+source = "wavsen-shader"
 targets = [{ name = "WavsenShader::nv12_to_rgba", visibility = "private" }]
