@@ -70,6 +70,7 @@ visibility = "public"
 [external-dependencies.pkg-config.libpulse]
 module = "libpulse"
 version = ">= 14.0"
+usage = "compile"
 visibility = "private"
 
 [external-sources.wavsen-shader]
