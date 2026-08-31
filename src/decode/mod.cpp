@@ -129,6 +129,7 @@ auto extract_thumbnail(ref<str> path, const ThumbOptions& opts) -> Result<RgbaIm
         return Err(mk(ErrorKind::DecoderInit,
                       rstd::format("avcodec_parameters_to_context: {}", av_err_str(rc))));
     }
+    cctx->pkt_timebase = st->time_base;
     if (int rc = avcodec_open2(cctx.get(), dec, nullptr); rc < 0) {
         return Err(mk(ErrorKind::DecoderInit, rstd::format("avcodec_open2: {}", av_err_str(rc))));
     }

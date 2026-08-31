@@ -907,6 +907,7 @@ auto VideoDecoder::build_internal(InputSpec input, u32 target_width, u32 target_
         fail(err, rstd::format("avcodec_parameters_to_context: {}", av_err_str(rc).as_str()));
         return None();
     }
+    self->state_->cctx->pkt_timebase = st->time_base;
 
     /* Hand the codec its own ref on the hwdevice the trial loop picked
      * (if any). Sw mode has hwd == nullptr — codec stays sw. */

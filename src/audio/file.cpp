@@ -104,6 +104,7 @@ public:
             rstd::log::error("wavsen::audio: avcodec_parameters_to_context failed");
             return false;
         }
+        cctx_->pkt_timebase = fmt_ctx_->streams[sidx]->time_base;
         if (avcodec_open2(cctx_, dec, nullptr) < 0) {
             rstd::log::error("wavsen::audio: avcodec_open2 failed");
             return false;
