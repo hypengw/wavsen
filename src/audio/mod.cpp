@@ -364,19 +364,38 @@ private:
 
     void apply_playing() {
         if (! stream_ || api_->pa_stream_get_state(stream_) != pulse_ffi::stream_ready) return;
-        auto* operation = api_->pa_stream_cork(stream_, desired_.playing ? 0 : 1, nullptr, nullptr);
+        if (cork_pending_) return;
+
+        const int corked = api_->pa_stream_is_corked(stream_);
+        if (corked < 0) {
+            fail(rstd::format("pa_stream_is_corked failed: {}",
+                              api_->pa_strerror(api_->pa_context_errno(ctx_))));
+            return;
+        }
+        if ((corked == 0) == desired_.playing) {
+            emit_state(desired_.playing ? AudioDeviceState::ReadyPlaying
+                                        : AudioDeviceState::ReadyPaused);
+            return;
+        }
+
+        cork_pending_        = true;
+        cork_pending_stream_ = stream_;
+        auto* operation =
+            api_->pa_stream_cork(stream_, desired_.playing ? 0 : 1, &Impl::on_cork_complete, this);
         if (! operation) {
+            cork_pending_        = false;
+            cork_pending_stream_ = nullptr;
             fail(rstd::format("pa_stream_cork failed: {}",
                               api_->pa_strerror(api_->pa_context_errno(ctx_))));
             return;
         }
         api_->pa_operation_unref(operation);
-        emit_state(desired_.playing ? AudioDeviceState::ReadyPlaying
-                                    : AudioDeviceState::ReadyPaused);
     }
 
     void cleanup_stream() {
         if (! stream_) return;
+        cork_pending_        = false;
+        cork_pending_stream_ = nullptr;
         api_->pa_stream_set_state_callback(stream_, nullptr, nullptr);
         api_->pa_stream_set_write_callback(stream_, nullptr, nullptr);
         api_->pa_stream_disconnect(stream_);
@@ -472,6 +491,31 @@ private:
         }
     }
 
+    static void on_cork_complete(pulse_ffi::pa_stream* stream, int success, void* user) {
+        auto* self = static_cast<Impl*>(user);
+        if (stream != self->stream_ || stream != self->cork_pending_stream_) return;
+
+        self->cork_pending_        = false;
+        self->cork_pending_stream_ = nullptr;
+        if (! success) {
+            self->fail(
+                rstd::format("pa_stream_cork failed: {}",
+                             self->api_->pa_strerror(self->api_->pa_context_errno(self->ctx_))));
+            return;
+        }
+
+        const int corked = self->api_->pa_stream_is_corked(stream);
+        if (corked < 0) {
+            self->fail(
+                rstd::format("pa_stream_is_corked failed: {}",
+                             self->api_->pa_strerror(self->api_->pa_context_errno(self->ctx_))));
+            return;
+        }
+        const bool playing = corked == 0;
+        self->emit_state(playing ? AudioDeviceState::ReadyPlaying : AudioDeviceState::ReadyPaused);
+        if (playing != self->desired_.playing) self->apply_playing();
+    }
+
     static void on_write(pulse_ffi::pa_stream* stream, size_t bytes, void* user) {
         auto* self = static_cast<Impl*>(user);
         if (bytes == 0 || self->desc_.channels == u32()) return;
@@ -534,6 +578,8 @@ private:
     u64                     stream_revision_;
     u64                     volume_scale_revision_;
     bool                    shutting_down_ {};
+    bool                    cork_pending_ {};
+    pulse_ffi::pa_stream*   cork_pending_stream_ = nullptr;
 
     Vec<std::unique_ptr<IPullChannel>> channels_;
     Vec<float>                         scratch_;

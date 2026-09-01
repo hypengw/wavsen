@@ -206,6 +206,11 @@ void AvPlayer::close_device() {
 bool AvPlayer::is_device_open() const { return impl_->desired.active; }
 
 void AvPlayer::play() {
+    const bool was_paused = impl_->paused.load(rstd::sync::atomic::Ordering::Relaxed);
+    if (was_paused) {
+        impl_->anchored.store(false, rstd::sync::atomic::Ordering::Release);
+        impl_->needs_reanchor.store(true, rstd::sync::atomic::Ordering::Release);
+    }
     impl_->paused.store(false, rstd::sync::atomic::Ordering::Relaxed);
     impl_->desired.playing = true;
     if (impl_->desired.active) (void)impl_->device.apply(impl_->desired.clone());
