@@ -84,6 +84,7 @@ struct Api {
     decltype(&::pw_stream_dequeue_buffer)  pw_stream_dequeue_buffer {};
     decltype(&::pw_stream_destroy)         pw_stream_destroy {};
     decltype(&::pw_stream_disconnect)      pw_stream_disconnect {};
+    decltype(&::pw_stream_flush)           pw_stream_flush {};
     decltype(&::pw_stream_get_time_n)      pw_stream_get_time_n {};
     decltype(&::pw_stream_new_simple)      pw_stream_new_simple {};
     decltype(&::pw_stream_queue_buffer)    pw_stream_queue_buffer {};

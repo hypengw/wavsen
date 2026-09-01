@@ -83,18 +83,20 @@ struct AudioDeviceDesiredState {
     f32                 volume_scale { f32(1.0f) };
     u64                 volume_scale_revision;
     u32                 volume_scale_fade_ms;
+    u64                 playback_buffer_revision;
 
     auto clone() const -> AudioDeviceDesiredState {
         return {
-            .generation            = generation,
-            .active                = active,
-            .playing               = playing,
-            .identity              = identity.clone(),
-            .volume                = volume,
-            .muted                 = muted,
-            .volume_scale          = volume_scale,
-            .volume_scale_revision = volume_scale_revision,
-            .volume_scale_fade_ms  = volume_scale_fade_ms,
+            .generation               = generation,
+            .active                   = active,
+            .playing                  = playing,
+            .identity                 = identity.clone(),
+            .volume                   = volume,
+            .muted                    = muted,
+            .volume_scale             = volume_scale,
+            .volume_scale_revision    = volume_scale_revision,
+            .volume_scale_fade_ms     = volume_scale_fade_ms,
+            .playback_buffer_revision = playback_buffer_revision,
         };
     }
 };

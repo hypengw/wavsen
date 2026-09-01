@@ -64,6 +64,7 @@ void load_once(LoadState& state) {
     WAVSEN_LOAD(pw_stream_dequeue_buffer);
     WAVSEN_LOAD(pw_stream_destroy);
     WAVSEN_LOAD(pw_stream_disconnect);
+    WAVSEN_LOAD(pw_stream_flush);
     WAVSEN_LOAD(pw_stream_get_time_n);
     WAVSEN_LOAD(pw_stream_new_simple);
     WAVSEN_LOAD(pw_stream_queue_buffer);

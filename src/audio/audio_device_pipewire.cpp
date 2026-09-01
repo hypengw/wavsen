@@ -238,7 +238,7 @@ private:
             start_stream();
             return;
         }
-        apply_playing();
+        reconcile_playback();
     }
 
     void apply_gain_state() {
@@ -337,12 +337,35 @@ private:
             return;
         }
 
+        applied_playback_buffer_revision_ = desired_.playback_buffer_revision;
         for (auto& channel : channels_) channel->pass_desc(desc_);
         emit_state(AudioDeviceState::Connecting);
     }
 
-    void apply_playing() {
+    void reconcile_playback() {
         if (! stream_) return;
+        if (observed_state_ != pipewire_ffi::stream_state_paused &&
+            observed_state_ != pipewire_ffi::stream_state_streaming)
+            return;
+        if (desired_.playback_buffer_revision != applied_playback_buffer_revision_) {
+            if (observed_state_ != pipewire_ffi::stream_state_paused) {
+                if (api_->pw_stream_set_active(stream_, false) < 0) {
+                    fail("pw_stream_set_active(false) failed");
+                }
+                return;
+            }
+            if (api_->pw_stream_flush(stream_, false) < 0) {
+                fail("pw_stream_flush failed");
+                return;
+            }
+            applied_playback_buffer_revision_ = desired_.playback_buffer_revision;
+        }
+
+        const bool playing = observed_state_ == pipewire_ffi::stream_state_streaming;
+        if (playing == desired_.playing) {
+            emit_state(playing ? AudioDeviceState::ReadyPlaying : AudioDeviceState::ReadyPaused);
+            return;
+        }
         if (api_->pw_stream_set_active(stream_, desired_.playing) < 0) {
             fail("pw_stream_set_active failed");
         }
@@ -351,7 +374,9 @@ private:
     void cleanup_device() {
         if (! stream_) return;
         api_->pw_stream_destroy(stream_);
-        stream_ = nullptr;
+        stream_                           = nullptr;
+        observed_state_                   = pipewire_ffi::stream_state_unconnected;
+        applied_playback_buffer_revision_ = u64();
         stream_position_frames_.store(u64(), rstd::sync::atomic::Ordering::Relaxed);
     }
 
@@ -442,7 +467,8 @@ private:
 
     static void on_state_changed(void* user, pipewire_ffi::pw_stream_state /*old_state*/,
                                  pipewire_ffi::pw_stream_state state, const char* error) {
-        auto* self = static_cast<Impl*>(user);
+        auto* self            = static_cast<Impl*>(user);
+        self->observed_state_ = state;
         switch (state) {
         case pipewire_ffi::stream_state_error:
             self->fail(error ? String::make(rstd::ffi::CStr::from_ptr(error).to_str().unwrap())
@@ -453,17 +479,11 @@ private:
             break;
         case pipewire_ffi::stream_state_paused:
             if (! self->desired_.active) break;
-            if (self->desired_.playing)
-                self->apply_playing();
-            else
-                self->emit_state(AudioDeviceState::ReadyPaused);
+            self->reconcile_playback();
             break;
         case pipewire_ffi::stream_state_streaming:
             if (! self->desired_.active) break;
-            if (! self->desired_.playing)
-                self->apply_playing();
-            else
-                self->emit_state(AudioDeviceState::ReadyPlaying);
+            self->reconcile_playback();
             break;
         case pipewire_ffi::stream_state_unconnected: break;
         }
@@ -473,11 +493,13 @@ private:
     pipewire_ffi::pw_thread_loop* loop_   = nullptr;
     pipewire_ffi::pw_stream*      stream_ = nullptr;
 
-    AudioDeviceDesiredState desired_;
-    DeviceDesc              desc_ { u32(kDefaultChannels), u32(kDefaultRate) };
-    u64                     stream_revision_;
-    u64                     volume_scale_revision_;
-    bool                    shutting_down_ {};
+    AudioDeviceDesiredState       desired_;
+    DeviceDesc                    desc_ { u32(kDefaultChannels), u32(kDefaultRate) };
+    u64                           stream_revision_;
+    u64                           volume_scale_revision_;
+    u64                           applied_playback_buffer_revision_;
+    bool                          shutting_down_ {};
+    pipewire_ffi::pw_stream_state observed_state_ { pipewire_ffi::stream_state_unconnected };
 
     Vec<std::unique_ptr<IPullChannel>> channels_;
     Vec<float>                         scratch_;

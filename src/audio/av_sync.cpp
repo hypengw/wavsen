@@ -29,6 +29,8 @@ public:
                   rstd::sync::atomic::Atomic<u64>*  desired_rate_revision,
                   rstd::sync::atomic::Atomic<u64>*  applied_rate_revision,
                   rstd::sync::atomic::Atomic<f64>*  rate_at_anchor,
+                  rstd::sync::atomic::Atomic<f64>*  desired_seek_seconds,
+                  rstd::sync::atomic::Atomic<u64>*  desired_seek_revision,
                   Box<dyn<FnMut<u64()>>>            device_pos_now)
         : decoder_(decoder),
           pts_at_anchor_(pts_at_anchor),
@@ -39,9 +41,25 @@ public:
           desired_rate_revision_(desired_rate_revision),
           applied_rate_revision_(applied_rate_revision),
           rate_at_anchor_(rate_at_anchor),
+          desired_seek_seconds_(desired_seek_seconds),
+          desired_seek_revision_(desired_seek_revision),
           device_pos_now_(rstd::move(device_pos_now)) {}
 
     auto next_pcm(void* dst, u32 frames) -> u64 override {
+        const auto desired_seek_revision =
+            desired_seek_revision_->load(rstd::sync::atomic::Ordering::Acquire);
+        if (desired_seek_revision != applied_seek_revision_) {
+            anchored_->store(false, rstd::sync::atomic::Ordering::Release);
+            needs_reanchor_->store(true, rstd::sync::atomic::Ordering::Release);
+            const auto seconds = desired_seek_seconds_->load(rstd::sync::atomic::Ordering::Acquire);
+            seek_ready_        = decoder_->seek_to(seconds);
+            applied_seek_revision_ = desired_seek_revision;
+            if (! seek_ready_) {
+                rstd::log::error("wavsen::audio::AvPlayer: failed to seek to {}", seconds);
+            }
+        }
+        if (! seek_ready_) return u64();
+
         const auto desired_revision =
             desired_rate_revision_->load(rstd::sync::atomic::Ordering::Acquire);
         if (desired_revision !=
@@ -91,8 +109,12 @@ private:
     rstd::sync::atomic::Atomic<u64>*  desired_rate_revision_;
     rstd::sync::atomic::Atomic<u64>*  applied_rate_revision_;
     rstd::sync::atomic::Atomic<f64>*  rate_at_anchor_;
+    rstd::sync::atomic::Atomic<f64>*  desired_seek_seconds_;
+    rstd::sync::atomic::Atomic<u64>*  desired_seek_revision_;
     Box<dyn<FnMut<u64()>>>            device_pos_now_;
+    u64                               applied_seek_revision_;
     bool                              rate_ready_ { true };
+    bool                              seek_ready_ { true };
 };
 
 } // namespace
@@ -124,6 +146,8 @@ public:
     rstd::sync::atomic::Atomic<u64>  desired_rate_revision { u64() };
     rstd::sync::atomic::Atomic<u64>  applied_rate_revision { u64() };
     rstd::sync::atomic::Atomic<f64>  rate_at_anchor { f64(1.0) };
+    rstd::sync::atomic::Atomic<f64>  desired_seek_seconds { f64() };
+    rstd::sync::atomic::Atomic<u64>  desired_seek_revision { u64() };
 };
 
 AvPlayer::AvPlayer(ConstructionKey, AudioClientIdentity identity)
@@ -172,6 +196,8 @@ auto AvPlayer::open(ByteStream src, bool open_device, AudioClientIdentity identi
                                                     &p->impl_->desired_rate_revision,
                                                     &p->impl_->applied_rate_revision,
                                                     &p->impl_->rate_at_anchor,
+                                                    &p->impl_->desired_seek_seconds,
+                                                    &p->impl_->desired_seek_revision,
                                                     Box<dyn<FnMut<u64()>>>::make([dev]() {
                                                        return dev->stream_position_frames();
                                                     }));
@@ -229,19 +255,16 @@ bool AvPlayer::is_paused() const {
 void AvPlayer::seek_to_start() { seek_to(f64()); }
 
 void AvPlayer::seek_to(f64 seconds) {
-    const bool was_playing = ! is_paused();
-    impl_->desired.playing = false;
-    if (impl_->desired.active) (void)impl_->device.apply(impl_->desired.clone());
-    if (impl_->decoder_ptr) {
-        impl_->decoder_ptr->seek_to(seconds);
+    if (! seconds.is_finite() || seconds < f64()) {
+        rstd::log::warn("wavsen::audio::AvPlayer: invalid seek target {}", seconds);
+        return;
     }
+    impl_->desired_seek_seconds.store(seconds, rstd::sync::atomic::Ordering::Release);
+    impl_->desired_seek_revision.fetch_add(u64(1), rstd::sync::atomic::Ordering::AcqRel);
     impl_->anchored.store(false, rstd::sync::atomic::Ordering::Release);
     impl_->needs_reanchor.store(true, rstd::sync::atomic::Ordering::Release);
-    impl_->device_pos_at_anchor.store(u64(), rstd::sync::atomic::Ordering::Relaxed);
-    if (was_playing) {
-        impl_->desired.playing = true;
-        if (impl_->desired.active) (void)impl_->device.apply(impl_->desired.clone());
-    }
+    ++impl_->desired.playback_buffer_revision;
+    if (impl_->desired.active) (void)impl_->device.apply(impl_->desired.clone());
 }
 
 auto AvPlayer::set_playback_rate(f64 rate) -> bool {

@@ -84,6 +84,7 @@ void load_once(LoadState& state) {
     WAVSEN_LOAD(pa_stream_get_time);
     WAVSEN_LOAD(pa_stream_get_timing_info);
     WAVSEN_LOAD(pa_stream_is_corked);
+    WAVSEN_LOAD(pa_stream_flush);
     WAVSEN_LOAD(pa_stream_new);
     WAVSEN_LOAD(pa_stream_new_with_proplist);
     WAVSEN_LOAD(pa_stream_peek);

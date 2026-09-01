@@ -96,6 +96,7 @@ struct Api {
     decltype(&::pa_stream_get_time)           pa_stream_get_time {};
     decltype(&::pa_stream_get_timing_info)    pa_stream_get_timing_info {};
     decltype(&::pa_stream_is_corked)          pa_stream_is_corked {};
+    decltype(&::pa_stream_flush)              pa_stream_flush {};
     decltype(&::pa_stream_new)                pa_stream_new {};
     decltype(&::pa_stream_new_with_proplist)  pa_stream_new_with_proplist {};
     decltype(&::pa_stream_peek)               pa_stream_peek {};

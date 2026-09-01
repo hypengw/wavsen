@@ -20,8 +20,8 @@ struct AvPlayerError {
 // stable master clock published by the backend thread.
 //
 // Threading: state-changing methods are called from the main thread.
-// Playback-rate changes are handed to the audio callback before touching
-// decoder state. current_time_seconds is lock-free and safe from any thread.
+// Playback-rate and seek changes are handed to the audio callback before
+// touching decoder state. current_time_seconds is lock-free and safe from any thread.
 class AvPlayer {
     struct ConstructionKey {};
 
@@ -44,9 +44,8 @@ public:
     void pause();
     bool is_paused() const;
 
-    // Reset playback to t=0. Call from the video plugin's loop boundary
-    // after the video decoder seeks back to the start. The clock will
-    // re-anchor on the next data callback.
+    // Discard queued device audio and seek before the next data callback.
+    // The clock re-anchors after the first new PCM batch.
     void seek_to_start();
     void seek_to(f64 seconds);
 
