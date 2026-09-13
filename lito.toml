@@ -62,3 +62,11 @@ sources = ["tests/audio_gain_tests.cpp"]
 [[test]]
 name = "audio-backend"
 sources = ["tests/audio_backend_tests.cpp"]
+
+[[test]]
+name = "audio-media"
+sources = ["tests/audio_media_tests.cpp"]
+
+[[test]]
+name = "stream-decoder-rate"
+sources = ["tests/stream_decoder_rate_tests.cpp"]

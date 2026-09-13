@@ -48,6 +48,7 @@ public:
     }
 
     auto current() const -> f32 { return current_; }
+    bool finished() const { return frames_left_ == u32(); }
 
 private:
     static auto clamped(f32 value) -> f32 {

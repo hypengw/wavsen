@@ -53,6 +53,9 @@ public:
     virtual ~IPullChannel()                             = default;
     virtual auto next_pcm(void* dst, u32 frames) -> u64 = 0;
     virtual void pass_desc(const DeviceDesc&)           = 0;
+    // Called on the render thread before next_pcm; offset counts all submitted frames,
+    // including silence, since the native stream was opened.
+    virtual void output_offset(u64) {};
 };
 
 enum class AudioDeviceState : rstd::uint8_t
@@ -122,6 +125,8 @@ public:
     // was created. The backend thread publishes this cached value so callers
     // never enter the native audio API from another thread.
     auto stream_position_frames() const -> u64;
+    // Completion includes device playback of the rendered ramp. Zero means pending.
+    auto completed_volume_scale_revision() const -> u64;
 
 private:
     class Impl;

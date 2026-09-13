@@ -87,6 +87,13 @@ public:
         return state_.load(rstd::sync::atomic::Ordering::Acquire);
     }
     auto desc() const -> DeviceDesc { return { u32(2), u32(48000) }; }
+    auto completed_volume_scale_revision() const -> u64 {
+        const auto revision = completed_scale_.load(rstd::sync::atomic::Ordering::Acquire);
+        return position_.load(rstd::sync::atomic::Ordering::Acquire) >=
+                       scale_end_.load(rstd::sync::atomic::Ordering::Relaxed)
+                   ? revision
+                   : u64();
+    }
     auto stream_position_frames() const -> u64 {
         return position_.load(rstd::sync::atomic::Ordering::Relaxed);
     }
@@ -152,6 +159,9 @@ private:
         operation_ = Operation::None;
         as<backend::Output>(native_).close();
         position_.store(u64(), rstd::sync::atomic::Ordering::Relaxed);
+        submitted_ = u64();
+        completed_scale_.store(u64(), rstd::sync::atomic::Ordering::Release);
+        scale_end_.store(u64(), rstd::sync::atomic::Ordering::Relaxed);
     }
     void apply_desired(AudioDeviceDesiredState desired) {
         if (desired.generation != desired_.generation) close();
@@ -241,12 +251,16 @@ private:
     }
     void render(float* output, rstd::uint32_t frames) {
         rstd::mem::memset(output, u8(), usize(frames) * usize(2 * sizeof(float)));
-        if (desired_.muted) return;
+        if (desired_.muted) {
+            submitted_ += u64(frames);
+            return;
+        }
         for (rstd::uint32_t offset = 0; offset < frames;) {
             const auto count = rstd::cmp::min(rstd::uint32_t(8192), frames - offset);
             auto*      block = output + offset * 2;
             for (auto& channel : channels_) {
                 rstd::mem::memset(scratch_, u8(), usize(count) * usize(2 * sizeof(float)));
+                channel->output_offset(submitted_ + u64(offset));
                 auto produced = rstd::cmp::min(channel->next_pcm(scratch_, u32(count)), u64(count));
                 for (rstd::uint64_t i = 0; i < produced.to_primitive() * 2; ++i)
                     block[i] += scratch_[i];
@@ -255,6 +269,12 @@ private:
                          u32(2),
                          desired_.volume);
             offset += count;
+        }
+        submitted_ += u64(frames);
+        if (scale_.finished() &&
+            completed_scale_.load(rstd::sync::atomic::Ordering::Relaxed) != scale_revision_) {
+            scale_end_.store(submitted_, rstd::sync::atomic::Ordering::Relaxed);
+            completed_scale_.store(scale_revision_, rstd::sync::atomic::Ordering::Release);
         }
     }
     void emit(AudioDeviceState state, String error = {}) {
@@ -278,6 +298,9 @@ private:
     rstd::sync::Condvar                          stopped_cv_;
     rstd::sync::atomic::Atomic<AudioDeviceState> state_ { AudioDeviceState::Idle };
     rstd::sync::atomic::Atomic<u64>              position_ { u64() };
+    rstd::sync::atomic::Atomic<u64>              completed_scale_ { u64() };
+    rstd::sync::atomic::Atomic<u64>              scale_end_ { u64() };
+    u64                                          submitted_ {};
     AudioDeviceDesiredState                      desired_;
     Vec<std::unique_ptr<IPullChannel>>           channels_;
     detail::VolumeScaleRamp                      scale_;
@@ -306,4 +329,7 @@ void AudioDevice::wait_stopped() { impl_->wait_stopped(); }
 auto AudioDevice::state() const -> AudioDeviceState { return impl_->state(); }
 auto AudioDevice::desc() const -> DeviceDesc { return impl_->desc(); }
 auto AudioDevice::stream_position_frames() const -> u64 { return impl_->stream_position_frames(); }
+auto AudioDevice::completed_volume_scale_revision() const -> u64 {
+    return impl_->completed_volume_scale_revision();
+}
 } // namespace wavsen::audio

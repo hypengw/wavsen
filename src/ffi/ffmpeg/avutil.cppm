@@ -8,6 +8,7 @@ extern "C" {
 #include <libavutil/buffer.h>
 #include <libavutil/channel_layout.h>
 #include <libavutil/error.h>
+#include <libavutil/dict.h>
 #include <libavutil/frame.h>
 #include <libavutil/hwcontext.h>
 #include <libavutil/hwcontext_drm.h>
@@ -26,11 +27,6 @@ extern "C" {
 
 namespace _wv_avutil
 {
-inline constexpr int     k_AV_TIME_BASE             = AV_TIME_BASE;
-inline constexpr int     k_AV_ERROR_MAX_STRING_SIZE = AV_ERROR_MAX_STRING_SIZE;
-inline constexpr int64_t k_AV_NOPTS_VALUE           = AV_NOPTS_VALUE;
-inline constexpr int     k_AVERROR_EOF              = AVERROR_EOF;
-inline constexpr int     k_EAGAIN                   = EAGAIN;
 // AV_PIX_FMT_P010 / P016 are AV_PIX_FMT_NE-style endian-alias macros
 // (NOT enumerators), so they must be captured + #undef'd like ints.
 inline constexpr AVPixelFormat k_AV_PIX_FMT_P010 = AV_PIX_FMT_P010;
@@ -47,33 +43,24 @@ inline constexpr AVPixelFormat k_AV_PIX_FMT_P016 = AV_PIX_FMT_P016;
 #undef AV_PIX_FMT_P016
 
 export module wavsen.ffi.ffmpeg:avutil;
+export import wavsen.ffi.ffmpeg.audio;
 
 export {
-    inline constexpr int     AV_TIME_BASE             = _wv_avutil::k_AV_TIME_BASE;
-    inline constexpr int     AV_ERROR_MAX_STRING_SIZE = _wv_avutil::k_AV_ERROR_MAX_STRING_SIZE;
-    inline constexpr int64_t AV_NOPTS_VALUE           = _wv_avutil::k_AV_NOPTS_VALUE;
-    inline constexpr int     AVERROR_EOF              = _wv_avutil::k_AVERROR_EOF;
-    inline constexpr int     EAGAIN                   = _wv_avutil::k_EAGAIN;
     inline constexpr AVPixelFormat AV_PIX_FMT_P010    = _wv_avutil::k_AV_PIX_FMT_P010;
     inline constexpr AVPixelFormat AV_PIX_FMT_P016    = _wv_avutil::k_AV_PIX_FMT_P016;
-    inline constexpr int           AVERROR(int e) noexcept { return -e; }
 
     using ::AV_VK_FRAME_FLAG_DISABLE_MULTIPLANE;
     using ::AV_VK_FRAME_FLAG_NONE;
     using ::AVBufferRef;
     using ::AVChannel;
-    using ::AVChannelLayout;
-    using ::AVChannelOrder;
     using ::AVColorRange;
     using ::AVColorSpace;
-    using ::AVFrame;
     using ::AVHWDeviceContext;
     using ::AVHWDeviceType;
     using ::AVHWFramesContext;
     using ::AVMediaType;
     using ::AVPixelFormat;
     using ::AVPixFmtDescriptor;
-    using ::AVRational;
     using ::AVSampleFormat;
     using ::AVVkFrame;
     using ::AVVkFrameFlags;
@@ -91,7 +78,6 @@ export {
     using ::AVDRMPlaneDescriptor;
     inline constexpr int AV_DRM_MAX_PLANES_C = ::AV_DRM_MAX_PLANES;
 
-    using ::AVMEDIA_TYPE_AUDIO;
     using ::AVMEDIA_TYPE_DATA;
     using ::AVMEDIA_TYPE_SUBTITLE;
     using ::AVMEDIA_TYPE_UNKNOWN;
@@ -128,24 +114,13 @@ export {
     using ::AV_HWFRAME_MAP_READ;
     using ::AV_HWFRAME_MAP_WRITE;
 
-    using ::AV_CHANNEL_ORDER_UNSPEC;
 
-    using ::AV_SAMPLE_FMT_FLT;
-    using ::AV_SAMPLE_FMT_S16;
 
-    using ::av_frame_alloc;
-    using ::av_frame_clone;
-    using ::av_frame_free;
-    using ::av_frame_ref;
-    using ::av_frame_unref;
 
     using ::av_buffer_alloc;
     using ::av_buffer_ref;
     using ::av_buffer_unref;
 
-    using ::av_channel_layout_copy;
-    using ::av_channel_layout_default;
-    using ::av_channel_layout_uninit;
 
     using ::av_hwdevice_ctx_alloc;
     using ::av_hwdevice_ctx_create;
@@ -157,28 +132,9 @@ export {
     using ::av_get_pix_fmt_name;
     using ::av_pix_fmt_desc_get;
 
-    using ::av_free;
-    using ::av_freep;
-    using ::av_malloc;
 
     using ::av_image_fill_arrays;
     using ::av_image_get_buffer_size;
 
-    using ::av_strerror;
 
-    // `::av_q2d` is `static inline` in <libavutil/rational.h> — internal
-    // linkage, so it can't be redeclared at module scope as `av_q2d` or
-    // re-exported via `using ::av_q2d`. Wrap it under a sub-namespace
-    // (different qualified name → no redeclaration), out-of-line so the
-    // `::av_q2d` call resolves in this module's TU and importers reach it
-    // via a real symbol rather than inline expansion.
-    namespace wavsen::ffi::ffmpeg
-    {
-    double av_q2d(AVRational a) noexcept;
-    }
 }
-
-namespace wavsen::ffi::ffmpeg
-{
-double av_q2d(AVRational a) noexcept { return ::av_q2d(a); }
-} // namespace wavsen::ffi::ffmpeg
