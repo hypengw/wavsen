@@ -129,9 +129,10 @@ public:
     YuvToRgba(const YuvToRgba&)            = delete;
     YuvToRgba& operator=(const YuvToRgba&) = delete;
 
-    static auto create(VkInstance instance, VkPhysicalDevice phys, VkDevice device,
-                       u32 queue_family, VkQueue queue, u32 max_w, u32 max_h)
-        -> Result<Box<YuvToRgba>, Error>;
+    // Borrowed Vulkan objects and their loader must outlive the converter.
+    static auto create(const vvk::InstanceDispatch& instance_dispatch, VkPhysicalDevice phys,
+                       const vvk::DeviceDispatch& device_dispatch, u32 queue_family, VkQueue queue,
+                       u32 max_w, u32 max_h) -> Result<Box<YuvToRgba>, Error>;
 
     auto convert_nv12(VkImage dst, u32 dst_w, u32 dst_h, const rstd::uint8_t* nv12, usize nv12_size,
                       const ColorMatrix& cm) -> Result<int, Error>;
@@ -159,8 +160,9 @@ public:
     Option<vvk::SubmissionToken> last_submission_readiness() const noexcept;
 
 private:
-    bool init(VkInstance instance, VkPhysicalDevice phys, VkDevice device, u32 queue_family,
-              VkQueue queue, u32 max_w, u32 max_h, Error* err);
+    bool init(const vvk::InstanceDispatch& instance_dispatch, VkPhysicalDevice phys,
+              const vvk::DeviceDispatch& device_dispatch, u32 queue_family, VkQueue queue,
+              u32 max_w, u32 max_h, Error* err);
     int  convert_nv12_(VkImage dst, rstd::uint32_t dst_w, rstd::uint32_t dst_h,
                        const rstd::uint8_t* nv12, usize nv12_size, const ColorMatrix& cm,
                        ConvertTarget target, Error* err);

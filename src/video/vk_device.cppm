@@ -81,22 +81,27 @@ public:
         int drm_render_fd { -1 };
         u32 drm_render_major {};
         u32 drm_render_minor {};
+        // Tables are copied; their loader and Vulkan objects must outlive this Producer.
+        const vvk::InstanceDispatch* instance_dispatch {};
+        const vvk::DeviceDispatch*   device_dispatch {};
     };
     static auto from_external(ExternalDeviceInfo info) -> Result<Box<Producer>, Error>;
 
-    VkInstance           instance() const { return *instance_; }
-    VkPhysicalDevice     physical_device() const { return *phys_; }
-    VkDevice             device() const { return *device_; }
-    VkQueue              queue() const { return *queue_; }
-    u32                  queue_family_index() const { return queue_family_; }
-    u32                  drm_render_major() const { return drm_render_major_; }
-    u32                  drm_render_minor() const { return drm_render_minor_; }
-    auto                 drm_render_node() const -> Option<String>;
-    const rstd::uint8_t* device_uuid() const { return have_uuid_ ? device_uuid_ : nullptr; }
-    const rstd::uint8_t* driver_uuid() const { return have_uuid_ ? driver_uuid_ : nullptr; }
-    int                  drm_render_fd() const { return drm_render_file_.as_raw_fd(); }
-    u32                  width() const { return width_; }
-    u32                  height() const { return height_; }
+    const vvk::InstanceDispatch& instance_dispatch() const { return instance_dispatch_; }
+    const vvk::DeviceDispatch&   device_dispatch() const { return device_dispatch_; }
+    VkInstance                   instance() const { return *instance_; }
+    VkPhysicalDevice             physical_device() const { return *phys_; }
+    VkDevice                     device() const { return *device_; }
+    VkQueue                      queue() const { return *queue_; }
+    u32                          queue_family_index() const { return queue_family_; }
+    u32                          drm_render_major() const { return drm_render_major_; }
+    u32                          drm_render_minor() const { return drm_render_minor_; }
+    auto                         drm_render_node() const -> Option<String>;
+    const rstd::uint8_t*         device_uuid() const { return have_uuid_ ? device_uuid_ : nullptr; }
+    const rstd::uint8_t*         driver_uuid() const { return have_uuid_ ? driver_uuid_ : nullptr; }
+    int                          drm_render_fd() const { return drm_render_file_.as_raw_fd(); }
+    u32                          width() const { return width_; }
+    u32                          height() const { return height_; }
 
     u32                instance_api_version() const { return instance_api_version_; }
     slice<const char*> enabled_instance_extensions() const { return enabled_inst_exts_.as_slice(); }
@@ -121,13 +126,14 @@ private:
     int upload_into_(VkImage target, u32 target_width, u32 target_height, const rstd::uint8_t* data,
                      usize size, Error* err);
 
-    vvk::InstanceDispatch instance_dispatch_;
-    vvk::DeviceDispatch   device_dispatch_;
-    vvk::Instance         instance_;
-    vvk::PhysicalDevice   phys_;
-    vvk::Device           device_;
-    u32                   queue_family_ {};
-    vvk::Queue            queue_;
+    Option<vvk::VulkanLoader> loader_;
+    vvk::InstanceDispatch     instance_dispatch_;
+    vvk::DeviceDispatch       device_dispatch_;
+    vvk::Instance             instance_;
+    vvk::PhysicalDevice       phys_;
+    vvk::Device               device_;
+    u32                       queue_family_ {};
+    vvk::Queue                queue_;
 
     vvk::CommandPool    cmd_pool_;
     vvk::CommandBuffers command_buffers_;

@@ -823,8 +823,7 @@ auto create_drm_import(const vvk::Device& device, const vvk::PhysicalDevice& phy
 
     auto imported = import_plane(u32(), planes[0].object_index, VK_IMAGE_ASPECT_COLOR_BIT);
     if (imported.is_err()) return Err(rstd::move(imported).unwrap_err());
-    if (const auto result = entry->image.BindMemory(*plane_memories[0], 0);
-        result != VK_SUCCESS) {
+    if (const auto result = entry->image.BindMemory(*plane_memories[0], 0); result != VK_SUCCESS) {
         return Err(Error { vk_error("vkBindImageMemory(shared)"_str, result) });
     }
     entry->memories.push(rstd::move(plane_memories[0]));
@@ -867,9 +866,9 @@ YuvToRgba::~YuvToRgba() {
     (void)completion_timeline_.take();
 }
 
-auto YuvToRgba::create(VkInstance instance, VkPhysicalDevice phys, VkDevice device,
-                       u32 queue_family, VkQueue queue, u32 max_w, u32 max_h)
-    -> Result<Box<YuvToRgba>, Error> {
+auto YuvToRgba::create(const vvk::InstanceDispatch& instance_dispatch, VkPhysicalDevice phys,
+                       const vvk::DeviceDispatch& device_dispatch, u32 queue_family, VkQueue queue,
+                       u32 max_w, u32 max_h) -> Result<Box<YuvToRgba>, Error> {
     if (max_w == u32() || max_h == u32()) {
         return Err(Error { "YuvToRgba: max_w/max_h must be non-zero"_str });
     }
@@ -878,21 +877,23 @@ auto YuvToRgba::create(VkInstance instance, VkPhysicalDevice phys, VkDevice devi
     if (max_h % u32(2) != u32()) ++max_h;
     auto  self = Box<YuvToRgba>::make();
     Error err;
-    if (! self->init(instance, phys, device, queue_family, queue, max_w, max_h, &err)) {
+    if (! self->init(
+            instance_dispatch, phys, device_dispatch, queue_family, queue, max_w, max_h, &err)) {
         return Err(rstd::move(err));
     }
     return Ok(rstd::move(self));
 }
 
-bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device, u32 queue_family,
-                     VkQueue queue, u32 max_w, u32 max_h, Error* err) {
-    if (! vvk::Load(instance_dispatch_) || ! vvk::Load(instance, instance_dispatch_)) {
-        return fail(err, "YuvToRgba: failed to load instance dispatch"_str);
-    }
-    device_dispatch_ = vvk::DeviceDispatch { instance_dispatch_ };
-    if (! vvk::Load(device, device_dispatch_)) {
-        return fail(err, "YuvToRgba: failed to load device dispatch"_str);
-    }
+bool YuvToRgba::init(const vvk::InstanceDispatch& instance_dispatch, VkPhysicalDevice phys,
+                     const vvk::DeviceDispatch& device_dispatch, u32 queue_family, VkQueue queue,
+                     u32 max_w, u32 max_h, Error* err) {
+    if (! instance_dispatch.instance || ! device_dispatch.device ||
+        device_dispatch.instance != instance_dispatch.instance)
+        return fail(err, "YuvToRgba: incompatible dispatch tables"_str);
+    instance_dispatch_  = instance_dispatch;
+    device_dispatch_    = device_dispatch;
+    const auto instance = instance_dispatch.instance;
+    const auto device   = device_dispatch.device;
 
     instance_                   = vvk::Instance(instance, instance_dispatch_, vvk::borrowed_handle);
     phys_                       = vvk::PhysicalDevice(phys, instance_dispatch_);
@@ -1118,7 +1119,8 @@ bool YuvToRgba::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device
         auto       timeline   = vvk::TimelineSemaphoreGeneration::Create(
             *device_,
             vvk::MakeQueueDomain(*device_, *queue_, queue_family_, u32(), generation),
-            generation);
+            generation,
+            vvk::TimelineSemaphoreDeviceDispatch::FromDispatch(device_dispatch_));
         if (! timeline.created()) {
             return fail(err,
                         rstd::format("vkCreateSemaphore(completion): {}",

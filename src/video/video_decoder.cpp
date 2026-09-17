@@ -218,7 +218,7 @@ AVBufferRef* make_shared_vulkan_hwdevice(const Producer& vk, Error* err) {
     auto* dctx = reinterpret_cast<AVHWDeviceContext*>(hwd->data);
     auto* vctx = reinterpret_cast<AVVulkanDeviceContext*>(dctx->hwctx);
 
-    vctx->get_proc_addr = vkGetInstanceProcAddr;
+    vctx->get_proc_addr = vk.instance_dispatch().resolver;
     vctx->inst          = vk.instance();
     vctx->phys_dev      = vk.physical_device();
     vctx->act_dev       = vk.device();

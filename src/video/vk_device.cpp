@@ -66,14 +66,14 @@ auto Producer::from_external(ExternalDeviceInfo info) -> Result<Box<Producer>, E
     }
 
     auto self = Box<Producer>::make();
-    if (! vvk::Load(self->instance_dispatch_) ||
-        ! vvk::Load(info.instance, self->instance_dispatch_)) {
-        return Err(Error { "Producer::from_external: failed to load instance dispatch"_str });
+    if (! info.instance_dispatch || ! info.device_dispatch ||
+        info.instance_dispatch->instance != info.instance ||
+        info.device_dispatch->instance != info.instance ||
+        info.device_dispatch->device != info.device) {
+        return Err(Error { "Producer::from_external: matching dispatch tables are required"_str });
     }
-    self->device_dispatch_ = vvk::DeviceDispatch { self->instance_dispatch_ };
-    if (! vvk::Load(info.device, self->device_dispatch_)) {
-        return Err(Error { "Producer::from_external: failed to load device dispatch"_str });
-    }
+    self->instance_dispatch_ = *info.instance_dispatch;
+    self->device_dispatch_   = *info.device_dispatch;
 
     self->owns_device_ = false;
     self->instance_ = vvk::Instance(info.instance, self->instance_dispatch_, vvk::borrowed_handle);
@@ -138,27 +138,31 @@ Option<Box<Producer>> Producer::build_(u32 width, u32 height, Option<ref<str>> r
     self->enabled_inst_exts_.push_back(VK_KHR_EXTERNAL_FENCE_CAPABILITIES_EXTENSION_NAME);
     self->enabled_inst_exts_.push_back(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
 
-    if (! vvk::Load(self->instance_dispatch_)) {
-        fail(err, "Producer: failed to load Vulkan instance entry points"_str);
+    auto loader = vvk::VulkanLoader::Open();
+    if (loader.is_err()) {
+        fail(err, "Producer: Vulkan loader unavailable"_str);
         return None();
     }
-
+    self->loader_ = Some(loader.unwrap_unchecked());
     VkApplicationInfo app {};
     app.sType                   = VK_STRUCTURE_TYPE_APPLICATION_INFO;
     app.pApplicationName        = "wavsen-video";
     app.apiVersion              = VK_API_VERSION_1_3;
-    self->instance_api_version_ = u32(VK_API_VERSION_1_3);
-    if (VkResult result = vvk::Instance::Create(self->instance_,
-                                                app,
-                                                {},
-                                                self->enabled_inst_exts_.as_slice(),
-                                                self->instance_dispatch_);
-        result != VK_SUCCESS) {
-        fail(err, vk_error("vkCreateInstance"_str, result));
-        return None();
-    }
-    if (! vvk::Load(*self->instance_, self->instance_dispatch_)) {
-        fail(err, "Producer: failed to load Vulkan instance dispatch"_str);
+    self->instance_api_version_ = u32(app.apiVersion);
+    VkInstanceCreateInfo instance_info {};
+    instance_info.sType            = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+    instance_info.pApplicationInfo = &app;
+    instance_info.enabledExtensionCount =
+        static_cast<rstd::uint32_t>(self->enabled_inst_exts_.len().to_primitive());
+    instance_info.ppEnabledExtensionNames = self->enabled_inst_exts_.data();
+    auto created                          = vvk::Instance::Create(
+        self->instance_, self->loader_->global(), instance_info, self->instance_dispatch_);
+    if (created.is_err()) {
+        const auto error = created.unwrap_err_unchecked();
+        fail(err,
+             rstd::format("Producer: instance creation failed, kind={}, vk={}",
+                          static_cast<int>(error.kind),
+                          static_cast<int>(error.api_result)));
         return None();
     }
 
@@ -318,19 +322,23 @@ Option<Box<Producer>> Producer::build_(u32 width, u32 height, Option<ref<str>> r
     wanted_features.pNext                      = &wanted_ycbcr;
     wanted_features.features.samplerAnisotropy = features.features.samplerAnisotropy;
 
-    self->device_dispatch_ = vvk::DeviceDispatch { self->instance_dispatch_ };
-    if (VkResult result = vvk::Device::Create(self->device_,
-                                              *self->phys_,
-                                              queue_infos.as_slice(),
-                                              self->enabled_dev_exts_.as_slice(),
-                                              &wanted_features,
-                                              self->device_dispatch_);
-        result != VK_SUCCESS) {
-        fail(err, vk_error("vkCreateDevice"_str, result));
-        return None();
-    }
-    if (! vvk::Load(*self->device_, self->device_dispatch_)) {
-        fail(err, "Producer: failed to load Vulkan device dispatch"_str);
+    VkDeviceCreateInfo device_info {};
+    device_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+    device_info.pNext = &wanted_features;
+    device_info.queueCreateInfoCount =
+        static_cast<rstd::uint32_t>(queue_infos.len().to_primitive());
+    device_info.pQueueCreateInfos = queue_infos.data();
+    device_info.enabledExtensionCount =
+        static_cast<rstd::uint32_t>(self->enabled_dev_exts_.len().to_primitive());
+    device_info.ppEnabledExtensionNames = self->enabled_dev_exts_.data();
+    auto made_device                    = vvk::Device::Create(
+        self->device_, *self->phys_, self->instance_dispatch_, device_info, self->device_dispatch_);
+    if (made_device.is_err()) {
+        const auto error = made_device.unwrap_err_unchecked();
+        fail(err,
+             rstd::format("Producer: device creation failed, kind={}, vk={}",
+                          static_cast<int>(error.kind),
+                          static_cast<int>(error.api_result)));
         return None();
     }
     self->queue_ = self->device_.GetQueue(self->queue_family_.to_primitive());
