@@ -34,7 +34,7 @@ bool device_has_ext(const vvk::PhysicalDevice& physical_device, ref<str> name) {
 }
 
 auto vk_error(ref<str> operation, VkResult result) -> String {
-    return rstd::format("{}: {}", operation, vvk::ToString(result));
+    return rstd::format("{}: {}", operation, result);
 }
 
 } // namespace
