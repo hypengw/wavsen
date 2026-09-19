@@ -1,10 +1,3 @@
-module;
-
-#include <condition_variable>
-#include <deque>
-#include <mutex>
-#include <thread>
-
 module wavsen.video;
 
 import rstd;
@@ -570,6 +563,15 @@ auto VaapiFrameLease::into_drm() && -> Result<DrmFrameLease, Error> {
     return Ok(DrmFrameLease(drm_state_ptr, rstd::move(drm_view), resource_key_));
 }
 
+#if defined(__APPLE__)
+struct ApplePrefetchState {
+    Vec<AppleFramePull> frames;
+    bool                stop { false };
+    bool                error { false };
+    String              error_message;
+};
+#endif
+
 struct VideoDecoder::State {
     /* Custom-IO source (open_from_stream path). Declared first so it
      * outlives every libav object that holds avio_ctx — the destructor
@@ -598,23 +600,21 @@ struct VideoDecoder::State {
     u64           decoder_generation;
     bool          flushing { false };
 #if defined(__APPLE__)
-    std::mutex                 apple_prefetch_mutex;
-    std::condition_variable    apple_prefetch_condition;
-    std::deque<AppleFramePull> apple_prefetch_frames;
-    std::thread                apple_prefetch_thread;
-    bool                       apple_prefetch_stop { false };
-    bool                       apple_prefetch_error { false };
-    String                     apple_prefetch_error_message;
+    rstd::sync::Mutex<ApplePrefetchState>   apple_prefetch { ApplePrefetchState {} };
+    rstd::sync::Condvar                     apple_prefetch_condition;
+    Option<rstd::thread::JoinHandle<empty>> apple_prefetch_thread;
 #endif
 
     ~State() {
 #if defined(__APPLE__)
         {
-            std::lock_guard lock(apple_prefetch_mutex);
-            apple_prefetch_stop = true;
+            auto prefetch  = apple_prefetch.lock().unwrap_unchecked();
+            prefetch->stop = true;
         }
         apple_prefetch_condition.notify_all();
-        if (apple_prefetch_thread.joinable()) apple_prefetch_thread.join();
+        if (apple_prefetch_thread.is_some()) {
+            (void)rstd::move(apple_prefetch_thread.take().unwrap_unchecked()).join();
+        }
 #endif
         /* Tear down libavformat first so it stops invoking our avio
          * callbacks. Then free the avio buffer + context. input_stream
@@ -1670,60 +1670,68 @@ auto VideoDecoder::next_apple_frame_sync() -> Result<AppleFramePull, Error> {
 }
 
 void VideoDecoder::start_apple_prefetch() {
-    State&          state = *state_;
-    std::lock_guard lock(state.apple_prefetch_mutex);
-    if (state.apple_prefetch_thread.joinable()) return;
+    State& state    = *state_;
+    auto   prefetch = state.apple_prefetch.lock().unwrap_unchecked();
+    if (state.apple_prefetch_thread.is_some()) return;
 
-    state.apple_prefetch_stop          = false;
-    state.apple_prefetch_error         = false;
-    state.apple_prefetch_error_message = {};
-    state.apple_prefetch_thread        = std::thread([this] {
-        constexpr std::size_t kQueueCapacity = 8;
-        State&                state          = *state_;
+    prefetch->stop          = false;
+    prefetch->error         = false;
+    prefetch->error_message = {};
+    auto thread             = rstd::thread::spawn([this] {
+        State& state = *state_;
 
         for (;;) {
             {
-                std::unique_lock lock(state.apple_prefetch_mutex);
-                state.apple_prefetch_condition.wait(lock, [&] {
-                    return state.apple_prefetch_stop ||
-                           state.apple_prefetch_frames.size() < kQueueCapacity;
+                auto prefetch = state.apple_prefetch.lock().unwrap_unchecked();
+                state.apple_prefetch_condition.wait_while(prefetch, [](const auto& value) {
+                    return ! value.stop && value.frames.len() >= usize(8);
                 });
-                if (state.apple_prefetch_stop) return;
+                if (prefetch->stop) return empty {};
             }
 
             auto pulled = next_apple_frame_sync();
             if (pulled.is_err()) {
-                auto            error = rstd::move(pulled).unwrap_err();
-                std::lock_guard lock(state.apple_prefetch_mutex);
-                if (state.apple_prefetch_stop) return;
-                state.apple_prefetch_error         = true;
-                state.apple_prefetch_error_message = rstd::move(error.message);
+                auto error    = rstd::move(pulled).unwrap_err();
+                auto prefetch = state.apple_prefetch.lock().unwrap_unchecked();
+                if (prefetch->stop) return empty {};
+                prefetch->error         = true;
+                prefetch->error_message = rstd::move(error.message);
                 state.apple_prefetch_condition.notify_all();
-                return;
+                return empty {};
             }
 
-            auto            frame = rstd::move(pulled).unwrap();
-            std::lock_guard lock(state.apple_prefetch_mutex);
-            if (state.apple_prefetch_stop) return;
-            state.apple_prefetch_frames.push_back(rstd::move(frame));
+            auto frame    = rstd::move(pulled).unwrap();
+            auto prefetch = state.apple_prefetch.lock().unwrap_unchecked();
+            if (prefetch->stop) return empty {};
+            prefetch->frames.push(rstd::move(frame));
             state.apple_prefetch_condition.notify_all();
         }
     });
+
+    if (thread.is_ok()) {
+        state.apple_prefetch_thread = Some(rstd::move(thread).unwrap_unchecked());
+    } else {
+        prefetch->error         = true;
+        prefetch->error_message = "failed to start VideoToolbox prefetch thread"_str;
+        state.apple_prefetch_condition.notify_all();
+    }
 }
 
 void VideoDecoder::stop_apple_prefetch() {
     State& state = *state_;
     {
-        std::lock_guard lock(state.apple_prefetch_mutex);
-        state.apple_prefetch_stop = true;
+        auto prefetch  = state.apple_prefetch.lock().unwrap_unchecked();
+        prefetch->stop = true;
     }
     state.apple_prefetch_condition.notify_all();
-    if (state.apple_prefetch_thread.joinable()) state.apple_prefetch_thread.join();
+    if (state.apple_prefetch_thread.is_some()) {
+        (void)rstd::move(state.apple_prefetch_thread.take().unwrap_unchecked()).join();
+    }
 
-    std::lock_guard lock(state.apple_prefetch_mutex);
-    state.apple_prefetch_frames.clear();
-    state.apple_prefetch_error         = false;
-    state.apple_prefetch_error_message = {};
+    auto prefetch = state.apple_prefetch.lock().unwrap_unchecked();
+    prefetch->frames.clear();
+    prefetch->error         = false;
+    prefetch->error_message = {};
 }
 #endif
 
@@ -1732,21 +1740,19 @@ auto VideoDecoder::next_apple_frame() -> Result<AppleFramePull, Error> {
     return Err(Error("VideoToolbox is only available on Apple platforms"_str));
 #else
     start_apple_prefetch();
-    State&           state = *state_;
-    std::unique_lock lock(state.apple_prefetch_mutex);
-    state.apple_prefetch_condition.wait(lock, [&] {
-        return state.apple_prefetch_stop || ! state.apple_prefetch_frames.empty() ||
-               state.apple_prefetch_error;
+    State& state    = *state_;
+    auto   prefetch = state.apple_prefetch.lock().unwrap_unchecked();
+    state.apple_prefetch_condition.wait_while(prefetch, [](const auto& value) {
+        return ! value.stop && value.frames.is_empty() && ! value.error;
     });
 
-    if (! state.apple_prefetch_frames.empty()) {
-        auto frame = rstd::move(state.apple_prefetch_frames.front());
-        state.apple_prefetch_frames.pop_front();
+    if (! prefetch->frames.is_empty()) {
+        auto frame = prefetch->frames.remove(usize());
         state.apple_prefetch_condition.notify_all();
         return Ok(rstd::move(frame));
     }
-    if (state.apple_prefetch_error) {
-        return Err(Error(state.apple_prefetch_error_message.clone()));
+    if (prefetch->error) {
+        return Err(Error(prefetch->error_message.clone()));
     }
     return Err(Error("VideoToolbox prefetch stopped"_str));
 #endif
