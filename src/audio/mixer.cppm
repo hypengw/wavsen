@@ -1,6 +1,5 @@
 export module wavsen.audio:mixer;
 
-import rstd.cppstd;
 import rstd;
 import wavsen.audio.core;
 
@@ -33,6 +32,17 @@ public:
     virtual void set_listener_position(f32 /*x*/, f32 /*y*/, f32 /*z*/) {}
 };
 
+struct SoundStreamObject {
+    using Trait                  = SoundStreamObject;
+    static constexpr bool direct = false;
+    template<typename Self, typename = void>
+    struct Api {
+        using Trait = SoundStreamObject;
+        auto stream() -> SoundStream& { return rstd::trait_call<0>(this); }
+    };
+    template<typename T>
+    using Funcs = rstd::TraitFuncs<&T::stream>;
+};
 // Main-loop-owned playback policy. The AudioDevice backend owns native
 // resources and emits events that the caller must relay back to this owner.
 class SoundManager {
@@ -42,7 +52,7 @@ public:
     SoundManager(const SoundManager&)            = delete;
     SoundManager& operator=(const SoundManager&) = delete;
 
-    void mount(std::unique_ptr<SoundStream>);
+    void mount(Box<dyn<SoundStreamObject>>);
     void unmount_all();
 
     void activate(AudioDeviceEventSink);
@@ -67,3 +77,12 @@ private:
 };
 
 } // namespace wavsen::audio
+
+export namespace rstd
+{
+template<typename T>
+    requires requires(T& value) { static_cast<wavsen::audio::SoundStream&>(value); }
+struct Impl<wavsen::audio::SoundStreamObject, T> : ImplBase<T> {
+    auto stream() -> wavsen::audio::SoundStream& { return this->self(); }
+};
+} // namespace rstd

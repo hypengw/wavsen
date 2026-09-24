@@ -21,7 +21,6 @@ public-definitions = ["WAVSEN_HAS_VAAPI=1"]
 [dependencies]
 rstd-core = { version = "0.1.0", pub = true }
 rstd-std = { version = "0.1.0", pub = true }
-rstd-cppstd = { version = "0.1.0", pub = true }
 rstd-log = "0.1.0"
 rstd-dlopn = "0.1.0"
 vvk = { git = "https://github.com/litocpp/vvk.git", pub = true }
@@ -66,6 +65,14 @@ sources = ["tests/audio_backend_tests.cpp"]
 [[test]]
 name = "audio-media"
 sources = ["tests/audio_media_tests.cpp"]
+
+[[test]]
+name = "audio-ownership"
+sources = ["tests/audio_ownership_tests.cpp"]
+
+[[test]]
+name = "decode-owner"
+sources = ["tests/decode_owner_tests.cpp"]
 
 [[test]]
 name = "stream-decoder-rate"

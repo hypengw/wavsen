@@ -1,10 +1,10 @@
 export module wavsen.audio.core;
 
-import rstd.cppstd;
 import rstd;
 
 using namespace rstd::prelude;
 using namespace rstd::literals;
+using rstd::sync::Arc;
 
 export namespace wavsen::audio
 {
@@ -58,6 +58,17 @@ public:
     virtual void output_offset(u64) {};
 };
 
+struct PullChannelObject {
+    using Trait                  = PullChannelObject;
+    static constexpr bool direct = false;
+    template<typename Self, typename = void>
+    struct Api {
+        using Trait = PullChannelObject;
+        auto channel() -> IPullChannel& { return rstd::trait_call<0>(this); }
+    };
+    template<typename T>
+    using Funcs = rstd::TraitFuncs<&T::channel>;
+};
 enum class AudioDeviceState : rstd::uint8_t
 {
     Idle,
@@ -74,7 +85,8 @@ struct AudioDeviceEvent {
     String           error;
 };
 
-using AudioDeviceEventSink = std::function<void(AudioDeviceEvent)>;
+// Dispatched outside the device lock; shared captures must synchronize their own state.
+using AudioDeviceEventSink = Arc<dyn<Fn<void(AudioDeviceEvent)>>>;
 
 struct AudioDeviceDesiredState {
     u64                 generation;
@@ -111,9 +123,9 @@ public:
     AudioDevice(const AudioDevice&)            = delete;
     AudioDevice& operator=(const AudioDevice&) = delete;
 
-    void set_event_sink(AudioDeviceEventSink);
+    void set_event_sink(Option<AudioDeviceEventSink>);
     auto apply(AudioDeviceDesiredState) -> bool;
-    auto mount(std::unique_ptr<IPullChannel>, u64 stream_revision) -> bool;
+    auto mount(Box<dyn<PullChannelObject>>, u64 stream_revision) -> bool;
     auto unmount_all(u64 stream_revision) -> bool;
     void shutdown();
     void wait_stopped();
@@ -134,3 +146,12 @@ private:
 };
 
 } // namespace wavsen::audio
+
+export namespace rstd
+{
+template<typename T>
+    requires requires(T& value) { static_cast<wavsen::audio::IPullChannel&>(value); }
+struct Impl<wavsen::audio::PullChannelObject, T> : ImplBase<T> {
+    auto channel() -> wavsen::audio::IPullChannel& { return this->self(); }
+};
+} // namespace rstd

@@ -1,7 +1,6 @@
 module wavsen.video;
 
 import rstd;
-import rstd.cppstd;
 import vvk;
 import :vk_device;
 
@@ -28,7 +27,8 @@ bool device_has_ext(const vvk::PhysicalDevice& physical_device, ref<str> name) {
     Vec<VkExtensionProperties> properties;
     if (physical_device.EnumerateDeviceExtensionProperties(properties) != VK_SUCCESS) return false;
     for (const auto& property : properties) {
-        if (rstd::cppstd::as_str(property.extensionName).unwrap() == name) return true;
+        if (rstd::ffi::CStr::from_ptr(property.extensionName).to_str().unwrap() == name)
+            return true;
     }
     return false;
 }
@@ -203,7 +203,8 @@ Option<Box<Producer>> Producer::build_(u32 width, u32 height, Option<ref<str>> r
     for (auto& physical_device : physical_devices) {
         bool supported = true;
         for (const char* extension : required_extensions) {
-            if (! device_has_ext(physical_device, rstd::cppstd::as_str(extension).unwrap())) {
+            if (! device_has_ext(physical_device,
+                                 rstd::ffi::CStr::from_ptr(extension).to_str().unwrap())) {
                 supported = false;
                 break;
             }
@@ -287,7 +288,7 @@ Option<Box<Producer>> Producer::build_(u32 width, u32 height, Option<ref<str>> r
         "VK_EXT_descriptor_buffer", "VK_EXT_shader_object",
     };
     for (const char* extension : optional_extensions) {
-        if (device_has_ext(self->phys_, rstd::cppstd::as_str(extension).unwrap()))
+        if (device_has_ext(self->phys_, rstd::ffi::CStr::from_ptr(extension).to_str().unwrap()))
             self->enabled_dev_exts_.push_back(extension);
     }
 

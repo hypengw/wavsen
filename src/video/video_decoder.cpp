@@ -1,12 +1,12 @@
 module wavsen.video;
 
 import rstd;
-import rstd.cppstd;
 import rstd.log;
 import vvk;
 import :vk_device;
 import :video_decoder;
 import wavsen.ffi.ffmpeg;
+import wavsen.ffi.ffmpeg.owner;
 #if defined(__APPLE__)
 import wavsen.ffi.corefoundation;
 import wavsen.ffi.corevideo;
@@ -23,64 +23,12 @@ namespace wavsen::video
 namespace
 {
 
-template<typename T, void (*Release)(T*&)>
-class AvOwner {
-public:
-    AvOwner() = default;
-    explicit AvOwner(T* value): value_(value) {}
-    AvOwner(const AvOwner&)            = delete;
-    AvOwner& operator=(const AvOwner&) = delete;
-
-    AvOwner(AvOwner&& other) noexcept: value_(rstd::exchange(other.value_, nullptr)) {}
-    AvOwner& operator=(AvOwner&& other) noexcept {
-        if (this != &other) {
-            reset();
-            value_ = rstd::exchange(other.value_, nullptr);
-        }
-        return *this;
-    }
-
-    ~AvOwner() { reset(); }
-
-    void reset(T* value = nullptr) {
-        if (value_) Release(value_);
-        value_ = value;
-    }
-
-    T*       get() const { return value_; }
-    T*       operator->() const { return value_; }
-    explicit operator bool() const { return value_ != nullptr; }
-
-private:
-    T* value_ { nullptr };
-};
-
-void release_format(AVFormatContext*& value) {
-    if (value) avformat_close_input(&value);
-}
-void release_codec(AVCodecContext*& value) {
-    if (value) avcodec_free_context(&value);
-}
-void release_frame(AVFrame*& value) {
-    if (value) av_frame_free(&value);
-}
-void release_packet(AVPacket*& value) {
-    if (value) av_packet_free(&value);
-}
-void release_sws(SwsContext*& value) {
-    if (value) sws_freeContext(value);
-    value = nullptr;
-}
-void release_buffer(AVBufferRef*& value) {
-    if (value) av_buffer_unref(&value);
-}
-
-using FmtCtxPtr   = AvOwner<AVFormatContext, release_format>;
-using CodecCtxPtr = AvOwner<AVCodecContext, release_codec>;
-using FramePtr    = AvOwner<AVFrame, release_frame>;
-using PacketPtr   = AvOwner<AVPacket, release_packet>;
-using SwsPtr      = AvOwner<SwsContext, release_sws>;
-using BufRefPtr   = AvOwner<AVBufferRef, release_buffer>;
+using ffi::ffmpeg::BufRefPtr;
+using ffi::ffmpeg::CodecCtxPtr;
+using ffi::ffmpeg::FmtCtxPtr;
+using ffi::ffmpeg::FramePtr;
+using ffi::ffmpeg::PacketPtr;
+using ffi::ffmpeg::SwsPtr;
 
 /* Defined further down — forward-declared so the helpers above the
  * definitions can use them. */
@@ -258,7 +206,7 @@ bool fail(Error* err, String message) {
 auto av_err_str(int rc) -> String {
     char buf[AV_ERROR_MAX_STRING_SIZE] = {};
     av_strerror(rc, buf, sizeof(buf));
-    return String::make(rstd::cppstd::as_str(buf).unwrap());
+    return String::make(rstd::ffi::CStr::from_ptr(buf).to_str().unwrap());
 }
 
 #if defined(__APPLE__)
@@ -717,7 +665,7 @@ int avio_read_shim(void* opaque, rstd::uint8_t* buf, int buf_size) {
     auto* state = static_cast<VideoDecoder::State*>(opaque);
     int   n     = state->input_stream->as_mut_ptr()->read(buf, buf_size);
     if (n == 0) return AVERROR_EOF;
-    if (n < 0) return AVERROR(rstd::cppstd::IO_ERROR);
+    if (n < 0) return AVERROR(EIO);
     return n;
 }
 rstd::int64_t avio_seek_shim(void* opaque, rstd::int64_t offset, int whence) {

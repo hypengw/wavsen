@@ -1,6 +1,5 @@
 module wavsen.audio;
 
-import rstd.cppstd;
 import rstd;
 import wavsen.audio.core;
 import :mixer;
@@ -16,13 +15,17 @@ namespace
 // Adapter exposing a SoundStream to AudioDevice's IPullChannel interface.
 class StreamPullChannel : public IPullChannel {
 public:
-    explicit StreamPullChannel(std::unique_ptr<SoundStream> ss): ss_(rstd::move(ss)) {}
+    explicit StreamPullChannel(Box<dyn<SoundStreamObject>> ss): ss_(rstd::move(ss)) {}
 
-    auto next_pcm(void* dst, u32 frames) -> u64 override { return ss_->next_pcm(dst, frames); }
-    void pass_desc(const DeviceDesc& d) override { ss_->pass_desc({ d.channels, d.sample_rate }); }
+    auto next_pcm(void* dst, u32 frames) -> u64 override {
+        return ss_->stream().next_pcm(dst, frames);
+    }
+    void pass_desc(const DeviceDesc& d) override {
+        ss_->stream().pass_desc({ d.channels, d.sample_rate });
+    }
 
 private:
-    std::unique_ptr<SoundStream> ss_;
+    Box<dyn<SoundStreamObject>> ss_;
 };
 
 } // namespace
@@ -64,9 +67,10 @@ SoundManager::SoundManager(AudioClientIdentity identity)
     : impl_(Box<Impl>::make(rstd::move(identity))) {}
 SoundManager::~SoundManager() = default;
 
-void SoundManager::mount(std::unique_ptr<SoundStream> ss) {
-    if (! ss) return;
-    (void)impl_->device.mount(std::make_unique<StreamPullChannel>(rstd::move(ss)),
+void SoundManager::mount(Box<dyn<SoundStreamObject>> ss) {
+    auto channel = Box<StreamPullChannel>::make(rstd::move(ss));
+    (void)impl_->device.mount(Box<dyn<PullChannelObject>>::from_raw(
+                                  dyn<PullChannelObject>::from_ptr(rstd::move(channel).into_raw())),
                               impl_->stream_revision);
 }
 
@@ -77,7 +81,7 @@ void SoundManager::unmount_all() {
 
 void SoundManager::activate(AudioDeviceEventSink sink) {
     if (impl_->activated || impl_->shutting_down) return;
-    impl_->device.set_event_sink(rstd::move(sink));
+    impl_->device.set_event_sink(Some(rstd::move(sink)));
     impl_->activated = true;
     ++impl_->generation;
     impl_->apply();

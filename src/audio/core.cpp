@@ -1,6 +1,5 @@
 module wavsen.audio.core;
 import rstd;
-import rstd.cppstd;
 import rstd.log;
 import wavsen.audio.gain;
 import wavsen.audio.backend;
@@ -13,6 +12,10 @@ using NativeOutput = wavsen::audio::backend::PulseOutput;
 #endif
 
 using namespace rstd::prelude;
+using rstd::sync::Condvar;
+using rstd::sync::Mutex;
+using rstd::sync::atomic::Atomic;
+using rstd::sync::atomic::Ordering;
 namespace wavsen::audio
 {
 enum class CommandKind
@@ -23,10 +26,10 @@ enum class CommandKind
     Shutdown
 };
 struct DeviceCommand {
-    CommandKind                   kind {};
-    AudioDeviceDesiredState       desired;
-    std::unique_ptr<IPullChannel> channel;
-    u64                           revision {};
+    CommandKind                         kind {};
+    AudioDeviceDesiredState             desired;
+    Option<Box<dyn<PullChannelObject>>> channel;
+    u64                                 revision {};
 };
 struct CommandQueue {
     Vec<DeviceCommand> pending;
@@ -38,9 +41,9 @@ class AudioDevice::Impl {
 public:
     Impl()
         : commands_(CommandQueue {}),
-          event_sink_(AudioDeviceEventSink {}),
+          event_sink_(None()),
           stopped_(false),
-          stopped_cv_(rstd::sync::Condvar::make()),
+          stopped_cv_(Condvar::make()),
           native_(
               backend::OutputSink { this, &render_callback, &state_callback, &position_callback }) {
     }
@@ -48,18 +51,20 @@ public:
         shutdown();
         wait_stopped();
     }
-    void set_event_sink(AudioDeviceEventSink sink) {
-        auto guard = event_sink_.lock().unwrap_unchecked();
-        *guard     = rstd::move(sink);
+    void set_event_sink(Option<AudioDeviceEventSink> sink) {
+        {
+            auto guard = event_sink_.lock().unwrap_unchecked();
+            rstd::mem::swap(*guard, sink);
+        }
     }
     bool apply(AudioDeviceDesiredState desired) {
         return enqueue(
             DeviceCommand { .kind = CommandKind::Apply, .desired = rstd::move(desired) });
     }
-    bool mount(std::unique_ptr<IPullChannel> channel, u64 revision) {
-        if (! channel) return false;
-        return enqueue(DeviceCommand {
-            .kind = CommandKind::Mount, .channel = rstd::move(channel), .revision = revision });
+    bool mount(Box<dyn<PullChannelObject>> channel, u64 revision) {
+        return enqueue(DeviceCommand { .kind     = CommandKind::Mount,
+                                       .channel  = Some(rstd::move(channel)),
+                                       .revision = revision });
     }
     bool unmount_all(u64 revision) {
         return enqueue(DeviceCommand { .kind = CommandKind::Unmount, .revision = revision });
@@ -83,20 +88,14 @@ public:
             return ! value;
         });
     }
-    auto state() const -> AudioDeviceState {
-        return state_.load(rstd::sync::atomic::Ordering::Acquire);
-    }
+    auto state() const -> AudioDeviceState { return state_.load(Ordering::Acquire); }
     auto desc() const -> DeviceDesc { return { u32(2), u32(48000) }; }
     auto completed_volume_scale_revision() const -> u64 {
-        const auto revision = completed_scale_.load(rstd::sync::atomic::Ordering::Acquire);
-        return position_.load(rstd::sync::atomic::Ordering::Acquire) >=
-                       scale_end_.load(rstd::sync::atomic::Ordering::Relaxed)
-                   ? revision
-                   : u64();
+        const auto revision = completed_scale_.load(Ordering::Acquire);
+        return position_.load(Ordering::Acquire) >= scale_end_.load(Ordering::Relaxed) ? revision
+                                                                                       : u64();
     }
-    auto stream_position_frames() const -> u64 {
-        return position_.load(rstd::sync::atomic::Ordering::Relaxed);
-    }
+    auto stream_position_frames() const -> u64 { return position_.load(Ordering::Relaxed); }
 
 private:
     bool enqueue(DeviceCommand command) {
@@ -135,8 +134,8 @@ private:
                 case CommandKind::Mount:
                     if (command.revision < stream_revision_) break;
                     stream_revision_ = command.revision;
-                    command.channel->pass_desc(desc());
-                    channels_.push(rstd::move(command.channel));
+                    (*command.channel)->channel().pass_desc(desc());
+                    channels_.push(rstd::move(command.channel).unwrap());
                     break;
                 case CommandKind::Unmount:
                     if (command.revision < stream_revision_) break;
@@ -158,10 +157,10 @@ private:
         opened_    = false;
         operation_ = Operation::None;
         as<backend::Output>(native_).close();
-        position_.store(u64(), rstd::sync::atomic::Ordering::Relaxed);
+        position_.store(u64(), Ordering::Relaxed);
         submitted_ = u64();
-        completed_scale_.store(u64(), rstd::sync::atomic::Ordering::Release);
-        scale_end_.store(u64(), rstd::sync::atomic::Ordering::Relaxed);
+        completed_scale_.store(u64(), Ordering::Release);
+        scale_end_.store(u64(), Ordering::Relaxed);
     }
     void apply_desired(AudioDeviceDesiredState desired) {
         if (desired.generation != desired_.generation) close();
@@ -223,7 +222,7 @@ private:
             self.ready_                   = true;
             self.playing_                 = false;
             self.applied_buffer_revision_ = self.desired_.playback_buffer_revision;
-            for (auto& channel : self.channels_) channel->pass_desc(self.desc());
+            for (auto& channel : self.channels_) channel->channel().pass_desc(self.desc());
             break;
         case backend::OutputState::Playing:
         case backend::OutputState::Paused:
@@ -244,7 +243,7 @@ private:
         self.reconcile();
     }
     static void position_callback(void* user, u64 value) noexcept {
-        static_cast<Impl*>(user)->position_.store(value, rstd::sync::atomic::Ordering::Relaxed);
+        static_cast<Impl*>(user)->position_.store(value, Ordering::Relaxed);
     }
     static void render_callback(void* user, float* output, rstd::uint32_t frames) noexcept {
         static_cast<Impl*>(user)->render(output, frames);
@@ -260,8 +259,9 @@ private:
             auto*      block = output + offset * 2;
             for (auto& channel : channels_) {
                 rstd::mem::memset(scratch_, u8(), usize(count) * usize(2 * sizeof(float)));
-                channel->output_offset(submitted_ + u64(offset));
-                auto produced = rstd::cmp::min(channel->next_pcm(scratch_, u32(count)), u64(count));
+                channel->channel().output_offset(submitted_ + u64(offset));
+                auto produced =
+                    rstd::cmp::min(channel->channel().next_pcm(scratch_, u32(count)), u64(count));
                 for (rstd::uint64_t i = 0; i < produced.to_primitive() * 2; ++i)
                     block[i] += scratch_[i];
             }
@@ -271,20 +271,20 @@ private:
             offset += count;
         }
         submitted_ += u64(frames);
-        if (scale_.finished() &&
-            completed_scale_.load(rstd::sync::atomic::Ordering::Relaxed) != scale_revision_) {
-            scale_end_.store(submitted_, rstd::sync::atomic::Ordering::Relaxed);
-            completed_scale_.store(scale_revision_, rstd::sync::atomic::Ordering::Release);
+        if (scale_.finished() && completed_scale_.load(Ordering::Relaxed) != scale_revision_) {
+            scale_end_.store(submitted_, Ordering::Relaxed);
+            completed_scale_.store(scale_revision_, Ordering::Release);
         }
     }
     void emit(AudioDeviceState state, String error = {}) {
-        state_.store(state, rstd::sync::atomic::Ordering::Release);
-        AudioDeviceEventSink sink;
+        state_.store(state, Ordering::Release);
+        Option<AudioDeviceEventSink> sink;
         {
             auto guard = event_sink_.lock().unwrap_unchecked();
-            sink       = *guard;
+            sink       = guard->clone();
         }
-        if (sink) sink(AudioDeviceEvent { desired_.generation, state, rstd::move(error) });
+        if (sink)
+            (*sink)->operator()(AudioDeviceEvent { desired_.generation, state, rstd::move(error) });
     }
     void mark_stopped() {
         auto guard = stopped_.lock().unwrap_unchecked();
@@ -292,19 +292,19 @@ private:
         stopped_cv_.notify_all();
     }
 
-    rstd::sync::Mutex<CommandQueue>              commands_;
-    rstd::sync::Mutex<AudioDeviceEventSink>      event_sink_;
-    rstd::sync::Mutex<bool>                      stopped_;
-    rstd::sync::Condvar                          stopped_cv_;
-    rstd::sync::atomic::Atomic<AudioDeviceState> state_ { AudioDeviceState::Idle };
-    rstd::sync::atomic::Atomic<u64>              position_ { u64() };
-    rstd::sync::atomic::Atomic<u64>              completed_scale_ { u64() };
-    rstd::sync::atomic::Atomic<u64>              scale_end_ { u64() };
-    u64                                          submitted_ {};
-    AudioDeviceDesiredState                      desired_;
-    Vec<std::unique_ptr<IPullChannel>>           channels_;
-    detail::VolumeScaleRamp                      scale_;
-    float                                        scratch_[8192 * 2] {};
+    Mutex<CommandQueue>                 commands_;
+    Mutex<Option<AudioDeviceEventSink>> event_sink_;
+    Mutex<bool>                         stopped_;
+    Condvar                             stopped_cv_;
+    Atomic<AudioDeviceState>            state_ { AudioDeviceState::Idle };
+    Atomic<u64>                         position_ { u64() };
+    Atomic<u64>                         completed_scale_ { u64() };
+    Atomic<u64>                         scale_end_ { u64() };
+    u64                                 submitted_ {};
+    AudioDeviceDesiredState             desired_;
+    Vec<Box<dyn<PullChannelObject>>>    channels_;
+    detail::VolumeScaleRamp             scale_;
+    float                               scratch_[8192 * 2] {};
     u64 stream_revision_ {}, scale_revision_ {}, applied_buffer_revision_ {},
         pending_buffer_revision_ {};
     bool         ready_ {}, opened_ {}, playing_ {};
@@ -314,13 +314,13 @@ private:
 
 AudioDevice::AudioDevice(): impl_(Box<Impl>::make()) {}
 AudioDevice::~AudioDevice() = default;
-void AudioDevice::set_event_sink(AudioDeviceEventSink sink) {
+void AudioDevice::set_event_sink(Option<AudioDeviceEventSink> sink) {
     impl_->set_event_sink(rstd::move(sink));
 }
 bool AudioDevice::apply(AudioDeviceDesiredState desired) {
     return impl_->apply(rstd::move(desired));
 }
-bool AudioDevice::mount(std::unique_ptr<IPullChannel> channel, u64 revision) {
+bool AudioDevice::mount(Box<dyn<PullChannelObject>> channel, u64 revision) {
     return impl_->mount(rstd::move(channel), revision);
 }
 bool AudioDevice::unmount_all(u64 revision) { return impl_->unmount_all(revision); }

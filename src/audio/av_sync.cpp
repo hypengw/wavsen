@@ -1,6 +1,5 @@
 module wavsen.audio;
 
-import rstd.cppstd;
 import rstd;
 import rstd.log;
 import :byte_stream;
@@ -10,6 +9,8 @@ import :av_sync;
 
 using namespace rstd::prelude;
 using namespace rstd::literals;
+using rstd::sync::atomic::Atomic;
+using rstd::sync::atomic::Ordering;
 
 namespace wavsen::audio
 {
@@ -21,17 +22,12 @@ namespace
 // stamps the master-clock anchor on the first frame after open / seek.
 class AvPullChannel : public IPullChannel {
 public:
-    AvPullChannel(StreamDecoder* decoder, rstd::sync::atomic::Atomic<f64>* pts_at_anchor,
-                  rstd::sync::atomic::Atomic<u64>*  device_pos_at_anchor,
-                  rstd::sync::atomic::Atomic<bool>* needs_reanchor,
-                  rstd::sync::atomic::Atomic<bool>* anchored,
-                  rstd::sync::atomic::Atomic<f64>*  desired_rate,
-                  rstd::sync::atomic::Atomic<u64>*  desired_rate_revision,
-                  rstd::sync::atomic::Atomic<u64>*  applied_rate_revision,
-                  rstd::sync::atomic::Atomic<f64>*  rate_at_anchor,
-                  rstd::sync::atomic::Atomic<f64>*  desired_seek_seconds,
-                  rstd::sync::atomic::Atomic<u64>*  desired_seek_revision,
-                  Box<dyn<FnMut<u64()>>>            device_pos_now)
+    AvPullChannel(StreamDecoder* decoder, Atomic<f64>* pts_at_anchor,
+                  Atomic<u64>* device_pos_at_anchor, Atomic<bool>* needs_reanchor,
+                  Atomic<bool>* anchored, Atomic<f64>* desired_rate,
+                  Atomic<u64>* desired_rate_revision, Atomic<u64>* applied_rate_revision,
+                  Atomic<f64>* rate_at_anchor, Atomic<f64>* desired_seek_seconds,
+                  Atomic<u64>* desired_seek_revision, Box<dyn<FnMut<u64()>>> device_pos_now)
         : decoder_(decoder),
           pts_at_anchor_(pts_at_anchor),
           device_pos_at_anchor_(device_pos_at_anchor),
@@ -46,13 +42,12 @@ public:
           device_pos_now_(rstd::move(device_pos_now)) {}
 
     auto next_pcm(void* dst, u32 frames) -> u64 override {
-        const auto desired_seek_revision =
-            desired_seek_revision_->load(rstd::sync::atomic::Ordering::Acquire);
+        const auto desired_seek_revision = desired_seek_revision_->load(Ordering::Acquire);
         if (desired_seek_revision != applied_seek_revision_) {
-            anchored_->store(false, rstd::sync::atomic::Ordering::Release);
-            needs_reanchor_->store(true, rstd::sync::atomic::Ordering::Release);
-            const auto seconds = desired_seek_seconds_->load(rstd::sync::atomic::Ordering::Acquire);
-            seek_ready_        = decoder_->seek_to(seconds);
+            anchored_->store(false, Ordering::Release);
+            needs_reanchor_->store(true, Ordering::Release);
+            const auto seconds     = desired_seek_seconds_->load(Ordering::Acquire);
+            seek_ready_            = decoder_->seek_to(seconds);
             applied_seek_revision_ = desired_seek_revision;
             if (! seek_ready_) {
                 rstd::log::error("wavsen::audio::AvPlayer: failed to seek to {}", seconds);
@@ -60,15 +55,13 @@ public:
         }
         if (! seek_ready_) return u64();
 
-        const auto desired_revision =
-            desired_rate_revision_->load(rstd::sync::atomic::Ordering::Acquire);
-        if (desired_revision !=
-            applied_rate_revision_->load(rstd::sync::atomic::Ordering::Relaxed)) {
-            anchored_->store(false, rstd::sync::atomic::Ordering::Release);
-            needs_reanchor_->store(true, rstd::sync::atomic::Ordering::Release);
-            const auto rate = desired_rate_->load(rstd::sync::atomic::Ordering::Acquire);
+        const auto desired_revision = desired_rate_revision_->load(Ordering::Acquire);
+        if (desired_revision != applied_rate_revision_->load(Ordering::Relaxed)) {
+            anchored_->store(false, Ordering::Release);
+            needs_reanchor_->store(true, Ordering::Release);
+            const auto rate = desired_rate_->load(Ordering::Acquire);
             rate_ready_     = decoder_->set_playback_rate(rate);
-            applied_rate_revision_->store(desired_revision, rstd::sync::atomic::Ordering::Release);
+            applied_rate_revision_->store(desired_revision, Ordering::Release);
             if (! rate_ready_) {
                 rstd::log::error("wavsen::audio::AvPlayer: failed to apply playback rate {}", rate);
             }
@@ -76,23 +69,20 @@ public:
         if (! rate_ready_) return u64();
 
         const auto produced = decoder_->next_pcm(dst, frames);
-        if (produced > u64() && needs_reanchor_->load(rstd::sync::atomic::Ordering::Acquire)) {
-            if (desired_rate_revision_->load(rstd::sync::atomic::Ordering::Acquire) !=
-                applied_rate_revision_->load(rstd::sync::atomic::Ordering::Acquire)) {
-                anchored_->store(false, rstd::sync::atomic::Ordering::Release);
+        if (produced > u64() && needs_reanchor_->load(Ordering::Acquire)) {
+            if (desired_rate_revision_->load(Ordering::Acquire) !=
+                applied_rate_revision_->load(Ordering::Acquire)) {
+                anchored_->store(false, Ordering::Release);
                 return produced;
             }
             // Anchor: at the moment this batch enters the device, the
             // decoder's most-recent PTS corresponds to the device's
             // current playback position.
-            pts_at_anchor_->store(decoder_->current_pts_seconds(),
-                                  rstd::sync::atomic::Ordering::Relaxed);
-            device_pos_at_anchor_->store(device_pos_now_->operator()(),
-                                         rstd::sync::atomic::Ordering::Relaxed);
-            rate_at_anchor_->store(decoder_->playback_rate(),
-                                   rstd::sync::atomic::Ordering::Relaxed);
-            anchored_->store(true, rstd::sync::atomic::Ordering::Release);
-            needs_reanchor_->store(false, rstd::sync::atomic::Ordering::Release);
+            pts_at_anchor_->store(decoder_->current_pts_seconds(), Ordering::Relaxed);
+            device_pos_at_anchor_->store(device_pos_now_->operator()(), Ordering::Relaxed);
+            rate_at_anchor_->store(decoder_->playback_rate(), Ordering::Relaxed);
+            anchored_->store(true, Ordering::Release);
+            needs_reanchor_->store(false, Ordering::Release);
         }
         return produced;
     }
@@ -100,21 +90,21 @@ public:
     void pass_desc(const DeviceDesc& d) override { decoder_->retarget(d); }
 
 private:
-    StreamDecoder*                    decoder_;
-    rstd::sync::atomic::Atomic<f64>*  pts_at_anchor_;
-    rstd::sync::atomic::Atomic<u64>*  device_pos_at_anchor_;
-    rstd::sync::atomic::Atomic<bool>* needs_reanchor_;
-    rstd::sync::atomic::Atomic<bool>* anchored_;
-    rstd::sync::atomic::Atomic<f64>*  desired_rate_;
-    rstd::sync::atomic::Atomic<u64>*  desired_rate_revision_;
-    rstd::sync::atomic::Atomic<u64>*  applied_rate_revision_;
-    rstd::sync::atomic::Atomic<f64>*  rate_at_anchor_;
-    rstd::sync::atomic::Atomic<f64>*  desired_seek_seconds_;
-    rstd::sync::atomic::Atomic<u64>*  desired_seek_revision_;
-    Box<dyn<FnMut<u64()>>>            device_pos_now_;
-    u64                               applied_seek_revision_;
-    bool                              rate_ready_ { true };
-    bool                              seek_ready_ { true };
+    StreamDecoder*         decoder_;
+    Atomic<f64>*           pts_at_anchor_;
+    Atomic<u64>*           device_pos_at_anchor_;
+    Atomic<bool>*          needs_reanchor_;
+    Atomic<bool>*          anchored_;
+    Atomic<f64>*           desired_rate_;
+    Atomic<u64>*           desired_rate_revision_;
+    Atomic<u64>*           applied_rate_revision_;
+    Atomic<f64>*           rate_at_anchor_;
+    Atomic<f64>*           desired_seek_seconds_;
+    Atomic<u64>*           desired_seek_revision_;
+    Box<dyn<FnMut<u64()>>> device_pos_now_;
+    u64                    applied_seek_revision_;
+    bool                   rate_ready_ { true };
+    bool                   seek_ready_ { true };
 };
 
 } // namespace
@@ -137,17 +127,17 @@ public:
     StreamDecoder*             decoder_ptr = nullptr;
     Option<Box<StreamDecoder>> decoder_storage;
 
-    rstd::sync::atomic::Atomic<f64>  pts_at_anchor { f64() };
-    rstd::sync::atomic::Atomic<u64>  device_pos_at_anchor { u64() };
-    rstd::sync::atomic::Atomic<bool> needs_reanchor { true };
-    rstd::sync::atomic::Atomic<bool> anchored { false };
-    rstd::sync::atomic::Atomic<bool> paused { true };
-    rstd::sync::atomic::Atomic<f64>  desired_rate { f64(1.0) };
-    rstd::sync::atomic::Atomic<u64>  desired_rate_revision { u64() };
-    rstd::sync::atomic::Atomic<u64>  applied_rate_revision { u64() };
-    rstd::sync::atomic::Atomic<f64>  rate_at_anchor { f64(1.0) };
-    rstd::sync::atomic::Atomic<f64>  desired_seek_seconds { f64() };
-    rstd::sync::atomic::Atomic<u64>  desired_seek_revision { u64() };
+    Atomic<f64>  pts_at_anchor { f64() };
+    Atomic<u64>  device_pos_at_anchor { u64() };
+    Atomic<bool> needs_reanchor { true };
+    Atomic<bool> anchored { false };
+    Atomic<bool> paused { true };
+    Atomic<f64>  desired_rate { f64(1.0) };
+    Atomic<u64>  desired_rate_revision { u64() };
+    Atomic<u64>  applied_rate_revision { u64() };
+    Atomic<f64>  rate_at_anchor { f64(1.0) };
+    Atomic<f64>  desired_seek_seconds { f64() };
+    Atomic<u64>  desired_seek_revision { u64() };
 };
 
 AvPlayer::AvPlayer(ConstructionKey, AudioClientIdentity identity)
@@ -187,21 +177,24 @@ auto AvPlayer::open(ByteStream src, bool open_device, AudioClientIdentity identi
                     p->impl_->decoder_ptr->sample_rate());
 
     auto* dev     = &p->impl_->device;
-    auto  channel = std::make_unique<AvPullChannel>(p->impl_->decoder_ptr,
-                                                    &p->impl_->pts_at_anchor,
-                                                    &p->impl_->device_pos_at_anchor,
-                                                    &p->impl_->needs_reanchor,
-                                                    &p->impl_->anchored,
-                                                    &p->impl_->desired_rate,
-                                                    &p->impl_->desired_rate_revision,
-                                                    &p->impl_->applied_rate_revision,
-                                                    &p->impl_->rate_at_anchor,
-                                                    &p->impl_->desired_seek_seconds,
-                                                    &p->impl_->desired_seek_revision,
-                                                    Box<dyn<FnMut<u64()>>>::make([dev]() {
-                                                       return dev->stream_position_frames();
-                                                    }));
-    if (! p->impl_->device.mount(rstd::move(channel), p->impl_->stream_revision)) {
+    auto  channel = Box<AvPullChannel>::make(p->impl_->decoder_ptr,
+                                             &p->impl_->pts_at_anchor,
+                                             &p->impl_->device_pos_at_anchor,
+                                             &p->impl_->needs_reanchor,
+                                             &p->impl_->anchored,
+                                             &p->impl_->desired_rate,
+                                             &p->impl_->desired_rate_revision,
+                                             &p->impl_->applied_rate_revision,
+                                             &p->impl_->rate_at_anchor,
+                                             &p->impl_->desired_seek_seconds,
+                                             &p->impl_->desired_seek_revision,
+                                             Box<dyn<FnMut<u64()>>>::make([dev]() {
+                                                return dev->stream_position_frames();
+                                             }));
+    if (! p->impl_->device.mount(
+            Box<dyn<PullChannelObject>>::from_raw(
+                dyn<PullChannelObject>::from_ptr(rstd::move(channel).into_raw())),
+            p->impl_->stream_revision)) {
         return Err(AvPlayerError { String::make("audio device stream mount failed"_str) });
     }
 
@@ -213,9 +206,9 @@ bool AvPlayer::open_device() {
     ++impl_->desired.generation;
     impl_->desired.active = true;
     if (! impl_->device.apply(impl_->desired.clone())) return false;
-    impl_->anchored.store(false, rstd::sync::atomic::Ordering::Release);
-    impl_->needs_reanchor.store(true, rstd::sync::atomic::Ordering::Release);
-    impl_->device_pos_at_anchor.store(u64(), rstd::sync::atomic::Ordering::Relaxed);
+    impl_->anchored.store(false, Ordering::Release);
+    impl_->needs_reanchor.store(true, Ordering::Release);
+    impl_->device_pos_at_anchor.store(u64(), Ordering::Relaxed);
     return true;
 }
 
@@ -224,33 +217,31 @@ void AvPlayer::close_device() {
     ++impl_->desired.generation;
     impl_->desired.active = false;
     (void)impl_->device.apply(impl_->desired.clone());
-    impl_->anchored.store(false, rstd::sync::atomic::Ordering::Release);
-    impl_->needs_reanchor.store(true, rstd::sync::atomic::Ordering::Release);
-    impl_->device_pos_at_anchor.store(u64(), rstd::sync::atomic::Ordering::Relaxed);
+    impl_->anchored.store(false, Ordering::Release);
+    impl_->needs_reanchor.store(true, Ordering::Release);
+    impl_->device_pos_at_anchor.store(u64(), Ordering::Relaxed);
 }
 
 bool AvPlayer::is_device_open() const { return impl_->desired.active; }
 
 void AvPlayer::play() {
-    const bool was_paused = impl_->paused.load(rstd::sync::atomic::Ordering::Relaxed);
+    const bool was_paused = impl_->paused.load(Ordering::Relaxed);
     if (was_paused) {
-        impl_->anchored.store(false, rstd::sync::atomic::Ordering::Release);
-        impl_->needs_reanchor.store(true, rstd::sync::atomic::Ordering::Release);
+        impl_->anchored.store(false, Ordering::Release);
+        impl_->needs_reanchor.store(true, Ordering::Release);
     }
-    impl_->paused.store(false, rstd::sync::atomic::Ordering::Relaxed);
+    impl_->paused.store(false, Ordering::Relaxed);
     impl_->desired.playing = true;
     if (impl_->desired.active) (void)impl_->device.apply(impl_->desired.clone());
 }
 
 void AvPlayer::pause() {
-    impl_->paused.store(true, rstd::sync::atomic::Ordering::Relaxed);
+    impl_->paused.store(true, Ordering::Relaxed);
     impl_->desired.playing = false;
     if (impl_->desired.active) (void)impl_->device.apply(impl_->desired.clone());
 }
 
-bool AvPlayer::is_paused() const {
-    return impl_->paused.load(rstd::sync::atomic::Ordering::Relaxed);
-}
+bool AvPlayer::is_paused() const { return impl_->paused.load(Ordering::Relaxed); }
 
 void AvPlayer::seek_to_start() { seek_to(f64()); }
 
@@ -259,10 +250,10 @@ void AvPlayer::seek_to(f64 seconds) {
         rstd::log::warn("wavsen::audio::AvPlayer: invalid seek target {}", seconds);
         return;
     }
-    impl_->desired_seek_seconds.store(seconds, rstd::sync::atomic::Ordering::Release);
-    impl_->desired_seek_revision.fetch_add(u64(1), rstd::sync::atomic::Ordering::AcqRel);
-    impl_->anchored.store(false, rstd::sync::atomic::Ordering::Release);
-    impl_->needs_reanchor.store(true, rstd::sync::atomic::Ordering::Release);
+    impl_->desired_seek_seconds.store(seconds, Ordering::Release);
+    impl_->desired_seek_revision.fetch_add(u64(1), Ordering::AcqRel);
+    impl_->anchored.store(false, Ordering::Release);
+    impl_->needs_reanchor.store(true, Ordering::Release);
     ++impl_->desired.playback_buffer_revision;
     if (impl_->desired.active) (void)impl_->device.apply(impl_->desired.clone());
 }
@@ -270,30 +261,28 @@ void AvPlayer::seek_to(f64 seconds) {
 auto AvPlayer::set_playback_rate(f64 rate) -> bool {
     if (! rate.is_finite() || rate <= f64()) return false;
     if (rate == playback_rate()) return true;
-    impl_->desired_rate.store(rate, rstd::sync::atomic::Ordering::Release);
-    impl_->desired_rate_revision.fetch_add(u64(1), rstd::sync::atomic::Ordering::AcqRel);
-    impl_->anchored.store(false, rstd::sync::atomic::Ordering::Release);
-    impl_->needs_reanchor.store(true, rstd::sync::atomic::Ordering::Release);
+    impl_->desired_rate.store(rate, Ordering::Release);
+    impl_->desired_rate_revision.fetch_add(u64(1), Ordering::AcqRel);
+    impl_->anchored.store(false, Ordering::Release);
+    impl_->needs_reanchor.store(true, Ordering::Release);
     return true;
 }
 
-auto AvPlayer::playback_rate() const -> f64 {
-    return impl_->desired_rate.load(rstd::sync::atomic::Ordering::Acquire);
-}
+auto AvPlayer::playback_rate() const -> f64 { return impl_->desired_rate.load(Ordering::Acquire); }
 
 auto AvPlayer::current_time_seconds() const -> f64 {
     if (impl_->device.state() != AudioDeviceState::ReadyPlaying) {
         return f64::NAN_;
     }
-    if (! impl_->anchored.load(rstd::sync::atomic::Ordering::Acquire)) {
+    if (! impl_->anchored.load(Ordering::Acquire)) {
         return f64::NAN_;
     }
     const auto sr = impl_->device.desc().sample_rate;
     if (sr == u32()) return f64::NAN_;
     const auto played = impl_->device.stream_position_frames();
-    const auto base   = impl_->device_pos_at_anchor.load(rstd::sync::atomic::Ordering::Relaxed);
-    const auto pts0   = impl_->pts_at_anchor.load(rstd::sync::atomic::Ordering::Relaxed);
-    const auto rate   = impl_->rate_at_anchor.load(rstd::sync::atomic::Ordering::Relaxed);
+    const auto base   = impl_->device_pos_at_anchor.load(Ordering::Relaxed);
+    const auto pts0   = impl_->pts_at_anchor.load(Ordering::Relaxed);
+    const auto rate   = impl_->rate_at_anchor.load(Ordering::Relaxed);
     // played may legally drop below base across some backends after stop/start;
     // saturate to anchor pts in that case.
     if (played < base) return pts0;

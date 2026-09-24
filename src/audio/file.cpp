@@ -1,7 +1,6 @@
 module wavsen.audio;
 import :file;
 import rstd;
-import rstd.cppstd;
 import :byte_stream;
 import wavsen.audio.core;
 import :mixer;
@@ -461,12 +460,15 @@ private:
 
 } // namespace
 
-auto make_stream(ByteStream source, const SoundStream::Desc& desc) -> std::unique_ptr<SoundStream> {
+auto make_stream(ByteStream source, const SoundStream::Desc& desc)
+    -> Option<Box<dyn<SoundStreamObject>>> {
     StreamDecoder dec;
     if (! dec.open(rstd::move(source), { desc.channels, desc.sample_rate })) {
-        return nullptr;
+        return None();
     }
-    return std::make_unique<DecoderStream>(rstd::move(dec));
+    auto stream = Box<DecoderStream>::make(rstd::move(dec));
+    return Some(Box<dyn<SoundStreamObject>>::from_raw(
+        dyn<SoundStreamObject>::from_ptr(rstd::move(stream).into_raw())));
 }
 
 } // namespace wavsen::audio

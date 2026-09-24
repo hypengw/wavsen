@@ -1,5 +1,3 @@
-#include <limits>
-
 import rstd;
 import wavsen.audio.capture;
 import wavsen.audio.capture_window;
@@ -14,16 +12,21 @@ int main() {
         samples[usize(frame * 2)]     = static_cast<float>(frame);
         samples[usize(frame * 2 + 1)] = -static_cast<float>(frame);
     }
-    samples[usize(10)] = std::numeric_limits<float>::quiet_NaN();
+    samples[usize(10)] = f32::NAN_.to_primitive();
     publisher.ingest(samples.data(),
                      static_cast<rstd::uint32_t>(wavsen::audio::kAudioWindowFrames - 1),
                      wavsen::audio::kAudioChannels);
     wavsen::audio::AudioPcmWindow window {};
     if (publisher.snapshot(window)) return 1;
+    const auto before_capture = rstd::time::Instant::now().duration_since_epoch().as_nanos();
     publisher.ingest(samples.data() + (wavsen::audio::kAudioWindowFrames - 1) * 2,
                      1,
                      wavsen::audio::kAudioChannels);
     if (! publisher.snapshot(window)) return 2;
+    const auto after_capture = rstd::time::Instant::now().duration_since_epoch().as_nanos();
+    if (u128(window.captured_at_ns) < before_capture || u128(window.captured_at_ns) > after_capture)
+        return 13;
+    const auto first_timestamp = window.captured_at_ns;
     if (window.generation != 1 || window.sequence != 1 ||
         window.end_sample_frame != wavsen::audio::kAudioWindowFrames)
         return 3;
@@ -34,6 +37,7 @@ int main() {
                      static_cast<rstd::uint32_t>(wavsen::audio::kAudioWindowFrames),
                      wavsen::audio::kAudioChannels);
     if (! publisher.snapshot(window) || window.generation != 2 || window.sequence != 1) return 5;
+    if (window.captured_at_ns < first_timestamp) return 14;
 
     constexpr rstd::size_t                                                     extra_frames = 17;
     rstd::array<float, (wavsen::audio::kAudioWindowFrames + extra_frames) * 2> clean {};

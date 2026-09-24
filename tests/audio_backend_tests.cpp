@@ -1,5 +1,4 @@
 import rstd;
-import rstd.cppstd;
 import wavsen.audio.core;
 import wavsen.audio.capture;
 
@@ -29,12 +28,16 @@ auto wait_for(AudioDevice& device, AudioDeviceState expected) -> bool {
 int main(int argc, char**) {
     rstd::sync::atomic::Atomic<u64> generation { u64() };
     AudioDevice                     device;
-    device.set_event_sink([&](AudioDeviceEvent event) {
+    device.set_event_sink(Some(AudioDeviceEventSink::make([&](AudioDeviceEvent event) {
         generation.store(event.generation, rstd::sync::atomic::Ordering::Release);
-    });
+    })));
     AudioDeviceDesiredState desired;
     desired.generation = u64(1);
-    if (! device.mount(std::make_unique<SilentChannel>(), u64(1))) return 1;
+    auto channel       = Box<SilentChannel>::make();
+    if (! device.mount(Box<dyn<PullChannelObject>>::from_raw(
+                           dyn<PullChannelObject>::from_ptr(rstd::move(channel).into_raw())),
+                       u64(1)))
+        return 1;
     if (! device.apply(desired.clone())) return 2;
     for (int i = 0; i < 150 && generation.load(rstd::sync::atomic::Ordering::Acquire) != u64(1);
          ++i)

@@ -1,10 +1,9 @@
 export module wavsen.audio:file;
 
-import rstd.cppstd;
 import rstd;
 import :byte_stream;
-import wavsen.audio.core;  // DeviceDesc
-import :mixer; // SoundStream (for make_stream factory)
+import wavsen.audio.core; // DeviceDesc
+import :mixer;            // SoundStream (for make_stream factory)
 
 using namespace rstd::prelude;
 
@@ -128,6 +127,7 @@ private:
 
 // Construct a libav*-backed SoundStream from a byte source. Decodes any
 // container/codec libavformat understands and resamples to `desc`.
-auto make_stream(ByteStream source, const SoundStream::Desc& desc) -> std::unique_ptr<SoundStream>;
+auto make_stream(ByteStream source, const SoundStream::Desc& desc)
+    -> Option<Box<dyn<SoundStreamObject>>>;
 
 } // namespace wavsen::audio

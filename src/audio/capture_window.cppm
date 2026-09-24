@@ -1,14 +1,10 @@
-module;
-
-#include <chrono>
-#include <cmath>
-
 export module wavsen.audio.capture_window;
 
 import rstd;
 import wavsen.audio.capture;
 
 using namespace rstd::prelude;
+using rstd::time::Instant;
 
 export namespace wavsen::audio::capture
 {
@@ -52,16 +48,16 @@ public:
     }
 
 private:
-    static float finite(float sample) { return std::isfinite(sample) ? sample : 0.0f; }
+    static float finite(float sample) { return f32(sample).is_finite() ? sample : 0.0f; }
 
     void publish() {
         AudioPcmWindow window {};
         window.generation = generation_;
         window.sequence   = ++sequence_;
         window.captured_at_ns =
-            static_cast<rstd::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                            std::chrono::steady_clock::now().time_since_epoch())
-                                            .count());
+            rstd::try_from<u64>(Instant::now().duration_since_epoch().as_nanos())
+                .unwrap()
+                .to_primitive();
         window.end_sample_frame = end_sample_frame_;
         window.sample_rate_hz   = kAudioSampleRate;
         window.channels         = kAudioChannels;

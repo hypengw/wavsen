@@ -1,8 +1,8 @@
 module wavsen.decode;
 
-import rstd.cppstd;
 import rstd;
 import wavsen.ffi.ffmpeg;
+import wavsen.ffi.ffmpeg.owner;
 
 using namespace rstd::prelude;
 
@@ -12,37 +12,11 @@ namespace wavsen::decode
 namespace
 {
 
-struct FmtCtxDeleter {
-    void operator()(AVFormatContext* p) const noexcept {
-        if (p) avformat_close_input(&p);
-    }
-};
-struct CodecCtxDeleter {
-    void operator()(AVCodecContext* p) const noexcept {
-        if (p) avcodec_free_context(&p);
-    }
-};
-struct FrameDeleter {
-    void operator()(AVFrame* p) const noexcept {
-        if (p) av_frame_free(&p);
-    }
-};
-struct PacketDeleter {
-    void operator()(AVPacket* p) const noexcept {
-        if (p) av_packet_free(&p);
-    }
-};
-struct SwsDeleter {
-    void operator()(SwsContext* p) const noexcept {
-        if (p) sws_freeContext(p);
-    }
-};
-
-using FmtCtxPtr   = std::unique_ptr<AVFormatContext, FmtCtxDeleter>;
-using CodecCtxPtr = std::unique_ptr<AVCodecContext, CodecCtxDeleter>;
-using FramePtr    = std::unique_ptr<AVFrame, FrameDeleter>;
-using PacketPtr   = std::unique_ptr<AVPacket, PacketDeleter>;
-using SwsPtr      = std::unique_ptr<SwsContext, SwsDeleter>;
+using ffi::ffmpeg::CodecCtxPtr;
+using ffi::ffmpeg::FmtCtxPtr;
+using ffi::ffmpeg::FramePtr;
+using ffi::ffmpeg::PacketPtr;
+using ffi::ffmpeg::SwsPtr;
 
 String av_err_str(int rc) {
     char buf[AV_ERROR_MAX_STRING_SIZE] = {};

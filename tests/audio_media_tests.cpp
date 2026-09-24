@@ -1,5 +1,4 @@
 import rstd;
-import rstd.cppstd;
 import wavsen.audio;
 using namespace rstd::prelude;
 using namespace rstd::literals;
@@ -82,6 +81,15 @@ int main(int argc, char** argv) {
         }
         return ! expect_error && count > u64() && decoder.is_eof() ? 0 : 35;
     }
+    auto stream =
+        make_stream(ByteStream::make(rstd::io::Cursor<Vec<u8>>(pcm_wav())), { u32(2), u32(48000) });
+    if (stream.is_none()) return 40;
+    rstd::array<float, 2048> stream_output {};
+    if ((*stream)->stream().next_pcm(stream_output.data(), u32(1024)) != u64(1024)) return 41;
+    stream = None();
+    if (make_stream(ByteStream::make(rstd::io::Cursor<Vec<u8>>(Vec<u8>())), { u32(2), u32(48000) })
+            .is_some())
+        return 42;
     StreamDecoder invalid_decoder;
     if (invalid_decoder.open(OpenedMedia(), { u32(2), u32(48000) })) return 14;
     if (invalid_decoder.error().kind != MediaErrorKind::InvalidInput) return 15;
