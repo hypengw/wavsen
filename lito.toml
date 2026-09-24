@@ -19,11 +19,11 @@ condition = 'target.os != "macos"'
 public-definitions = ["WAVSEN_HAS_VAAPI=1"]
 
 [dependencies]
-rstd-core = { version = "0.1.0", pub = true }
-rstd-std = { version = "0.1.0", pub = true }
-rstd-log = "0.1.0"
-rstd-dlopn = "0.1.0"
-vvk = { git = "https://github.com/litocpp/vvk.git", pub = true }
+rstd-core = { version = "0.1.5", pub = true }
+rstd-std = { version = "0.1.5", pub = true }
+rstd-log = "0.1.5"
+rstd-dlopn = "0.1.5"
+vvk = { version = "0.1.0", pub = true }
 
 [external-dependencies.pkg-config]
 libavformat = { module = "libavformat", version = ">= 58", pub = true }
