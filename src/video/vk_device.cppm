@@ -32,8 +32,7 @@ struct QueueFamily {
 // Bring up a VkInstance/VkPhysicalDevice/VkDevice with the extension set
 // the bridge pool's Vulkan backend needs (DMA-BUF export, modifier
 // import, semaphore SYNC_FD), plus a HOST_VISIBLE|COHERENT staging
-// buffer pre-mapped at `width*height*4` bytes for repeated RGBA8
-// uploads.
+// buffer allocated on demand for RGBA8 uploads.
 class Producer {
 public:
     ~Producer();
@@ -115,6 +114,10 @@ public:
     auto upload_into(VkImage target, u32 target_width, u32 target_height, const rstd::uint8_t* data,
                      usize size) -> Result<int, Error>;
 
+    // Wait for the current upload and release its host-visible staging allocation.
+    // A later upload recreates the allocation on demand.
+    auto release_upload_buffer() -> Result<empty, Error>;
+
     Producer() = default;
 
 private:
@@ -125,6 +128,8 @@ private:
 
     int upload_into_(VkImage target, u32 target_width, u32 target_height, const rstd::uint8_t* data,
                      usize size, Error* err);
+    bool prepare_upload_buffer_(Error* err);
+    bool wait_for_upload_(Error* err);
 
     Option<vvk::VulkanLoader> loader_;
     vvk::InstanceDispatch     instance_dispatch_;
@@ -145,7 +150,6 @@ private:
     vvk::DeviceMemory staging_mem_;
     vvk::Buffer       staging_buf_;
     rstd::uint8_t*    staging_map_ { nullptr };
-    VkDeviceSize      staging_size_ { 0 };
 
     u32            width_ {};
     u32            height_ {};

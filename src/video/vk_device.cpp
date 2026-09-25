@@ -410,22 +410,28 @@ Option<Box<Producer>> Producer::build_(u32 width, u32 height, Option<ref<str>> r
         return None();
     }
 
-    self->staging_size_ = static_cast<VkDeviceSize>(width.to_primitive()) *
-                          static_cast<VkDeviceSize>(height.to_primitive()) * 4;
+    return Some(rstd::move(self));
+}
+
+bool Producer::prepare_upload_buffer_(Error* err) {
+    if (staging_buf_) return true;
+
+    const VkDeviceSize staging_size = static_cast<VkDeviceSize>(width_.to_primitive()) *
+                                      static_cast<VkDeviceSize>(height_.to_primitive()) * 4;
     VkBufferCreateInfo buffer_info {};
     buffer_info.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    buffer_info.size        = self->staging_size_;
+    buffer_info.size        = staging_size;
     buffer_info.usage       = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
     buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    if (VkResult result = self->device_.CreateBuffer(buffer_info, self->staging_buf_);
-        result != VK_SUCCESS) {
+    vvk::Buffer staging_buf;
+    if (VkResult result = device_.CreateBuffer(buffer_info, staging_buf); result != VK_SUCCESS) {
         fail(err, vk_error("vkCreateBuffer(staging)"_str, result));
-        return None();
+        return false;
     }
 
-    auto memory_requirements = self->device_.GetBufferMemoryRequirements(*self->staging_buf_);
-    auto memory_properties   = self->phys_.GetMemoryProperties().memoryProperties;
-    rstd::uint32_t host_type = u32::MAX.to_primitive();
+    auto           memory_requirements = device_.GetBufferMemoryRequirements(*staging_buf);
+    auto           memory_properties   = phys_.GetMemoryProperties().memoryProperties;
+    rstd::uint32_t host_type           = u32::MAX.to_primitive();
     for (rstd::uint32_t i = 0; i < memory_properties.memoryTypeCount; ++i) {
         auto flags = memory_properties.memoryTypes[i].propertyFlags;
         if ((memory_requirements.memoryTypeBits & (1u << i)) &&
@@ -437,30 +443,45 @@ Option<Box<Producer>> Producer::build_(u32 width, u32 height, Option<ref<str>> r
     }
     if (host_type == u32::MAX.to_primitive()) {
         fail(err, "no HOST_VISIBLE|COHERENT memory type for staging"_str);
-        return None();
+        return false;
     }
 
     VkMemoryAllocateInfo allocate_info {};
     allocate_info.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     allocate_info.allocationSize  = memory_requirements.size;
     allocate_info.memoryTypeIndex = host_type;
-    if (VkResult result = self->device_.AllocateMemory(allocate_info, self->staging_mem_);
+    vvk::DeviceMemory staging_mem;
+    if (VkResult result = device_.AllocateMemory(allocate_info, staging_mem);
         result != VK_SUCCESS) {
         fail(err, vk_error("vkAllocateMemory(staging)"_str, result));
-        return None();
+        return false;
     }
-    if (VkResult result = self->staging_buf_.BindMemory(*self->staging_mem_, 0);
-        result != VK_SUCCESS) {
+    if (VkResult result = staging_buf.BindMemory(*staging_mem, 0); result != VK_SUCCESS) {
         fail(err, vk_error("vkBindBufferMemory(staging)"_str, result));
-        return None();
+        return false;
     }
-    if (VkResult result = self->staging_mem_.Map(0, VK_WHOLE_SIZE, &self->staging_map_);
-        result != VK_SUCCESS) {
+    rstd::uint8_t* staging_map = nullptr;
+    if (VkResult result = staging_mem.Map(0, VK_WHOLE_SIZE, &staging_map); result != VK_SUCCESS) {
         fail(err, vk_error("vkMapMemory(staging)"_str, result));
-        return None();
+        return false;
     }
 
-    return Some(rstd::move(self));
+    staging_buf_ = rstd::move(staging_buf);
+    staging_mem_ = rstd::move(staging_mem);
+    staging_map_ = staging_map;
+    return true;
+}
+
+bool Producer::wait_for_upload_(Error* err) {
+    if (! fence_pending_) return true;
+    if (VkResult result = done_fence_.Wait(1'000'000'000ull); result != VK_SUCCESS) {
+        return fail(err, vk_error("vkWaitForFences(upload)"_str, result));
+    }
+    if (VkResult result = done_fence_.Reset(); result != VK_SUCCESS) {
+        return fail(err, vk_error("vkResetFences"_str, result));
+    }
+    fence_pending_ = false;
+    return true;
 }
 
 auto Producer::upload_into(VkImage target, u32 target_width, u32 target_height,
@@ -477,28 +498,18 @@ int Producer::upload_into_(VkImage target, u32 target_width, u32 target_height,
         fail(err, "upload_into: target VkImage is null"_str);
         return -1;
     }
-    if (! owns_device_ || ! staging_buf_) {
-        fail(err,
-             "upload_into: Producer has no staging buffer "_str
-             "(from_external Producers are decode-only)");
+    if (! owns_device_) {
+        fail(err, "upload_into: from_external Producers are decode-only"_str);
         return -1;
     }
-    if (static_cast<VkDeviceSize>(size.to_primitive()) != staging_size_) {
+    const VkDeviceSize expected_size = static_cast<VkDeviceSize>(width_.to_primitive()) *
+                                       static_cast<VkDeviceSize>(height_.to_primitive()) * 4;
+    if (static_cast<VkDeviceSize>(size.to_primitive()) != expected_size) {
         fail(err, "upload_into: size mismatch"_str);
         return -1;
     }
 
-    if (fence_pending_) {
-        if (VkResult result = done_fence_.Wait(1'000'000'000ull); result != VK_SUCCESS) {
-            fail(err, vk_error("vkWaitForFences(prev upload)"_str, result));
-            return -1;
-        }
-        if (VkResult result = done_fence_.Reset(); result != VK_SUCCESS) {
-            fail(err, vk_error("vkResetFences"_str, result));
-            return -1;
-        }
-        fence_pending_ = false;
-    }
+    if (! wait_for_upload_(err) || ! prepare_upload_buffer_(err)) return -1;
 
     rstd::mem::memcpy(staging_map_, data, size);
     if (VkResult result = cmd_.Reset(); result != VK_SUCCESS) {
@@ -574,6 +585,16 @@ int Producer::upload_into_(VkImage target, u32 target_width, u32 target_height,
         return -1;
     }
     return sync_fd;
+}
+
+auto Producer::release_upload_buffer() -> Result<empty, Error> {
+    Error err;
+    if (! wait_for_upload_(&err)) return Err(rstd::move(err));
+    if (staging_map_ && staging_mem_) staging_mem_.Unmap();
+    staging_map_ = nullptr;
+    staging_buf_.reset();
+    staging_mem_.reset();
+    return Ok(empty {});
 }
 
 } // namespace wavsen::video
