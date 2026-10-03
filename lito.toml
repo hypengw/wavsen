@@ -51,6 +51,10 @@ condition = 'target.os == "macos"'
 frameworks = ["CoreAudio", "AudioToolbox", "CoreFoundation", "Foundation", "CoreVideo", "IOSurface", "Metal"]
 
 [[test]]
+name = "image"
+sources = ["tests/image_tests.cpp"]
+
+[[test]]
 name = "audio-capture-window"
 sources = ["tests/audio_capture_window_tests.cpp"]
 
