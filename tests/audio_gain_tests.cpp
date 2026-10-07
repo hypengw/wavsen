@@ -1,5 +1,9 @@
+#if LITO_FEAT_AUDIO
 import rstd;
 import wavsen.audio.gain;
+
+namespace wavsen::tests::audio_gain
+{
 
 using namespace rstd::prelude;
 
@@ -54,9 +58,12 @@ bool test_repeated_redirection_stays_bounded() {
 
 } // namespace
 
-int main() {
+int run(int, char**) {
     if (! test_unmute_stops_at_target_inside_chunk()) return 1;
     if (! test_mute_stops_at_target_inside_chunk()) return 1;
     if (! test_repeated_redirection_stays_bounded()) return 1;
     return 0;
 }
+
+}
+#endif

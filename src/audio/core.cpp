@@ -6,9 +6,12 @@ import wavsen.audio.backend;
 #if defined(__APPLE__)
 import wavsen.audio.backend.coreaudio.output;
 using NativeOutput = wavsen::audio::backend::CoreAudioOutput;
-#else
+#elif LITO_FEAT_PULSE
 import wavsen.audio.backend.pulse.output;
 using NativeOutput = wavsen::audio::backend::PulseOutput;
+#else
+import wavsen.audio.backend.unavailable;
+using NativeOutput = wavsen::audio::backend::UnavailableOutput;
 #endif
 
 using namespace rstd::prelude;

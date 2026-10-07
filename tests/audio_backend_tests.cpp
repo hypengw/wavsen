@@ -1,6 +1,10 @@
+#if LITO_FEAT_AUDIO
 import rstd;
 import wavsen.audio.core;
 import wavsen.audio.capture;
+
+namespace wavsen::tests::audio_backend
+{
 
 using namespace rstd::prelude;
 using namespace wavsen::audio;
@@ -25,7 +29,7 @@ auto wait_for(AudioDevice& device, AudioDeviceState expected) -> bool {
     return false;
 }
 
-int main(int argc, char**) {
+int run(int argc, char**) {
     rstd::sync::atomic::Atomic<u64> generation { u64() };
     AudioDevice                     device;
     device.set_event_sink(Some(AudioDeviceEventSink::make([&](AudioDeviceEvent event) {
@@ -75,6 +79,14 @@ int main(int argc, char**) {
         if (capture.is_inited()) return 21;
         if (! received || window.channels != 2 || window.sample_rate_hz != 48000) return 22;
     }
+#if !defined(__APPLE__) && !LITO_FEAT_PULSE
+    desired.active = true;
+    desired.playing = true;
+    if (! device.apply(desired.clone())) return 23;
+    if (device.state() != AudioDeviceState::Failed) return 24;
+    AudioCapture unavailable_capture;
+    if (unavailable_capture.init() || unavailable_capture.is_inited()) return 25;
+#endif
     if (! device.unmount_all(u64(2))) return 5;
     device.shutdown();
     device.wait_stopped();
@@ -84,3 +96,6 @@ int main(int argc, char**) {
     device.wait_stopped();
     return 0;
 }
+
+}
+#endif

@@ -7,9 +7,12 @@ import wavsen.audio.backend;
 #if defined(__APPLE__)
 import wavsen.audio.backend.coreaudio.capture;
 using NativeCapture = wavsen::audio::backend::CoreAudioCapture;
-#else
+#elif LITO_FEAT_PULSE
 import wavsen.audio.backend.pulse.capture;
 using NativeCapture = wavsen::audio::backend::PulseCapture;
+#else
+import wavsen.audio.backend.unavailable;
+using NativeCapture = wavsen::audio::backend::UnavailableCapture;
 #endif
 
 using namespace rstd::prelude;

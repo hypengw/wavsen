@@ -1,8 +1,12 @@
+#if LITO_FEAT_AUDIO
 #include <rstd/macro.hpp>
 
 import rstd;
 import wavsen.audio;
 import wavsen.audio.core;
+
+namespace wavsen::tests::audio_ownership
+{
 
 using namespace rstd::prelude;
 using namespace wavsen::audio;
@@ -55,7 +59,7 @@ void wait_for(const Atomic<u32>& count, u32 expected) {
 }
 } // namespace
 
-int main() {
+int run(int, char**) {
     Counts      mounted, stale, rejected, stopped;
     AudioDevice device;
     rstd_assert(device.mount(channel(mounted), u64(2)));
@@ -100,4 +104,8 @@ int main() {
         wait_for(stream_counts.described, u32(1));
     }
     rstd_assert(stream_counts.dropped.load(Ordering::Acquire) == u32(1));
+    return 0;
 }
+
+}
+#endif

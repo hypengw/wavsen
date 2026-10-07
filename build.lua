@@ -1,4 +1,11 @@
 local target = lito.target({ kind = "lib", name = "wavsen" })
+local environment = lito.target_preprocessor_environment(target)
+local video = false
+for _, definition in ipairs(environment.definitions) do
+    if definition == "LITO_FEAT_VIDEO=1" then video = true end
+end
+if not video then return end
+
 local tool = lito.tool("glslang")
 
 lito.run({

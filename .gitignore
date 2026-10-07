@@ -1,7 +1,8 @@
 build/
 build-*/
-/.lito/
-/lito.lock
+.lito/
+lito.lock
 .cache/
 compile_commands.json
 .vscode/
+/shell.nix

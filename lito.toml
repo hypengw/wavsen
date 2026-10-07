@@ -9,75 +9,68 @@ name = "wavsen"
 module = "wavsen"
 archive = "wavsen"
 when = [
-  { condition = 'target.os == "macos"', source-groups = ["apple-native"] },
+  { condition = 'feature.video && target.os == "macos"', source-groups = ["apple-video"] },
+  { condition = 'feature.audio && target.os == "macos"', source-groups = ["apple-audio"] },
 ]
 
-[[when]]
-condition = 'target.os != "macos"'
-
-[when.usage]
-public-definitions = ["WAVSEN_HAS_VAAPI=1"]
+[features]
+image = { default = true }
+jxl = { default = false }
+audio = { default = true }
+video = { default = true }
+pulse = { default = true }
+vaapi = { default = true }
 
 [dependencies]
-rstd-core = { version = "0.1.5", pub = true }
-rstd-std = { version = "0.1.5", pub = true }
-rstd-log = "0.1.5"
-rstd-dlopn = "0.1.5"
-vvk = { version = "0.1.0", pub = true }
+rstd-core = { version = "0.1.7", pub = true }
+rstd-std = { version = "0.1.7", pub = true }
+rstd-log = { version = "0.1.7", condition = "feature.audio || feature.video" }
+rstd-dlopn = { version = "0.1.7", condition = 'feature.audio && feature.pulse && target.os != "macos"' }
+vvk = { version = "0.1.0", pub = true, condition = "feature.video" }
 
 [external-dependencies.pkg-config]
-libavformat = { module = "libavformat", version = ">= 58", pub = true }
-libavcodec = { module = "libavcodec", version = ">= 58", pub = true }
-libavutil = { module = "libavutil", version = ">= 56", pub = true }
-libswscale = { module = "libswscale", version = ">= 5", pub = true }
-libswresample = { module = "libswresample", version = ">= 3", pub = true }
-libva = { module = "libva", pub = true, condition = 'target.os != "macos"' }
-libva-drm = { module = "libva-drm", pub = true, condition = 'target.os != "macos"' }
-libpulse = { module = "libpulse", version = ">= 14.0", usage = "compile", condition = 'target.os != "macos"' }
+libavformat = { module = "libavformat", version = ">= 58", pub = true, condition = "feature.image || feature.audio || feature.video" }
+libavcodec = { module = "libavcodec", version = ">= 58", pub = true, condition = "feature.image || feature.audio || feature.video" }
+libavutil = { module = "libavutil", version = ">= 56", pub = true, condition = "feature.image || feature.audio || feature.video" }
+libswscale = { module = "libswscale", version = ">= 5", pub = true, condition = "feature.image || feature.audio || feature.video" }
+libswresample = { module = "libswresample", version = ">= 3", pub = true, condition = "feature.audio" }
+libjxl = { module = "libjxl", version = ">= 0.11", pub = true, condition = "feature.image && feature.jxl" }
+libva = { module = "libva", pub = true, condition = 'feature.video && feature.vaapi && target.os != "macos"' }
+libva-drm = { module = "libva-drm", pub = true, condition = 'feature.video && feature.vaapi && target.os != "macos"' }
+libpulse = { module = "libpulse", version = ">= 14.0", usage = "compile", condition = 'feature.audio && feature.pulse && target.os != "macos"' }
 
 [build-tools.glslang]
 path = "glslangValidator"
 
-[source-groups.apple-native]
-sources = [
-  "src/video/apple/metal.mm",
-  "src/audio/backend/coreaudio/process_tap.mm",
-]
+[source-groups.apple-video]
+sources = ["src/video/apple/metal.mm"]
+[source-groups.apple-audio]
+sources = ["src/audio/backend/coreaudio/process_tap.mm"]
 
 [[when]]
-condition = 'target.os == "macos"'
-
+condition = 'feature.audio && target.os == "macos"'
 [when.usage]
-frameworks = ["CoreAudio", "AudioToolbox", "CoreFoundation", "Foundation", "CoreVideo", "IOSurface", "Metal"]
+frameworks = ["CoreAudio", "AudioToolbox", "CoreFoundation", "Foundation"]
+
+[[when]]
+condition = 'feature.video && target.os == "macos"'
+[when.usage]
+frameworks = ["CoreFoundation", "Foundation", "CoreVideo", "IOSurface", "Metal"]
 
 [[test]]
-name = "image"
-sources = ["tests/image_tests.cpp"]
-
-[[test]]
-name = "audio-capture-window"
-sources = ["tests/audio_capture_window_tests.cpp"]
-
-[[test]]
-name = "audio-gain"
-sources = ["tests/audio_gain_tests.cpp"]
-
-[[test]]
-name = "audio-backend"
-sources = ["tests/audio_backend_tests.cpp"]
-
-[[test]]
-name = "audio-media"
-sources = ["tests/audio_media_tests.cpp"]
-
-[[test]]
-name = "audio-ownership"
-sources = ["tests/audio_ownership_tests.cpp"]
-
-[[test]]
-name = "decode-owner"
-sources = ["tests/decode_owner_tests.cpp"]
-
-[[test]]
-name = "stream-decoder-rate"
-sources = ["tests/stream_decoder_rate_tests.cpp"]
+name = "wavsen-tests"
+sources = [
+  "tests/main.cpp",
+  "tests/audio_capture_window_tests.cpp",
+  "tests/audio_gain_tests.cpp",
+  "tests/audio_backend_tests.cpp",
+  "tests/audio_media_tests.cpp",
+  "tests/audio_ownership_tests.cpp",
+  "tests/stream_decoder_rate_tests.cpp",
+  "tests/decode_owner_tests.cpp",
+  "tests/presenter_tests.cpp",
+  "tests/image_tests.cpp",
+  "tests/still_tests.cpp",
+  "tests/container_tests.cpp",
+  "tests/jpeg_tests.cpp",
+]

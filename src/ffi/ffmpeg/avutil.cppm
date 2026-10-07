@@ -13,7 +13,7 @@ extern "C" {
 #include <libavutil/hwcontext.h>
 #include <libavutil/hwcontext_drm.h>
 #include <libavutil/hwcontext_vulkan.h>
-#if defined(WAVSEN_HAS_VAAPI)
+#if LITO_FEAT_VAAPI && !defined(__APPLE__)
 #    include <libavutil/hwcontext_vaapi.h>
 #endif
 #include <libavutil/imgutils.h>
@@ -43,7 +43,7 @@ inline constexpr AVPixelFormat k_AV_PIX_FMT_P016 = AV_PIX_FMT_P016;
 #undef AV_PIX_FMT_P016
 
 export module wavsen.ffi.ffmpeg:avutil;
-export import wavsen.ffi.ffmpeg.audio;
+export import wavsen.ffi.ffmpeg.base;
 
 export {
     inline constexpr AVPixelFormat AV_PIX_FMT_P010    = _wv_avutil::k_AV_PIX_FMT_P010;
@@ -67,7 +67,7 @@ export {
     using ::AVVulkanDeviceContext;
     using ::AVVulkanDeviceQueueFamily;
     using ::AVVulkanFramesContext;
-#if defined(WAVSEN_HAS_VAAPI)
+#if LITO_FEAT_VAAPI && !defined(__APPLE__)
     using ::AVVAAPIDeviceContext;
     using ::AVVAAPIFramesContext;
 #endif
@@ -89,7 +89,7 @@ export {
     using ::AV_PIX_FMT_RGBA;
     using ::AV_PIX_FMT_VULKAN;
     using ::AV_PIX_FMT_YUV420P;
-#if defined(WAVSEN_HAS_VAAPI)
+#if LITO_FEAT_VAAPI && !defined(__APPLE__)
     using ::AV_PIX_FMT_VAAPI;
 #endif
     using ::AV_PIX_FMT_DRM_PRIME;
@@ -105,7 +105,7 @@ export {
     using ::AV_HWDEVICE_TYPE_DRM;
     using ::AV_HWDEVICE_TYPE_VIDEOTOOLBOX;
     using ::AV_HWDEVICE_TYPE_VULKAN;
-#if defined(WAVSEN_HAS_VAAPI)
+#if LITO_FEAT_VAAPI && !defined(__APPLE__)
     using ::AV_HWDEVICE_TYPE_VAAPI;
 #endif
 

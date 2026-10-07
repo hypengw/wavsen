@@ -1,8 +1,12 @@
+#if LITO_FEAT_VIDEO
 #include <rstd/macro.hpp>
 
 import rstd;
 import wavsen.decode;
 import wavsen.ffi.ffmpeg.owner;
+
+namespace wavsen::tests::decode_owner
+{
 
 using namespace rstd::prelude;
 using namespace rstd::literals;
@@ -19,7 +23,7 @@ void release(Resource*& value) {
 }
 } // namespace
 
-int main() {
+int run(int, char**) {
     Resource first, second;
     {
         AvOwner<Resource, release> a(&first);
@@ -50,4 +54,8 @@ int main() {
             .is_err());
     rstd::fs::write(path.as_path(), "invalid"_str.as_bytes()).unwrap();
     rstd_assert(wavsen::decode::extract_thumbnail(path.as_path().to_str().unwrap(), {}).is_err());
+    return 0;
 }
+
+}
+#endif

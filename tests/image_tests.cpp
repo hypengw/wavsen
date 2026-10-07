@@ -1,8 +1,12 @@
+#if LITO_FEAT_IMAGE
 #include <rstd/macro.hpp>
 import rstd;
 import wavsen.image;
-import wavsen.ffi.ffmpeg;
+import wavsen.ffi.ffmpeg.base;
 import wavsen.ffi.ffmpeg.image;
+
+namespace wavsen::tests::image
+{
 
 using namespace rstd::prelude;
 using namespace rstd::literals;
@@ -194,7 +198,7 @@ void rgba_resize(const Budget& budget) {
     }
 }
 
-int main(int argc, char** argv) {
+int run(int argc, char** argv) {
     auto budget = Budget::try_make(usize(256 * 1024 * 1024)).unwrap();
     image_color_conversion(budget);
     jpeg_output_bounds(budget);
@@ -295,4 +299,8 @@ int main(int argc, char** argv) {
         }
     }
     rstd_assert(budget.statistics().live_bytes == usize());
+    return 0;
 }
+
+}
+#endif

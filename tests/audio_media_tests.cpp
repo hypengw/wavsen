@@ -1,5 +1,9 @@
+#if LITO_FEAT_AUDIO
 import rstd;
 import wavsen.audio;
+
+namespace wavsen::tests::audio_media
+{
 using namespace rstd::prelude;
 using namespace rstd::literals;
 using namespace wavsen::audio;
@@ -47,7 +51,7 @@ bool cancel(void* value) noexcept {
         rstd::sync::atomic::Ordering::Acquire);
 }
 } // namespace
-int main(int argc, char** argv) {
+int run(int argc, char** argv) {
     if (argc > 1) {
         const bool expect_error =
             argc > 2 && rstd::ffi::CStr::from_ptr(argv[2]).to_str().unwrap() == "error"_str;
@@ -121,3 +125,6 @@ int main(int argc, char** argv) {
     if (cancelled.is_ok() || cancelled.unwrap_err().kind != MediaErrorKind::Cancelled) return 13;
     return 0;
 }
+
+}
+#endif

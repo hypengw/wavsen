@@ -94,7 +94,7 @@ AVPixelFormat get_format_prefer_vulkan(AVCodecContext* cctx, const AVPixelFormat
     return avcodec_default_get_format(cctx, fmts);
 }
 
-#if defined(WAVSEN_HAS_VAAPI)
+#if LITO_FEAT_VAAPI && !defined(__APPLE__)
 /* VAAPI counterpart: prefer AV_PIX_FMT_VAAPI when offered. The codec
  * bootstraps an internal AVHWFramesContext from the AVHWDeviceContext
  * we attached to cctx->hw_device_ctx, so we don't pre-allocate frames
@@ -740,7 +740,7 @@ auto VideoDecoder::open_with_vk(ref<str> path, u32 target_width, u32 target_heig
             hwd  = make_shared_vulkan_hwdevice(producer, &local_err);
             kind = FrameKind::VulkanShared;
         } else if (order[i] == HwAccel::Vaapi) {
-#if defined(WAVSEN_HAS_VAAPI)
+#if LITO_FEAT_VAAPI && !defined(__APPLE__)
             hwd  = make_vaapi_hwdevice(render_node, &local_err);
             kind = FrameKind::VaapiDrm;
 #else
@@ -875,7 +875,7 @@ auto VideoDecoder::open_from_stream(InputStreamFactory make_stream, u32 target_w
             hwd  = make_shared_vulkan_hwdevice(*producer, &local_err);
             kind = FrameKind::VulkanShared;
         } else if (order[i] == HwAccel::Vaapi) {
-#if defined(WAVSEN_HAS_VAAPI)
+#if LITO_FEAT_VAAPI && !defined(__APPLE__)
             hwd  = make_vaapi_hwdevice(render_node, &local_err);
             kind = FrameKind::VaapiDrm;
 #else
@@ -1058,7 +1058,7 @@ auto VideoDecoder::build_internal(InputSpec input, u32 target_width, u32 target_
             rstd::log::info("VideoDecoder: AV_HWDEVICE_TYPE_VULKAN attached for codec {}.",
                             avcodec_get_name(par->codec_id));
         }
-#if defined(WAVSEN_HAS_VAAPI)
+#if LITO_FEAT_VAAPI && !defined(__APPLE__)
         else if (requested_kind == FrameKind::VaapiDrm) {
             self->state_->cctx->get_format = get_format_prefer_vaapi;
             rstd::log::info("VideoDecoder: AV_HWDEVICE_TYPE_VAAPI attached for codec {}.",
@@ -1260,7 +1260,7 @@ int VideoDecoder::next_vaapi_frame_(VaapiFrameView& out, Error* err) {
     while (true) {
         int rc = avcodec_receive_frame(st.cctx.get(), st.src_frame.get());
         if (rc == 0) {
-#if defined(WAVSEN_HAS_VAAPI)
+#if LITO_FEAT_VAAPI && !defined(__APPLE__)
             if (st.src_frame->format != AV_PIX_FMT_VAAPI) {
                 fail(err, "next_vaapi_frame: decoder produced non-VAAPI frame"_str);
                 return -1;

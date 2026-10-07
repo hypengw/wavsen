@@ -1,2 +1,2 @@
 export module wavsen.ffi.ffmpeg:avformat;
-export import wavsen.ffi.ffmpeg.audio;
+export import wavsen.ffi.ffmpeg.base;

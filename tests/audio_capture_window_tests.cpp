@@ -1,10 +1,14 @@
+#if LITO_FEAT_AUDIO
 import rstd;
 import wavsen.audio.capture;
 import wavsen.audio.capture_window;
 
+namespace wavsen::tests::audio_capture_window
+{
+
 using namespace rstd::prelude;
 
-int main() {
+int run(int, char**) {
     wavsen::audio::capture::PcmWindowPublisher publisher;
     publisher.restart();
     rstd::array<float, wavsen::audio::kAudioSampleCount> samples {};
@@ -94,3 +98,6 @@ int main() {
     if (! concurrent.snapshot(final) || final.sequence != 256) return 12;
     return 0;
 }
+
+}
+#endif

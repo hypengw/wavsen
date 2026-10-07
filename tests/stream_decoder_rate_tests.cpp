@@ -1,5 +1,9 @@
+#if LITO_FEAT_AUDIO
 import rstd;
 import wavsen.audio;
+
+namespace wavsen::tests::stream_decoder_rate
+{
 
 using namespace rstd::prelude;
 
@@ -66,7 +70,7 @@ auto decoded_frames(f64 rate) -> u64 {
 
 } // namespace
 
-int main() {
+int run(int, char**) {
     const auto normal  = decoded_frames(f64(1.0));
     const auto fast    = decoded_frames(f64(2.0));
     const auto fastest = decoded_frames(f64(4.0));
@@ -83,3 +87,6 @@ int main() {
     if (decoder.set_playback_rate(f64::INFINITY_)) return 8;
     return 0;
 }
+
+}
+#endif

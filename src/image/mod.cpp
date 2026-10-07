@@ -1,7 +1,12 @@
+module;
+#include <rstd/macro.hpp>
 module wavsen.image;
-import wavsen.ffi.ffmpeg;
-import wavsen.ffi.ffmpeg.owner;
+import wavsen.ffi.ffmpeg.base;
+import wavsen.ffi.ffmpeg.base.owner;
 import wavsen.ffi.ffmpeg.image;
+#if LITO_FEAT_JXL
+import wavsen.ffi.jxl;
+#endif
 
 using namespace rstd::prelude;
 using namespace rstd::literals;
@@ -191,6 +196,35 @@ struct ImageSession::Impl {
                : stopped()              ? Error::ResourceLimit
                                         : Error::Decode;
     }
+    bool still_complete {};
+    auto next_frame() -> Result<bool, Error> {
+        if (still_complete) return Ok(false);
+        auto& s = *this;
+        av_frame_unref(s.frame.get());
+        for (;;) {
+            if (s.stopped()) return Err(s.failure());
+            auto rc = avcodec_receive_frame(s.codec.get(), s.frame.get());
+            if (rc == 0) break;
+            if (rc == AVERROR_EOF) {
+                s.metadata.frame_count = s.index;
+                return Ok(false);
+            }
+            if (rc != AVERROR(EAGAIN) || s.flushing) return Err(s.failure());
+            do {
+                av_packet_unref(s.packet.get());
+                rc = av_read_frame(s.format.get(), s.packet.get());
+            } while (rc >= 0 && s.packet->stream_index != s.stream && ! s.stopped());
+            if (rc == AVERROR_EOF) {
+                s.flushing = true;
+                rc         = avcodec_send_packet(s.codec.get(), nullptr);
+            } else if (rc >= 0) {
+                rc = avcodec_send_packet(s.codec.get(), s.packet.get());
+            }
+            av_packet_unref(s.packet.get());
+            if (rc < 0) return Err(s.failure());
+        }
+        return Ok(true);
+    }
     auto open() -> Result<empty, Error> {
         if (cancellation.cancelled()) return Err(Error::Cancelled);
         if (source.size() == u64() || source.size() > limits.encoded_bytes ||
@@ -216,7 +250,7 @@ struct ImageSession::Impl {
         av_dict_set(&options,
                     "format_whitelist",
                     "png_pipe,jpeg_pipe,bmp_pipe,ppm_pipe,pgm_pipe,pbm_pipe,pam_pipe,tiff_pipe,"
-                    "webp_pipe,webp,webp_anim,gif,apng,ico,image2pipe",
+                    "webp_pipe,webp,webp_anim,gif,apng,ico,image2pipe,jpegxl_pipe,jpegxl_anim",
                     0);
         av_dict_set(&options, "protocol_whitelist", "", 0);
         auto name = rstd::ffi::CString::make(String::make(source.name()));
@@ -231,7 +265,7 @@ struct ImageSession::Impl {
         if (probed < 0) {
             av_dict_free(&options);
             avformat_free_context(raw);
-            return Err(failure());
+            return Err(stopped() ? failure() : Error::Unsupported);
         }
         // image2 owns filename sequences; this session must read only its supplied AVIO.
         if (rstd::ffi::CStr::from_ptr(input_format->name).to_str().unwrap() == "image2"_str)
@@ -243,7 +277,10 @@ struct ImageSession::Impl {
         // Probe codec parameters without decoding a duplicate full-resolution frame.
         stream = av_find_best_stream(raw, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
         if (stream < 0) return Err(Error::Unsupported);
-        auto* params  = raw->streams[stream]->codecpar;
+        auto* params = raw->streams[stream]->codecpar;
+#if ! LITO_FEAT_JXL
+        if (params->codec_id == AV_CODEC_ID_JPEGXL) return Err(Error::Unsupported);
+#endif
         auto* decoder = avcodec_find_decoder(params->codec_id);
         if (! decoder) return Err(Error::Unsupported);
         codec.reset(avcodec_alloc_context3(decoder));
@@ -295,33 +332,133 @@ auto ImageSession::reset() -> Result<empty, Error> {
     return Ok(empty {});
 }
 
+auto ImageSession::prepare_still() -> Result<StillImage, Error> {
+    auto& s = *impl_;
+    if (s.index != u64()) return Err(Error::InvalidInput);
+    s.started     = rstd::time::Instant::now();
+    auto encoding = ffi::ffmpeg::image_encoding(s.codec->codec_id);
+    if (encoding == Encoding::Other) return Err(Error::Unsupported);
+    ffi::ffmpeg::image_strict_decode(s.codec.get());
+    auto ready = s.next_frame();
+    if (ready.is_err()) return Err(ready.unwrap_err_unchecked());
+    if (! *ready) return Err(Error::Decode);
+    auto image =
+        ffi::ffmpeg::prepare_still(*s.frame.get(), s.codec->codec_id, s.budget.clone(), s.limits);
+    if (image.is_err()) return Err(image.unwrap_err_unchecked());
+    if (encoding == Encoding::Jpeg) image->encoded_source = Some(s.source.clone());
+    s.index = u64(1);
+    // TODO: Validate source completeness beyond FFmpeg's decoder error checks.
+    auto extra = s.next_frame();
+    if (extra.is_err()) return Err(extra.unwrap_err_unchecked());
+    if (*extra) return Err(Error::Unsupported);
+    if (s.stopped()) return Err(s.failure());
+    s.still_complete       = true;
+    s.metadata.frame_count = u64(1);
+    return image;
+}
+
+auto capabilities() -> Capabilities {
+    auto result = ffi::ffmpeg::image_capabilities();
+#if LITO_FEAT_JXL
+    result.jxl_version         = u32(wavsen_jxl_version());
+    result.jpeg_reconstruction = true;
+#endif
+    return result;
+}
+
+#if LITO_FEAT_JXL
+auto recompress_jpeg(const Source& source, u32 effort, Budget budget, const Cancellation& cancel,
+                     Limits limits) -> Result<Pixels, Error> {
+    return ffi::jxl::recompress(source, effort, rstd::move(budget), cancel, limits);
+}
+
+auto reconstruct_jpeg(const Pixels& input, Budget budget, const Cancellation& cancel, Limits limits)
+    -> Result<Pixels, Error> {
+    return ffi::jxl::reconstruct(input, rstd::move(budget), cancel, limits);
+}
+
+auto verify_jpeg(const Source& source, const Pixels& encoded, Budget budget,
+                 const Cancellation& cancel, Limits limits) -> Result<empty, Error> {
+    auto restored = reconstruct_jpeg(encoded, rstd::move(budget), cancel, limits);
+    if (restored.is_err()) return Err(restored.unwrap_err_unchecked());
+    if (source.size() != u64(restored->size().to_primitive())) return Err(Error::Encode);
+    auto             input = source.reader();
+    array<u8, 65536> buffer {};
+    usize            position {};
+    while (position < restored->size()) {
+        if (cancel.cancelled()) return Err(Error::Cancelled);
+        auto count = input.read(buffer.as_mut_slice());
+        if (count.is_err()) return Err(Error::Io);
+        if (*count == usize() || *count > restored->size() - position ||
+            rstd::mem::memcmp(buffer.as_slice().as_raw_ptr(),
+                              restored->data() + position.to_primitive(),
+                              *count) != 0)
+            return Err(Error::Encode);
+        position += *count;
+    }
+    return Ok(empty {});
+}
+
+auto archive(const StillImage& input, Budget budget, const Cancellation& cancel, Limits limits)
+    -> Result<MasterImage, Error> {
+    if (cancel.cancelled()) return Err(Error::Cancelled);
+    if (input.descriptor.encoding == Encoding::Jpeg) {
+        if (input.encoded_source.is_none()) return Err(Error::InvalidInput);
+        auto bytes = rstd_try(
+            recompress_jpeg(*input.encoded_source, u32(3), budget.clone(), cancel, limits));
+        rstd_try(verify_jpeg(*input.encoded_source, bytes, budget.clone(), cancel, limits));
+        return Ok(MasterImage { rstd::move(bytes), Fidelity::JpegReconstruction });
+    }
+    if (input.descriptor.encoding != Encoding::Png && input.descriptor.encoding != Encoding::Webp)
+        return Err(Error::Unsupported);
+    auto bytes     = rstd_try(encode(input, {}, budget.clone(), cancel, limits));
+    auto exif      = input.source_exif.is_some() && input.descriptor.orientation == u32(1)
+                         ? Ok(input.source_exif->clone())
+                         : exif_snapshot(input, budget.clone());
+    auto payload   = rstd_try(rstd::move(exif));
+    auto container = rstd_try(JxlContainer::open(rstd::move(bytes), limits));
+    auto view      = [](const Pixels& value) {
+        return slice<u8>::from_raw_parts(reinterpret_cast<const rstd::byte*>(value.data()),
+                                         value.size());
+    };
+    auto output = rstd_try(container.rewrite_metadata(
+        { Some(view(payload)),
+          input.source_xmp.is_some() ? Some(view(*input.source_xmp)) : None() },
+        budget.clone(),
+        cancel));
+    rstd_try(verify_lossless(input, output, budget.clone(), cancel, limits));
+    auto checked  = rstd_try(JxlContainer::open(output.clone(), limits));
+    auto metadata = rstd_try(checked.metadata(budget.clone()));
+    if (metadata.exif.is_none() || metadata.exif->size() != payload.size() ||
+        rstd::mem::memcmp(metadata.exif->data(), payload.data(), payload.size()) != 0)
+        return Err(Error::Encode);
+    if (input.source_xmp.is_some() &&
+        (metadata.xmp.is_none() || metadata.xmp->size() != input.source_xmp->size() ||
+         rstd::mem::memcmp(
+             metadata.xmp->data(), input.source_xmp->data(), input.source_xmp->size()) != 0))
+        return Err(Error::Encode);
+    return Ok(MasterImage { rstd::move(output), Fidelity::SampleLossless });
+}
+
+#endif
+
+auto encode(const StillImage& image, EncodeSpec spec, Budget budget,
+            const Cancellation& cancellation, Limits limits) -> Result<Pixels, Error> {
+    if (cancellation.cancelled()) return Err(Error::Cancelled);
+    auto started = rstd::time::Instant::now();
+    auto result  = ffi::ffmpeg::encode_still(image, spec, rstd::move(budget), limits);
+    if (cancellation.cancelled()) return Err(Error::Cancelled);
+    if (started.elapsed().as_millis() > limits.operation_ms) return Err(Error::ResourceLimit);
+    return result;
+}
+
 auto ImageSession::next(DecodeRequest request) -> Result<Option<DecodedImage>, Error> {
     auto& s   = *impl_;
     s.started = rstd::time::Instant::now();
     if (s.cancellation.cancelled()) return Err(Error::Cancelled);
-    av_frame_unref(s.frame.get());
-    for (;;) {
-        if (s.stopped()) return Err(s.failure());
-        auto rc = avcodec_receive_frame(s.codec.get(), s.frame.get());
-        if (rc == 0) break;
-        if (rc == AVERROR_EOF) {
-            s.metadata.frame_count = s.index;
-            return Ok(Option<DecodedImage> {});
-        }
-        if (rc != AVERROR(EAGAIN) || s.flushing) return Err(s.failure());
-        do {
-            av_packet_unref(s.packet.get());
-            rc = av_read_frame(s.format.get(), s.packet.get());
-        } while (rc >= 0 && s.packet->stream_index != s.stream && ! s.stopped());
-        if (rc == AVERROR_EOF) {
-            s.flushing = true;
-            rc         = avcodec_send_packet(s.codec.get(), nullptr);
-        } else if (rc >= 0) {
-            rc = avcodec_send_packet(s.codec.get(), s.packet.get());
-        }
-        av_packet_unref(s.packet.get());
-        if (rc < 0) return Err(s.failure());
-    }
+    auto ready = s.next_frame();
+    if (ready.is_err()) return Err(ready.unwrap_err_unchecked());
+    if (! *ready) return Ok(Option<DecodedImage> {});
     const int sw = s.frame->width, sh = s.frame->height;
     if (sw <= 0 || sh <= 0 || u64(sw) * u64(sh) > s.limits.source_pixels)
         return Err(Error::ResourceLimit);
@@ -407,4 +544,389 @@ auto ImageSession::next(DecodeRequest request) -> Result<Option<DecodedImage>, E
     if (s.cancellation.cancelled()) return Err(Error::Cancelled);
     return Ok(Some(rstd::move(frame)));
 }
+} // namespace wavsen::image
+
+namespace wavsen::image
+{
+namespace
+{
+#if LITO_FEAT_JXL
+constexpr rstd::uint32_t box_type(char a, char b, char c, char d) {
+    return (rstd::uint32_t(a) << 24) | (rstd::uint32_t(b) << 16) | (rstd::uint32_t(c) << 8) |
+           rstd::uint32_t(d);
+}
+constexpr auto signature_box  = box_type('J', 'X', 'L', ' ');
+constexpr auto ftyp_box       = box_type('f', 't', 'y', 'p');
+constexpr auto code_box       = box_type('j', 'x', 'l', 'c');
+constexpr auto part_box       = box_type('j', 'x', 'l', 'p');
+constexpr auto exif_box       = box_type('E', 'x', 'i', 'f');
+constexpr auto xmp_box        = box_type('x', 'm', 'l', ' ');
+constexpr auto compressed_box = box_type('b', 'r', 'o', 'b');
+constexpr auto jpeg_box       = box_type('j', 'b', 'r', 'd');
+auto           read_be(const rstd::uint8_t* p, unsigned bytes) -> rstd::uint64_t {
+    rstd::uint64_t value = 0;
+    for (unsigned i = 0; i < bytes; ++i) value = (value << 8) | p[i];
+    return value;
+}
+#endif
+void write_be(rstd::uint8_t* p, rstd::uint64_t value, unsigned bytes) {
+    for (unsigned i = 0; i < bytes; ++i) p[bytes - i - 1] = (value >> (8 * i)) & 255;
+}
+} // namespace
+
+#if LITO_FEAT_JXL
+struct JxlContainer::Impl {
+    struct BoxRange {
+        usize          start, size, payload;
+        rstd::uint32_t type, actual_type;
+    };
+    Pixels        bytes;
+    Limits        limits;
+    Vec<BoxRange> boxes = Vec<BoxRange>::make();
+    bool          bare {}, reconstruction {};
+    usize         codestream_size;
+    explicit Impl(Pixels p, Limits l): bytes(rstd::move(p)), limits(l) {}
+};
+JxlContainer::JxlContainer(Box<Impl> impl): impl_(rstd::move(impl)) {}
+JxlContainer::JxlContainer(JxlContainer&&) noexcept                    = default;
+auto JxlContainer::operator=(JxlContainer&&) noexcept -> JxlContainer& = default;
+JxlContainer::~JxlContainer()                                          = default;
+
+auto JxlContainer::open(Pixels bytes, Limits limits) -> Result<JxlContainer, Error> {
+    if (bytes.size() < usize(2) || u64(bytes.size().to_primitive()) > limits.encoded_bytes)
+        return Err(Error::ResourceLimit);
+    auto box = Box<Impl>::try_make(rstd::move(bytes), limits);
+    if (box.is_err()) return Err(Error::ResourceLimit);
+    auto&       s    = **box;
+    const auto* data = s.bytes.data();
+    if (data[0] == 0xff && data[1] == 0x0a) {
+        s.bare            = true;
+        s.codestream_size = s.bytes.size();
+        return Ok(JxlContainer(box.unwrap_unchecked()));
+    }
+    if (s.bytes.size() < usize(28) || read_be(data, 4) != 12 ||
+        read_be(data + 4, 4) != signature_box || read_be(data + 8, 4) != 0x0d0a870a)
+        return Err(Error::InvalidInput);
+    usize          offset {};
+    bool           complete = false, partial = false, whole = false;
+    rstd::uint32_t next_part = 0;
+    while (offset < s.bytes.size()) {
+        if (s.boxes.len() >= usize(4096) || s.bytes.size() - offset < usize(8))
+            return Err(Error::ResourceLimit);
+        const auto* p      = data + offset.to_primitive();
+        auto        length = read_be(p, 4);
+        auto        type   = rstd::uint32_t(read_be(p + 4, 4));
+        usize       header(8);
+        if (length == 1) {
+            if (s.bytes.size() - offset < usize(16)) return Err(Error::InvalidInput);
+            length = read_be(p + 8, 8);
+            header = usize(16);
+        } else if (length == 0)
+            length = (s.bytes.size() - offset).to_primitive();
+        if (length < header.to_primitive() || length > (s.bytes.size() - offset).to_primitive())
+            return Err(Error::InvalidInput);
+        auto count        = usize(length);
+        auto payload_size = count - header;
+        auto actual_type  = type;
+        if (s.boxes.len() == usize(1) &&
+            (type != ftyp_box || payload_size < usize(8) ||
+             read_be(p + header.to_primitive(), 4) != box_type('j', 'x', 'l', ' ')))
+            return Err(Error::Unsupported);
+        if (type == compressed_box) {
+            if (payload_size < usize(4)) return Err(Error::InvalidInput);
+            actual_type = rstd::uint32_t(read_be(p + header.to_primitive(), 4));
+        }
+        if (type == code_box) {
+            if (partial || whole || payload_size == usize()) return Err(Error::InvalidInput);
+            whole    = true;
+            complete = true;
+            s.codestream_size += payload_size;
+        } else if (type == part_box) {
+            if (whole || complete || payload_size <= usize(4)) return Err(Error::InvalidInput);
+            auto number = rstd::uint32_t(read_be(p + header.to_primitive(), 4));
+            if ((number & 0x7fffffff) != next_part++) return Err(Error::Unsupported);
+            partial  = true;
+            complete = (number & 0x80000000) != 0;
+            s.codestream_size += payload_size - usize(4);
+        }
+        if (actual_type == jpeg_box) s.reconstruction = true;
+        s.boxes.push({ offset, count, header, type, actual_type });
+        offset += count;
+    }
+    if (! complete || s.boxes.len() < usize(3)) return Err(Error::InvalidInput);
+    return Ok(JxlContainer(box.unwrap_unchecked()));
+}
+
+auto JxlContainer::codestream(Budget budget) const -> Result<Pixels, Error> {
+    const auto& s = *impl_;
+    if (s.bare) return Ok(s.bytes.clone());
+    auto result = Pixels::allocate(rstd::move(budget), s.codestream_size);
+    if (result.is_err()) return Err(result.unwrap_err_unchecked());
+    usize cursor {};
+    for (const auto& b : s.boxes) {
+        if (b.type != code_box && b.type != part_box) continue;
+        auto prefix = b.payload + usize(b.type == part_box ? 4 : 0);
+        auto count  = b.size - prefix;
+        rstd::mem::memcpy(result->data_mut() + cursor.to_primitive(),
+                          s.bytes.data() + (b.start + prefix).to_primitive(),
+                          count);
+        cursor += count;
+    }
+    return result;
+}
+
+auto JxlContainer::metadata(Budget budget) const -> Result<MetadataSnapshot, Error> {
+    const auto&      s = *impl_;
+    MetadataSnapshot result;
+    u64              total {};
+    for (const auto& box : s.boxes) {
+        if (box.actual_type != exif_box && box.actual_type != xmp_box) continue;
+        if (box.type == compressed_box) return Err(Error::Unsupported);
+        auto& target = box.type == exif_box ? result.exif : result.xmp;
+        if (target.is_some()) return Err(Error::Unsupported);
+        auto offset = box.start + box.payload;
+        auto count  = box.size - box.payload;
+        if (box.type == exif_box) {
+            if (count < usize(4)) return Err(Error::InvalidInput);
+            auto skip = usize(read_be(s.bytes.data() + offset.to_primitive(), 4));
+            if (skip > count - usize(4)) return Err(Error::InvalidInput);
+            offset += skip + usize(4);
+            count -= skip + usize(4);
+        }
+        total += u64(count.to_primitive());
+        if (total > s.limits.metadata_bytes) return Err(Error::ResourceLimit);
+        auto data = Pixels::allocate(budget.clone(), count);
+        if (data.is_err()) return Err(data.unwrap_err_unchecked());
+        rstd::mem::memcpy(data->data_mut(), s.bytes.data() + offset.to_primitive(), count);
+        target = Some(data.unwrap_unchecked());
+    }
+    return Ok(rstd::move(result));
+}
+
+auto JxlContainer::rewrite_metadata(MetadataPatch patch, Budget budget,
+                                    const Cancellation& cancel) const -> Result<Pixels, Error> {
+    const auto& s = *impl_;
+    if (cancel.cancelled()) return Err(Error::Cancelled);
+    if (patch.exif.is_none() && patch.xmp.is_none()) return Ok(s.bytes.clone());
+    if (s.reconstruction) return Err(Error::Unsupported);
+    auto omitted = [&](const Impl::BoxRange& b) {
+        return (patch.exif.is_some() && b.actual_type == exif_box) ||
+               (patch.xmp.is_some() && b.actual_type == xmp_box);
+    };
+    u64 extra {};
+    if (patch.exif.is_some() && ! patch.exif->is_empty())
+        extra += u64(patch.exif->len().to_primitive()) + u64(12);
+    if (patch.xmp.is_some() && ! patch.xmp->is_empty())
+        extra += u64(patch.xmp->len().to_primitive()) + u64(8);
+    if (extra > s.limits.metadata_bytes) return Err(Error::ResourceLimit);
+    u64 length = u64(s.bytes.size().to_primitive()) + extra;
+    if (s.bare)
+        length += u64(40);
+    else
+        for (const auto& b : s.boxes)
+            if (omitted(b)) length -= u64(b.size.to_primitive());
+    if (length > s.limits.output_bytes || length > u64(0xffffffff))
+        return Err(Error::ResourceLimit);
+    auto result = Pixels::allocate(rstd::move(budget), usize(length.to_primitive()));
+    if (result.is_err()) return Err(result.unwrap_err_unchecked());
+    auto* out = result->data_mut();
+    usize cursor {};
+    auto  metadata = [&] {
+        auto emit = [&](rstd::uint32_t type, slice<u8> payload, unsigned prefix) {
+            auto* p = out + cursor.to_primitive();
+            write_be(p, payload.len().to_primitive() + 8 + prefix, 4);
+            write_be(p + 4, type, 4);
+            if (prefix) write_be(p + 8, 0, 4);
+            rstd::mem::memcpy(p + 8 + prefix, payload.as_raw_ptr(), payload.len());
+            cursor += payload.len() + usize(8 + prefix);
+        };
+        if (patch.exif.is_some() && ! patch.exif->is_empty()) emit(exif_box, *patch.exif, 4);
+        if (patch.xmp.is_some() && ! patch.xmp->is_empty()) emit(xmp_box, *patch.xmp, 0);
+    };
+    if (s.bare) {
+        write_be(out, 12, 4);
+        write_be(out + 4, signature_box, 4);
+        write_be(out + 8, 0x0d0a870a, 4);
+        write_be(out + 12, 20, 4);
+        write_be(out + 16, ftyp_box, 4);
+        write_be(out + 20, box_type('j', 'x', 'l', ' '), 4);
+        write_be(out + 24, 0, 4);
+        write_be(out + 28, box_type('j', 'x', 'l', ' '), 4);
+        cursor = usize(32);
+        metadata();
+        write_be(out + cursor.to_primitive(), s.bytes.size().to_primitive() + 8, 4);
+        write_be(out + cursor.to_primitive() + 4, code_box, 4);
+        cursor += usize(8);
+        rstd::mem::memcpy(out + cursor.to_primitive(), s.bytes.data(), s.bytes.size());
+        cursor += s.bytes.size();
+    } else {
+        for (usize i {}; i < s.boxes.len(); ++i) {
+            if (cancel.cancelled()) return Err(Error::Cancelled);
+            const auto& b = s.boxes[i];
+            if (! omitted(b)) {
+                rstd::mem::memcpy(
+                    out + cursor.to_primitive(), s.bytes.data() + b.start.to_primitive(), b.size);
+                cursor += b.size;
+            }
+            if (i == usize(1)) metadata();
+        }
+    }
+    if (cursor != result->size()) return Err(Error::Encode);
+    return result;
+}
+#endif
+} // namespace wavsen::image
+
+namespace wavsen::image
+{
+auto exif_snapshot(const StillImage& image, Budget budget) -> Result<Pixels, Error> {
+    auto output = Pixels::allocate(rstd::move(budget), usize(50));
+    if (output.is_err()) return Err(output.unwrap_err_unchecked());
+    auto* p = output->data_mut();
+    p[0]    = 'M';
+    p[1]    = 'M';
+    write_be(p + 2, 42, 2);
+    write_be(p + 4, 8, 4);
+    write_be(p + 8, 3, 2);
+    auto field = [&](unsigned index, unsigned tag, unsigned type, unsigned value) {
+        auto* entry = p + 10 + index * 12;
+        write_be(entry, tag, 2);
+        write_be(entry + 2, type, 2);
+        write_be(entry + 4, 1, 4);
+        write_be(entry + 8, value, type == 3 ? 2 : 4);
+    };
+    const auto& d    = image.descriptor;
+    bool        swap = d.orientation >= u32(5);
+    field(0, 256, 4, (swap ? d.height : d.width).to_primitive());
+    field(1, 257, 4, (swap ? d.width : d.height).to_primitive());
+    field(2, 274, 3, 1);
+    return output;
+}
+} // namespace wavsen::image
+
+namespace wavsen::image
+{
+auto preview(const StillImage& input, u32 max_width, u32 max_height, Budget budget,
+             const Cancellation& cancel, Limits limits) -> Result<StillImage, Error> {
+    if (cancel.cancelled()) return Err(Error::Cancelled);
+    if (! max_width.to_primitive() || ! max_height.to_primitive() || max_width > u32(16384) ||
+        max_height > u32(16384))
+        return Err(Error::InvalidInput);
+    const auto& d = input.descriptor;
+    if (d.orientation >= u32(5)) rstd::swap(max_width, max_height);
+    unsigned w = d.width.to_primitive(), h = d.height.to_primitive();
+    if (! w || ! h) return Err(Error::InvalidInput);
+    double   factor = rstd::cmp::min(1.0,
+                                     rstd::cmp::min(double(max_width.to_primitive()) / w,
+                                                    double(max_height.to_primitive()) / h));
+    unsigned dw     = rstd::cmp::max(1U, unsigned(w * factor));
+    unsigned dh     = rstd::cmp::max(1U, unsigned(h * factor));
+    auto     source = ffi::ffmpeg::preview_pixels(input, budget.clone(), limits);
+    if (source.is_err()) return Err(source.unwrap_err_unchecked());
+    auto pixels = Pixels::allocate(budget.clone(), usize(dw) * usize(dh) * usize(4));
+    if (pixels.is_err()) return Err(pixels.unwrap_err_unchecked());
+    resize_associated_rgba(*source, w, h, *pixels, dw, dh);
+    for (usize i {}; i < pixels->size(); i += usize(4)) {
+        auto* p = pixels->data_mut() + i.to_primitive();
+        if (p[3])
+            for (unsigned c = 0; c < 3; ++c)
+                p[c] = rstd::cmp::min(255U, (unsigned(p[c]) * 255 + p[3] / 2) / p[3]);
+    }
+    if (cancel.cancelled()) return Err(Error::Cancelled);
+    auto     format   = PixelFormat::Rgba8;
+    unsigned channels = 4;
+    if (static_cast<unsigned>(d.pixels) % 4 < 2) {
+        channels = d.alpha ? 2 : 1;
+        format   = d.alpha ? PixelFormat::GrayAlpha8 : PixelFormat::Gray8;
+        for (unsigned i = 0; i < dw * dh; ++i) {
+            auto* p    = pixels->data_mut();
+            auto  gray = p[i * 4], alpha = p[i * 4 + 3];
+            p[i * channels] = gray;
+            if (d.alpha) p[i * channels + 1] = alpha;
+        }
+    } else if (! d.alpha) {
+        channels = 3;
+        format   = PixelFormat::Rgb8;
+        for (unsigned i = 0; i < dw * dh; ++i) {
+            auto* p = pixels->data_mut();
+            auto  r = p[i * 4], g = p[i * 4 + 1], b = p[i * 4 + 2];
+            p[i * 3]     = r;
+            p[i * 3 + 1] = g;
+            p[i * 3 + 2] = b;
+        }
+    }
+    return Ok(StillImage { pixels.unwrap_unchecked(),
+                           u32(dw * channels),
+                           { u32(dw), u32(dh), format, Encoding::Png, d.orientation, d.alpha },
+                           input.icc.is_some() ? Some(input.icc->clone()) : None() });
+}
+} // namespace wavsen::image
+
+namespace wavsen::image
+{
+#if LITO_FEAT_JXL
+auto verify_lossless(const StillImage& input, const Pixels& encoded, Budget budget,
+                     const Cancellation& cancel, Limits limits) -> Result<empty, Error> {
+    limits.encoded_bytes = limits.output_bytes;
+    auto source          = Source::memory(encoded.clone(), "verify.jxl"_str);
+    if (source.is_err()) return Err(source.unwrap_err_unchecked());
+    auto session =
+        ImageSession::open(source.unwrap_unchecked(), budget.clone(), cancel.clone(), limits);
+    if (session.is_err()) return Err(session.unwrap_err_unchecked());
+    auto decoded = session->prepare_still();
+    if (decoded.is_err()) return Err(decoded.unwrap_err_unchecked());
+    const auto& d = input.descriptor;
+    unsigned    o = d.orientation.to_primitive(), w = d.width.to_primitive(),
+                h = d.height.to_primitive();
+    if (o < 1 || o > 8) return Err(Error::InvalidInput);
+    unsigned width = o >= 5 ? h : w, height = o >= 5 ? w : h;
+    if (decoded->descriptor.width != u32(width) || decoded->descriptor.height != u32(height) ||
+        decoded->descriptor.pixels != d.pixels)
+        return Err(Error::Encode);
+    unsigned kind = static_cast<unsigned>(d.pixels);
+    if (kind >= 8) return Err(Error::InvalidInput);
+    unsigned count = (kind % 4 + 1) * (kind < 4 ? 1 : 2);
+    if (u64(w) * u64(count) > u64(input.stride.to_primitive()) ||
+        u64(input.stride.to_primitive()) * u64(h) > u64(input.pixels.size().to_primitive()))
+        return Err(Error::InvalidInput);
+    for (unsigned y = 0; y < height; ++y) {
+        if (cancel.cancelled()) return Err(Error::Cancelled);
+        for (unsigned x = 0; x < width; ++x) {
+            unsigned sx = x, sy = y;
+            switch (o) {
+            case 2: sx = w - 1 - x; break;
+            case 3:
+                sx = w - 1 - x;
+                sy = h - 1 - y;
+                break;
+            case 4: sy = h - 1 - y; break;
+            case 5:
+                sx = y;
+                sy = x;
+                break;
+            case 6:
+                sx = y;
+                sy = h - 1 - x;
+                break;
+            case 7:
+                sx = w - 1 - y;
+                sy = h - 1 - x;
+                break;
+            case 8:
+                sx = w - 1 - y;
+                sy = x;
+                break;
+            }
+            const auto* a = input.pixels.data() + sy * input.stride.to_primitive() + sx * count;
+            const auto* b = decoded->pixels.data() + y * decoded->stride.to_primitive() + x * count;
+            if (rstd::mem::memcmp(a, b, usize(count)) != 0) return Err(Error::Encode);
+        }
+    }
+    if (input.icc.is_some() &&
+        (decoded->icc.is_none() || input.icc->size() != decoded->icc->size() ||
+         rstd::mem::memcmp(input.icc->data(), decoded->icc->data(), input.icc->size()) != 0))
+        return Err(Error::Encode);
+    return Ok(empty {});
+}
+#endif
 } // namespace wavsen::image

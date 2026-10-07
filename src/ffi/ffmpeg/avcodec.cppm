@@ -14,7 +14,7 @@ extern "C" {
 }
 
 export module wavsen.ffi.ffmpeg:avcodec;
-export import wavsen.ffi.ffmpeg.audio;
+export import wavsen.ffi.ffmpeg.base;
 
 namespace _wv_avcodec
 {

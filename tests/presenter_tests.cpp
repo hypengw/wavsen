@@ -1,10 +1,14 @@
+#if LITO_FEAT_VIDEO
 import rstd;
 import wavsen.video;
+
+namespace wavsen::tests::presenter
+{
 
 using namespace rstd::prelude;
 using rstd::time::Duration;
 
-int main() {
+int run(int, char**) {
     wavsen::video::Presenter presenter(Duration::from_millis(u64(100)),
                                        Duration::from_secs(u64(1)));
     presenter.set_external_clock([] {
@@ -27,3 +31,6 @@ int main() {
     if (presenter.playback_rate() != f64(2.0)) return 9;
     return 0;
 }
+
+}
+#endif
