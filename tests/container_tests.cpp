@@ -23,8 +23,27 @@ int run(int, char**) {
     u8   raw[] { u8(255), u8(10), u8(1), u8(2) };
     auto source = bytes(
         budget, slice<u8>::from_raw_parts(reinterpret_cast<const rstd::byte*>(raw), usize(4)));
-    auto container = JxlContainer::open(source.clone()).unwrap();
-    auto xmp       = "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\">one</x:xmpmeta>"_str;
+    auto        container = JxlContainer::open(source.clone()).unwrap();
+    ExtensionId id { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 };
+    auto        extension =
+        container.rewrite_extension(id, "authors"_str.as_bytes(), budget.clone(), cancel).unwrap();
+    auto with_extension = JxlContainer::open(extension.clone()).unwrap();
+    equal(source, with_extension.codestream(budget.clone()).unwrap());
+    rstd_assert(with_extension.extension(id, budget.clone()).unwrap()->size() == usize(7));
+    auto duplicate = Pixels::allocate(budget.clone(), extension.size() + usize(31)).unwrap();
+    rstd::mem::memcpy(duplicate.data_mut(), extension.data(), usize(63));
+    rstd::mem::memcpy(duplicate.data_mut() + 63, extension.data() + 32, usize(31));
+    rstd::mem::memcpy(
+        duplicate.data_mut() + 94, extension.data() + 63, extension.size() - usize(63));
+    rstd_assert(
+        JxlContainer::open(rstd::move(duplicate)).unwrap().extension(id, budget.clone()).is_err());
+    auto bounded           = Limits {};
+    bounded.metadata_bytes = u64(24);
+    rstd_assert(JxlContainer::open(source.clone(), bounded)
+                    .unwrap()
+                    .rewrite_extension(id, "x"_str.as_bytes(), budget.clone(), cancel)
+                    .is_err());
+    auto xmp = "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\">one</x:xmpmeta>"_str;
     auto first =
         container.rewrite_metadata({ None(), Some(xmp.as_bytes()) }, budget.clone(), cancel)
             .unwrap();

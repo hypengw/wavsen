@@ -345,7 +345,8 @@ auto ImageSession::prepare_still() -> Result<StillImage, Error> {
     auto image =
         ffi::ffmpeg::prepare_still(*s.frame.get(), s.codec->codec_id, s.budget.clone(), s.limits);
     if (image.is_err()) return Err(image.unwrap_err_unchecked());
-    if (encoding == Encoding::Jpeg) image->encoded_source = Some(s.source.clone());
+    if (encoding == Encoding::Jpeg || encoding == Encoding::Jxl)
+        image->encoded_source = Some(s.source.clone());
     s.index = u64(1);
     // TODO: Validate source completeness beyond FFmpeg's decoder error checks.
     auto extra = s.next_frame();
@@ -563,6 +564,7 @@ constexpr auto exif_box       = box_type('E', 'x', 'i', 'f');
 constexpr auto xmp_box        = box_type('x', 'm', 'l', ' ');
 constexpr auto compressed_box = box_type('b', 'r', 'o', 'b');
 constexpr auto jpeg_box       = box_type('j', 'b', 'r', 'd');
+constexpr auto uuid_box       = box_type('u', 'u', 'i', 'd');
 auto           read_be(const rstd::uint8_t* p, unsigned bytes) -> rstd::uint64_t {
     rstd::uint64_t value = 0;
     for (unsigned i = 0; i < bytes; ++i) value = (value << 8) | p[i];
@@ -586,6 +588,56 @@ struct JxlContainer::Impl {
     bool          bare {}, reconstruction {};
     usize         codestream_size;
     explicit Impl(Pixels p, Limits l): bytes(rstd::move(p)), limits(l) {}
+
+    template<typename Omit, typename Emit>
+    auto repack(u64 extra, Omit omitted, Emit emit, Budget budget, const Cancellation& cancel) const
+        -> Result<Pixels, Error> {
+        const auto& s      = *this;
+        u64         length = u64(s.bytes.size().to_primitive()) + extra;
+        if (s.bare)
+            length += u64(40);
+        else
+            for (const auto& b : s.boxes)
+                if (omitted(b)) length -= u64(b.size.to_primitive());
+        if (length > s.limits.output_bytes || length > u64(0xffffffff))
+            return Err(Error::ResourceLimit);
+        auto result = Pixels::allocate(rstd::move(budget), usize(length.to_primitive()));
+        if (result.is_err()) return Err(result.unwrap_err_unchecked());
+        auto* out = result->data_mut();
+        usize cursor {};
+        if (s.bare) {
+            write_be(out, 12, 4);
+            write_be(out + 4, signature_box, 4);
+            write_be(out + 8, 0x0d0a870a, 4);
+            write_be(out + 12, 20, 4);
+            write_be(out + 16, ftyp_box, 4);
+            write_be(out + 20, box_type('j', 'x', 'l', ' '), 4);
+            write_be(out + 24, 0, 4);
+            write_be(out + 28, box_type('j', 'x', 'l', ' '), 4);
+            cursor = usize(32);
+            emit(out, cursor);
+            write_be(out + cursor.to_primitive(), s.bytes.size().to_primitive() + 8, 4);
+            write_be(out + cursor.to_primitive() + 4, code_box, 4);
+            cursor += usize(8);
+            rstd::mem::memcpy(out + cursor.to_primitive(), s.bytes.data(), s.bytes.size());
+            cursor += s.bytes.size();
+        } else {
+            for (usize i {}; i < s.boxes.len(); ++i) {
+                if (cancel.cancelled()) return Err(Error::Cancelled);
+                const auto& b = s.boxes[i];
+                if (! omitted(b)) {
+                    rstd::mem::memcpy(out + cursor.to_primitive(),
+                                      s.bytes.data() + b.start.to_primitive(),
+                                      b.size);
+                    cursor += b.size;
+                }
+                if (i == usize(1)) emit(out, cursor);
+            }
+        }
+        if (cancel.cancelled()) return Err(Error::Cancelled);
+        if (cursor != result->size()) return Err(Error::Encode);
+        return result;
+    }
 };
 JxlContainer::JxlContainer(Box<Impl> impl): impl_(rstd::move(impl)) {}
 JxlContainer::JxlContainer(JxlContainer&&) noexcept                    = default;
@@ -649,6 +701,7 @@ auto JxlContainer::open(Pixels bytes, Limits limits) -> Result<JxlContainer, Err
             complete = (number & 0x80000000) != 0;
             s.codestream_size += payload_size - usize(4);
         }
+        if (type == uuid_box && payload_size < usize(16)) return Err(Error::InvalidInput);
         if (actual_type == jpeg_box) s.reconstruction = true;
         s.boxes.push({ offset, count, header, type, actual_type });
         offset += count;
@@ -719,19 +772,7 @@ auto JxlContainer::rewrite_metadata(MetadataPatch patch, Budget budget,
     if (patch.xmp.is_some() && ! patch.xmp->is_empty())
         extra += u64(patch.xmp->len().to_primitive()) + u64(8);
     if (extra > s.limits.metadata_bytes) return Err(Error::ResourceLimit);
-    u64 length = u64(s.bytes.size().to_primitive()) + extra;
-    if (s.bare)
-        length += u64(40);
-    else
-        for (const auto& b : s.boxes)
-            if (omitted(b)) length -= u64(b.size.to_primitive());
-    if (length > s.limits.output_bytes || length > u64(0xffffffff))
-        return Err(Error::ResourceLimit);
-    auto result = Pixels::allocate(rstd::move(budget), usize(length.to_primitive()));
-    if (result.is_err()) return Err(result.unwrap_err_unchecked());
-    auto* out = result->data_mut();
-    usize cursor {};
-    auto  metadata = [&] {
+    auto metadata = [&](rstd::uint8_t* out, usize& cursor) {
         auto emit = [&](rstd::uint32_t type, slice<u8> payload, unsigned prefix) {
             auto* p = out + cursor.to_primitive();
             write_be(p, payload.len().to_primitive() + 8 + prefix, 4);
@@ -743,37 +784,62 @@ auto JxlContainer::rewrite_metadata(MetadataPatch patch, Budget budget,
         if (patch.exif.is_some() && ! patch.exif->is_empty()) emit(exif_box, *patch.exif, 4);
         if (patch.xmp.is_some() && ! patch.xmp->is_empty()) emit(xmp_box, *patch.xmp, 0);
     };
-    if (s.bare) {
-        write_be(out, 12, 4);
-        write_be(out + 4, signature_box, 4);
-        write_be(out + 8, 0x0d0a870a, 4);
-        write_be(out + 12, 20, 4);
-        write_be(out + 16, ftyp_box, 4);
-        write_be(out + 20, box_type('j', 'x', 'l', ' '), 4);
-        write_be(out + 24, 0, 4);
-        write_be(out + 28, box_type('j', 'x', 'l', ' '), 4);
-        cursor = usize(32);
-        metadata();
-        write_be(out + cursor.to_primitive(), s.bytes.size().to_primitive() + 8, 4);
-        write_be(out + cursor.to_primitive() + 4, code_box, 4);
-        cursor += usize(8);
-        rstd::mem::memcpy(out + cursor.to_primitive(), s.bytes.data(), s.bytes.size());
-        cursor += s.bytes.size();
-    } else {
-        for (usize i {}; i < s.boxes.len(); ++i) {
-            if (cancel.cancelled()) return Err(Error::Cancelled);
-            const auto& b = s.boxes[i];
-            if (! omitted(b)) {
-                rstd::mem::memcpy(
-                    out + cursor.to_primitive(), s.bytes.data() + b.start.to_primitive(), b.size);
-                cursor += b.size;
-            }
-            if (i == usize(1)) metadata();
-        }
-    }
-    if (cursor != result->size()) return Err(Error::Encode);
-    return result;
+    return s.repack(extra, omitted, metadata, rstd::move(budget), cancel);
 }
+auto JxlContainer::encoded() const -> Pixels { return impl_->bytes.clone(); }
+auto JxlContainer::info() const -> ContainerInfo {
+    return { impl_->bare, impl_->reconstruction, impl_->boxes.len() };
+}
+auto JxlContainer::extension(ExtensionId id, Budget budget) const -> Result<Option<Pixels>, Error> {
+    const auto&    s = *impl_;
+    Option<Pixels> result;
+    for (const auto& b : s.boxes) {
+        if (b.actual_type != uuid_box) continue;
+        if (b.type == compressed_box) return Err(Error::Unsupported);
+        const auto* p = s.bytes.data() + (b.start + b.payload).to_primitive();
+        if (rstd::mem::memcmp(p, id.bytes, usize(16)) != 0) continue;
+        if (result.is_some()) return Err(Error::InvalidInput);
+        auto count = b.size - b.payload - usize(16);
+        if (u64(count.to_primitive()) > s.limits.metadata_bytes) return Err(Error::ResourceLimit);
+        auto data = Pixels::allocate(budget.clone(), count);
+        if (data.is_err()) return Err(data.unwrap_err_unchecked());
+        rstd::mem::memcpy(data->data_mut(), p + 16, count);
+        result = Some(data.unwrap_unchecked());
+    }
+    return Ok(rstd::move(result));
+}
+auto JxlContainer::rewrite_extension(ExtensionId id, slice<u8> payload, Budget budget,
+                                     const Cancellation& cancel) const -> Result<Pixels, Error> {
+    const auto& s = *impl_;
+    if (cancel.cancelled()) return Err(Error::Cancelled);
+    auto existing = extension(id, budget.clone());
+    if (existing.is_err()) return Err(existing.unwrap_err_unchecked());
+    auto omitted = [&](const Impl::BoxRange& b) {
+        return b.type == uuid_box &&
+               rstd::mem::memcmp(
+                   s.bytes.data() + (b.start + b.payload).to_primitive(), id.bytes, usize(16)) == 0;
+    };
+    u64 extra = payload.is_empty() ? u64() : u64(payload.len().to_primitive()) + u64(24);
+    u64 total = extra;
+    for (const auto& b : s.boxes) {
+        if (! omitted(b) && b.type != signature_box && b.type != ftyp_box && b.type != code_box &&
+            b.type != part_box && b.actual_type != jpeg_box)
+            total += u64((b.size - b.payload).to_primitive());
+    }
+    if (total > s.limits.metadata_bytes) return Err(Error::ResourceLimit);
+    if (payload.is_empty() && existing->is_none()) return Ok(s.bytes.clone());
+    auto emit = [&](rstd::uint8_t* out, usize& cursor) {
+        if (payload.is_empty()) return;
+        auto* p = out + cursor.to_primitive();
+        write_be(p, extra.to_primitive(), 4);
+        write_be(p + 4, uuid_box, 4);
+        rstd::mem::memcpy(p + 8, id.bytes, usize(16));
+        rstd::mem::memcpy(p + 24, payload.as_raw_ptr(), payload.len());
+        cursor += usize(extra.to_primitive());
+    };
+    return s.repack(extra, omitted, emit, rstd::move(budget), cancel);
+}
+
 #endif
 } // namespace wavsen::image
 

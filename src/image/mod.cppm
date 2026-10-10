@@ -213,6 +213,15 @@ struct MetadataSnapshot {
     Option<Pixels> xmp;
 };
 
+struct ExtensionId {
+    rstd::uint8_t bytes[16];
+};
+struct ContainerInfo {
+    bool  bare_codestream;
+    bool  jpeg_reconstruction;
+    usize box_count;
+};
+
 class JxlContainer {
     struct Impl;
     Box<Impl> impl_;
@@ -225,7 +234,13 @@ public:
     static auto open(Pixels, Limits = {}) -> Result<JxlContainer, Error>;
     auto        codestream(Budget) const -> Result<Pixels, Error>;
     auto        metadata(Budget) const -> Result<MetadataSnapshot, Error>;
-    auto        rewrite_metadata(MetadataPatch, Budget, const Cancellation&) const
+    auto        info() const -> ContainerInfo;
+    auto        encoded() const -> Pixels;
+    auto        extension(ExtensionId, Budget) const -> Result<Option<Pixels>, Error>;
+    // An empty payload removes this extension; unrelated boxes stay byte-identical.
+    auto rewrite_extension(ExtensionId, slice<u8>, Budget, const Cancellation&) const
+        -> Result<Pixels, Error>;
+    auto rewrite_metadata(MetadataPatch, Budget, const Cancellation&) const
         -> Result<Pixels, Error>;
 };
 

@@ -47,6 +47,30 @@ void check(Source source, const Budget& budget) {
         container
             .rewrite_metadata({ None(), Some("<changed/>"_str.as_bytes()) }, budget.clone(), cancel)
             .is_err());
+    ExtensionId id { 0x5c, 0x1c, 0x8e, 0x0a, 0x72, 0x04, 0x4b, 0xb9,
+                     0x98, 0x10, 0x51, 0xdb, 0x4e, 0x32, 0x31, 0x62 };
+    auto        payload = "{\"authors\":[{\"name\":\"作者\"}],\"version\":1}"_str;
+    auto        updated =
+        container.rewrite_extension(id, payload.as_bytes(), budget.clone(), cancel).unwrap();
+    auto reread = JxlContainer::open(updated.clone(), limits).unwrap();
+    rstd_assert(reread.info().jpeg_reconstruction);
+    auto embedded = reread.extension(id, budget.clone()).unwrap().unwrap();
+    rstd_assert(embedded.size() == payload.len());
+    rstd_assert(
+        rstd::mem::memcmp(embedded.data(), payload.as_bytes().as_raw_ptr(), embedded.size()) == 0);
+    auto before_code = container.codestream(budget.clone()).unwrap();
+    auto after_code  = reread.codestream(budget.clone()).unwrap();
+    rstd_assert(before_code.size() == after_code.size());
+    rstd_assert(rstd::mem::memcmp(before_code.data(), after_code.data(), before_code.size()) == 0);
+    verify_jpeg(source, updated, budget.clone(), cancel, limits).unwrap();
+    auto twice =
+        reread.rewrite_extension(id, "second"_str.as_bytes(), budget.clone(), cancel).unwrap();
+    verify_jpeg(source, twice, budget.clone(), cancel, limits).unwrap();
+    auto removed = JxlContainer::open(twice.clone(), limits)
+                       .unwrap()
+                       .rewrite_extension(id, {}, budget.clone(), cancel)
+                       .unwrap();
+    verify_jpeg(source, removed, budget.clone(), cancel, limits).unwrap();
     auto tiny         = limits;
     tiny.output_bytes = u64(1);
     rstd_assert(recompress_jpeg(source, u32(3), budget.clone(), cancel, tiny).is_err());
@@ -116,6 +140,35 @@ int run(int argc, char** argv) {
     auto memory = Pixels::allocate(budget.clone(), usize(sizeof(jpeg))).unwrap();
     rstd::mem::memcpy(memory.data_mut(), jpeg, memory.size());
     check(Source::memory(rstd::move(memory), "sample.jpg"_str).unwrap(), budget);
+    const unsigned char exif[] = { 'E', 'x', 'i', 'f', 0, 0, 'I', 'I', 42, 0,
+                                   8,   0,   0,   0,   0, 0, 0,   0,   0,  0 };
+    auto                xmp    = "http://ns.adobe.com/xap/1.0/"_str;
+    auto  xml    = "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><value>original</value></x:xmpmeta>"_str;
+    auto  marked = Pixels::allocate(budget.clone(),
+                                    usize(sizeof(jpeg) + sizeof(exif) + 9) + xmp.len() + xml.len())
+                       .unwrap();
+    auto* p      = marked.data_mut();
+    p[0]         = 255;
+    p[1]         = 216;
+    usize cursor(2);
+    auto  app1 = [&](const void* data, usize length) {
+        p[cursor.to_primitive()]     = 255;
+        p[cursor.to_primitive() + 1] = 225;
+        auto n                       = length.to_primitive() + 2;
+        p[cursor.to_primitive() + 2] = n >> 8;
+        p[cursor.to_primitive() + 3] = n & 255;
+        rstd::mem::memcpy(p + cursor.to_primitive() + 4, data, length);
+        cursor += length + usize(4);
+    };
+    app1(exif, usize(sizeof(exif)));
+    auto text = Pixels::allocate(budget.clone(), xmp.len() + usize(1) + xml.len()).unwrap();
+    rstd::mem::memcpy(text.data_mut(), xmp.as_bytes().as_raw_ptr(), xmp.len());
+    text.data_mut()[xmp.len().to_primitive()] = 0;
+    rstd::mem::memcpy(
+        text.data_mut() + xmp.len().to_primitive() + 1, xml.as_bytes().as_raw_ptr(), xml.len());
+    app1(text.data(), text.size());
+    rstd::mem::memcpy(p + cursor.to_primitive(), jpeg + 2, usize(sizeof(jpeg) - 2));
+    check(Source::memory(rstd::move(marked), "metadata.jpg"_str).unwrap(), budget);
     for (int i = 1; i < argc; ++i) {
         auto path = rstd::path::PathBuf::from(rstd::ffi::CStr::from_ptr(argv[i]).to_str().unwrap());
         check(Source::file(path.as_path()).unwrap(), budget);
