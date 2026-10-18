@@ -94,7 +94,7 @@ AVPixelFormat get_format_prefer_vulkan(AVCodecContext* cctx, const AVPixelFormat
     return avcodec_default_get_format(cctx, fmts);
 }
 
-#if LITO_FEAT_VAAPI && !defined(__APPLE__)
+#if LITO_FEAT_VAAPI && ! defined(__APPLE__)
 /* VAAPI counterpart: prefer AV_PIX_FMT_VAAPI when offered. The codec
  * bootstraps an internal AVHWFramesContext from the AVHWDeviceContext
  * we attached to cctx->hw_device_ctx, so we don't pre-allocate frames
@@ -282,6 +282,15 @@ struct VkFrameLease::State {
     FramePtr source;
 };
 
+auto VkFrameLease::try_clone() const -> Result<VkFrameLease, Error> {
+    if (! state_) return Err(Error("cannot clone an empty Vulkan frame"_str));
+    FramePtr frame(av_frame_clone(state_->source.get()));
+    if (! frame) return Err(Error("av_frame_clone(Vulkan) failed"_str));
+    auto state    = Box<State>::make();
+    state->source = rstd::move(frame);
+    return Ok(VkFrameLease(rstd::move(state).into_raw().as_raw_ptr(), info_));
+}
+
 struct VkFrameAccess::State {
     FramePtr               source;
     AVHWFramesContext*     frames { nullptr };
@@ -380,6 +389,15 @@ struct DrmFrameLease::State {
 struct VaapiFrameLease::State {
     FramePtr source;
 };
+
+auto VaapiFrameLease::try_clone() const -> Result<VaapiFrameLease, Error> {
+    if (! state_) return Err(Error("cannot clone an empty VAAPI frame"_str));
+    FramePtr frame(av_frame_clone(state_->source.get()));
+    if (! frame) return Err(Error("av_frame_clone(VAAPI) failed"_str));
+    auto state    = Box<State>::make();
+    state->source = rstd::move(frame);
+    return Ok(VaapiFrameLease(rstd::move(state).into_raw().as_raw_ptr(), view_, resource_key_));
+}
 
 struct AppleFrameLease::State {
 #if defined(__APPLE__)
@@ -740,7 +758,7 @@ auto VideoDecoder::open_with_vk(ref<str> path, u32 target_width, u32 target_heig
             hwd  = make_shared_vulkan_hwdevice(producer, &local_err);
             kind = FrameKind::VulkanShared;
         } else if (order[i] == HwAccel::Vaapi) {
-#if LITO_FEAT_VAAPI && !defined(__APPLE__)
+#if LITO_FEAT_VAAPI && ! defined(__APPLE__)
             hwd  = make_vaapi_hwdevice(render_node, &local_err);
             kind = FrameKind::VaapiDrm;
 #else
@@ -875,7 +893,7 @@ auto VideoDecoder::open_from_stream(InputStreamFactory make_stream, u32 target_w
             hwd  = make_shared_vulkan_hwdevice(*producer, &local_err);
             kind = FrameKind::VulkanShared;
         } else if (order[i] == HwAccel::Vaapi) {
-#if LITO_FEAT_VAAPI && !defined(__APPLE__)
+#if LITO_FEAT_VAAPI && ! defined(__APPLE__)
             hwd  = make_vaapi_hwdevice(render_node, &local_err);
             kind = FrameKind::VaapiDrm;
 #else
@@ -928,8 +946,8 @@ auto VideoDecoder::build_internal(InputSpec input, u32 target_width, u32 target_
                                   void* prebuilt_hwdevice_value, FrameKind requested_kind,
                                   Error* err) -> Option<Box<VideoDecoder>> {
     AVBufferRef* prebuilt_hwdevice = static_cast<AVBufferRef*>(prebuilt_hwdevice_value);
-    if (target_width == u32() || target_height == u32()) {
-        fail(err, "target dimensions must be non-zero"_str);
+    if ((target_width == u32()) != (target_height == u32())) {
+        fail(err, "target dimensions must both be zero or non-zero"_str);
         if (prebuilt_hwdevice) av_buffer_unref(&prebuilt_hwdevice);
         return None();
     }
@@ -1019,6 +1037,16 @@ auto VideoDecoder::build_internal(InputSpec input, u32 target_width, u32 target_
     AVStream*          st   = self->state_->fmt->streams[idx];
     AVCodecParameters* par  = st->codecpar;
     self->state_->stream_tb = st->time_base;
+    if (target_width == u32()) {
+        if (par->width <= 0 || par->height <= 0) {
+            fail(err, "invalid native video extent"_str);
+            return None();
+        }
+        self->target_width_ =
+            (u32(static_cast<rstd::uint32_t>(par->width)) + u32(1)) / u32(2) * u32(2);
+        self->target_height_ =
+            (u32(static_cast<rstd::uint32_t>(par->height)) + u32(1)) / u32(2) * u32(2);
+    }
 
     /* FFmpeg's native `av1` decoder has no software path — it's a
      * parser + hwaccel dispatcher and returns ENOSYS on send_packet when
@@ -1058,7 +1086,7 @@ auto VideoDecoder::build_internal(InputSpec input, u32 target_width, u32 target_
             rstd::log::info("VideoDecoder: AV_HWDEVICE_TYPE_VULKAN attached for codec {}.",
                             avcodec_get_name(par->codec_id));
         }
-#if LITO_FEAT_VAAPI && !defined(__APPLE__)
+#if LITO_FEAT_VAAPI && ! defined(__APPLE__)
         else if (requested_kind == FrameKind::VaapiDrm) {
             self->state_->cctx->get_format = get_format_prefer_vaapi;
             rstd::log::info("VideoDecoder: AV_HWDEVICE_TYPE_VAAPI attached for codec {}.",
@@ -1260,7 +1288,7 @@ int VideoDecoder::next_vaapi_frame_(VaapiFrameView& out, Error* err) {
     while (true) {
         int rc = avcodec_receive_frame(st.cctx.get(), st.src_frame.get());
         if (rc == 0) {
-#if LITO_FEAT_VAAPI && !defined(__APPLE__)
+#if LITO_FEAT_VAAPI && ! defined(__APPLE__)
             if (st.src_frame->format != AV_PIX_FMT_VAAPI) {
                 fail(err, "next_vaapi_frame: decoder produced non-VAAPI frame"_str);
                 return -1;
@@ -1752,6 +1780,12 @@ auto VideoDecoder::seek(f64 seconds) -> Result<empty, Error> {
     if (kind_ == FrameKind::VideoToolbox) start_apple_prefetch();
 #endif
     return Ok(empty {});
+}
+
+auto VideoDecoder::source_size() const -> ProbeResult {
+    const auto* parameters = state_->fmt->streams[state_->video_idx]->codecpar;
+    return { u32(static_cast<rstd::uint32_t>(parameters->width)),
+             u32(static_cast<rstd::uint32_t>(parameters->height)) };
 }
 
 auto VideoDecoder::duration() const -> Option<f64> {

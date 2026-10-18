@@ -502,13 +502,27 @@ int Producer::upload_into_(VkImage target, u32 target_width, u32 target_height,
         fail(err, "upload_into: from_external Producers are decode-only"_str);
         return -1;
     }
-    const VkDeviceSize expected_size = static_cast<VkDeviceSize>(width_.to_primitive()) *
-                                       static_cast<VkDeviceSize>(height_.to_primitive()) * 4;
+    const VkDeviceSize pixels = static_cast<VkDeviceSize>(target_width.to_primitive()) *
+                                static_cast<VkDeviceSize>(target_height.to_primitive());
+    if (pixels == 0 || pixels > u64::MAX.to_primitive() / 4 || ! data) {
+        fail(err, "upload_into: invalid extent or data"_str);
+        return -1;
+    }
+    const VkDeviceSize expected_size = pixels * 4;
     if (static_cast<VkDeviceSize>(size.to_primitive()) != expected_size) {
         fail(err, "upload_into: size mismatch"_str);
         return -1;
     }
 
+    if (target_width != width_ || target_height != height_) {
+        auto released = release_upload_buffer();
+        if (released.is_err()) {
+            *err = rstd::move(released).unwrap_err();
+            return -1;
+        }
+        width_  = target_width;
+        height_ = target_height;
+    }
     if (! wait_for_upload_(err) || ! prepare_upload_buffer_(err)) return -1;
 
     rstd::mem::memcpy(staging_map_, data, size);

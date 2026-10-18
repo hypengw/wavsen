@@ -136,6 +136,8 @@ public:
 
     auto convert_nv12(VkImage dst, u32 dst_w, u32 dst_h, const rstd::uint8_t* nv12, usize nv12_size,
                       const ColorMatrix& cm) -> Result<int, Error>;
+    auto convert_nv12(VkImage dst, u32 dst_w, u32 dst_h, const Nv12Frame& source,
+                      const ColorMatrix& cm) -> Result<int, Error>;
     auto convert_nv12(VkImage dst, u32 dst_w, u32 dst_h, const rstd::uint8_t* nv12, usize nv12_size,
                       const ColorMatrix& cm, ConvertTarget target) -> Result<int, Error>;
     auto submit_nv12(VkImage dst, u32 dst_w, u32 dst_h, const rstd::uint8_t* nv12, usize nv12_size,
@@ -163,9 +165,9 @@ private:
     bool init(const vvk::InstanceDispatch& instance_dispatch, VkPhysicalDevice phys,
               const vvk::DeviceDispatch& device_dispatch, u32 queue_family, VkQueue queue,
               u32 max_w, u32 max_h, Error* err);
-    int  convert_nv12_(VkImage dst, rstd::uint32_t dst_w, rstd::uint32_t dst_h,
-                       const rstd::uint8_t* nv12, usize nv12_size, const ColorMatrix& cm,
-                       ConvertTarget target, Error* err);
+    int convert_nv12_(VkImage dst, rstd::uint32_t dst_w, rstd::uint32_t dst_h, rstd::uint32_t src_w,
+                      rstd::uint32_t src_h, const rstd::uint8_t* nv12, usize nv12_size,
+                      const ColorMatrix& cm, ConvertTarget target, Error* err);
     auto convert_av_vk_frame_(ConversionReservation& reservation, VkFrameAccess& access,
                               const ColorMatrix& cm) -> Result<int, Error>;
     void publish_submission(VkImage dst, u32 dst_w, u32 dst_h, ConvertTarget target,

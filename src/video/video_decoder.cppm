@@ -95,6 +95,7 @@ public:
     const VkFrameInfo& info() const noexcept { return info_; }
     bool               valid() const noexcept { return state_ != nullptr; }
     auto               lock() const -> Result<VkFrameAccess, Error>;
+    auto               try_clone() const -> Result<VkFrameLease, Error>;
 
     struct State;
 
@@ -249,6 +250,7 @@ public:
     const VaapiFrameView& view() const noexcept { return view_; }
     bool                  valid() const noexcept { return state_ != nullptr; }
     auto                  into_drm() && -> Result<DrmFrameLease, Error>;
+    auto                  try_clone() const -> Result<VaapiFrameLease, Error>;
 
     struct State;
 
@@ -346,6 +348,8 @@ public:
     auto next_drm_frame() -> Result<DrmFramePull, Error>;
     auto seek(f64 seconds) -> Result<empty, Error>;
     auto duration() const -> Option<f64>;
+    // Zero target dimensions select the native extent during open, rounded for NV12.
+    auto source_size() const -> ProbeResult;
 
     FrameKind kind() const { return kind_; }
     bool      using_vk_frames() const { return kind_ == FrameKind::VulkanShared; }

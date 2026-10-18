@@ -23,7 +23,8 @@ namespace wavsen::video
 struct alignas(16) ShaderPushConstants {
     rstd::uint32_t dst_w;
     rstd::uint32_t dst_h;
-    rstd::uint32_t _pad0[2];
+    rstd::uint32_t source_w;
+    rstd::uint32_t source_h;
     float          m_r[4];
     float          m_g[4];
     float          m_b[4];
@@ -1167,8 +1168,9 @@ bool YuvToRgba::init(const vvk::InstanceDispatch& instance_dispatch, VkPhysicalD
 }
 
 int YuvToRgba::convert_nv12_(VkImage dst, rstd::uint32_t dst_w, rstd::uint32_t dst_h,
-                             const rstd::uint8_t* nv12, usize nv12_size, const ColorMatrix& cm,
-                             ConvertTarget target, Error* err) {
+                             rstd::uint32_t src_w, rstd::uint32_t src_h, const rstd::uint8_t* nv12,
+                             usize nv12_size, const ColorMatrix& cm, ConvertTarget target,
+                             Error* err) {
     if (dst == VK_NULL_HANDLE) {
         fail(err, "convert_nv12: dst VkImage null"_str);
         return -1;
@@ -1185,7 +1187,12 @@ int YuvToRgba::convert_nv12_(VkImage dst, rstd::uint32_t dst_w, rstd::uint32_t d
         fail(err, "convert_nv12: dst exceeds configured max extent"_str);
         return -1;
     }
-    const usize want = usize(dst_w) * usize(dst_h) * usize(3) / usize(2);
+    if (! src_w || ! src_h || (src_w & 1u) || (src_h & 1u) || src_w > max_w_.to_primitive() ||
+        src_h > max_h_.to_primitive()) {
+        fail(err, "convert_nv12: invalid source extent"_str);
+        return -1;
+    }
+    const usize want = usize(src_w) * usize(src_h) * usize(3) / usize(2);
     if (nv12_size != want) {
         fail(err, "convert_nv12: nv12_size mismatch (expected NV12 layout)"_str);
         return -1;
@@ -1285,20 +1292,20 @@ int YuvToRgba::convert_nv12_(VkImage dst, rstd::uint32_t dst_w, rstd::uint32_t d
         bic.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         bic.imageSubresource.layerCount = 1;
         bic.imageOffset                 = { 0, 0, 0 };
-        bic.imageExtent                 = { dst_w, dst_h, 1 };
+        bic.imageExtent                 = { src_w, src_h, 1 };
         software_command_.CopyBufferToImage(
             *staging_buf_, *y_image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, bic);
     }
     /* Copy UV from staging[W*H..W*H + W*H/2]. */
     {
         VkBufferImageCopy bic {};
-        bic.bufferOffset                = VkDeviceSize(dst_w) * dst_h;
+        bic.bufferOffset                = VkDeviceSize(src_w) * src_h;
         bic.bufferRowLength             = 0;
         bic.bufferImageHeight           = 0;
         bic.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         bic.imageSubresource.layerCount = 1;
         bic.imageOffset                 = { 0, 0, 0 };
-        bic.imageExtent                 = { dst_w / 2, dst_h / 2, 1 };
+        bic.imageExtent                 = { src_w / 2, src_h / 2, 1 };
         software_command_.CopyBufferToImage(
             *staging_buf_, *uv_image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, bic);
     }
@@ -1333,8 +1340,10 @@ int YuvToRgba::convert_nv12_(VkImage dst, rstd::uint32_t dst_w, rstd::uint32_t d
         slice<VkDescriptorSet>::from_raw_parts(&descriptor_set, usize(1)),
         {});
     ShaderPushConstants pc {};
-    pc.dst_w = dst_w;
-    pc.dst_h = dst_h;
+    pc.dst_w    = dst_w;
+    pc.dst_h    = dst_h;
+    pc.source_w = src_w;
+    pc.source_h = src_h;
     for (int i = 0; i < 3; ++i) {
         pc.m_r[i]    = cm.m_r[i];
         pc.m_g[i]    = cm.m_g[i];
@@ -2328,8 +2337,16 @@ auto YuvToRgba::submit_nv12(VkImage dst, u32 dst_w, u32 dst_h, const rstd::uint8
     -> Result<ConversionSubmission, Error> {
     (void)last_submission_.take();
     Error err;
-    int   fd = convert_nv12_(
-        dst, dst_w.to_primitive(), dst_h.to_primitive(), nv12, nv12_size, cm, target, &err);
+    int   fd = convert_nv12_(dst,
+                             dst_w.to_primitive(),
+                             dst_h.to_primitive(),
+                             dst_w.to_primitive(),
+                             dst_h.to_primitive(),
+                             nv12,
+                             nv12_size,
+                             cm,
+                             target,
+                             &err);
     if (fd < 0 && ! err.message.is_empty()) return Err(rstd::move(err));
     if (! last_submission_ || ! last_submission_->submitted()) {
         return Err(Error { "YuvToRgba: conversion returned without a submission"_str });
@@ -2337,6 +2354,24 @@ auto YuvToRgba::submit_nv12(VkImage dst, u32 dst_w, u32 dst_h, const rstd::uint8
     auto submission    = last_submission_->clone();
     submission.sync_fd = fd;
     return Ok(rstd::move(submission));
+}
+
+auto YuvToRgba::convert_nv12(VkImage dst, u32 dst_w, u32 dst_h, const Nv12Frame& source,
+                             const ColorMatrix& cm) -> Result<int, Error> {
+    (void)last_submission_.take();
+    Error error;
+    int   fd = convert_nv12_(dst,
+                             dst_w.to_primitive(),
+                             dst_h.to_primitive(),
+                             source.width.to_primitive(),
+                             source.height.to_primitive(),
+                             source.data.data(),
+                             source.data.len(),
+                             cm,
+                             ConvertTarget::BridgeForeign,
+                             &error);
+    if (fd < 0) return Err(rstd::move(error));
+    return Ok(fd);
 }
 
 auto YuvToRgba::submit_av_vk_frame(ConversionReservation&& reservation, VkFrameLease&& frame,
