@@ -11,7 +11,9 @@ namespace wavsen_audio_constants
 {
 inline constexpr int k_AV_DICT_IGNORE_SUFFIX = AV_DICT_IGNORE_SUFFIX;
 inline constexpr int k_AVIO_SEEKABLE_NORMAL  = AVIO_SEEKABLE_NORMAL;
+inline constexpr int k_AVFMTCTX_UNSEEKABLE = AVFMTCTX_UNSEEKABLE;
 inline constexpr int k_AVERROR_EXIT          = AVERROR_EXIT;
+inline constexpr int k_AVIO_FLAG_READ        = AVIO_FLAG_READ;
 inline constexpr int k_EIO                   = EIO;
 
 inline constexpr int     k_AV_TIME_BASE             = AV_TIME_BASE;
@@ -36,8 +38,10 @@ inline constexpr int     k_AVFMT_FLAG_CUSTOM_IO     = AVFMT_FLAG_CUSTOM_IO;
 #undef AVERROR
 #undef AV_DICT_IGNORE_SUFFIX
 #undef AVIO_SEEKABLE_NORMAL
+#undef AVFMTCTX_UNSEEKABLE
 #undef AVERROR_EXIT
 #undef EIO
+#undef AVIO_FLAG_READ
 export module wavsen.ffi.ffmpeg.base.core;
 export {
     using ::av_buffer_unref;
@@ -48,6 +52,7 @@ export {
     using ::AVPixelFormat;
     inline constexpr int AV_DICT_IGNORE_SUFFIX = wavsen_audio_constants::k_AV_DICT_IGNORE_SUFFIX;
     inline constexpr int AVIO_SEEKABLE_NORMAL  = wavsen_audio_constants::k_AVIO_SEEKABLE_NORMAL;
+    inline constexpr int AVFMTCTX_UNSEEKABLE = wavsen_audio_constants::k_AVFMTCTX_UNSEEKABLE;
     inline constexpr int AVERROR_EXIT          = wavsen_audio_constants::k_AVERROR_EXIT;
     inline constexpr int EIO                   = wavsen_audio_constants::k_EIO;
     inline constexpr int AV_TIME_BASE          = wavsen_audio_constants::k_AV_TIME_BASE;
@@ -140,6 +145,9 @@ export {
     using ::avformat_seek_file;
     using ::AVFormatContext;
     using ::AVFrame;
+    using ::avio_closep;
+    using ::avio_open2;
+    inline constexpr int AVIO_FLAG_READ = wavsen_audio_constants::k_AVIO_FLAG_READ;
     using ::avio_alloc_context;
     using ::avio_context_free;
     using ::AVIOContext;

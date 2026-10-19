@@ -53,6 +53,12 @@ class OpenedMedia::Impl {
 public:
     ~Impl() {
         if (format) avformat_close_input(&format);
+        for (auto& reader : readers) {
+            if (reader.avio) {
+                avio_closep(&reader.avio);
+                options.media_io->release(reader.lease);
+            }
+        }
         if (avio) {
             av_freep(&avio->buffer);
             avio_context_free(&avio);
@@ -85,10 +91,92 @@ public:
                    ? -1
                    : static_cast<rstd::int64_t>(rstd::move(result).unwrap().to_primitive());
     }
+    static bool offset(AVDictionary* opts, const char* key, Option<u64>& result) {
+        auto* entry = av_dict_get(opts, key, nullptr, 0);
+        if (! entry) return true;
+        rstd::uint64_t value  = 0;
+        const char*    cursor = entry->value;
+        if (! *cursor) return false;
+        for (; *cursor; ++cursor) {
+            if (*cursor < '0' || *cursor > '9' ||
+                value > (rstd::uint64_t(i64::MAX.to_primitive()) - (*cursor - '0')) / 10)
+                return false;
+            value = value * 10 + (*cursor - '0');
+        }
+        result = Some(u64(value));
+        return true;
+    }
+    static int io_open(AVFormatContext* format, AVIOContext** output, const char* uri, int flags,
+                       AVDictionary** opts) {
+        auto& self = *static_cast<Impl*>(format->opaque);
+        if (self.cancelled()) return AVERROR_EXIT;
+        if (flags != AVIO_FLAG_READ) return AVERROR(EIO);
+        auto           logical = text(uri);
+        MediaIoRequest request { .uri       = logical.as_str(),
+                                 .context   = self.options.context,
+                                 .cancelled = self.options.cancelled };
+        if (! offset(opts ? *opts : nullptr, "offset", request.offset) ||
+            ! offset(opts ? *opts : nullptr, "end_offset", request.end_offset) ||
+            (request.offset.is_some() && request.end_offset.is_some() &&
+             *request.end_offset <= *request.offset))
+            return AVERROR(EIO);
+        auto resolved = self.options.media_io->resolve(request);
+        if (resolved.is_err()) {
+            self.io_error = rstd::move(resolved).unwrap_err();
+            return self.cancelled() ? AVERROR_EXIT : AVERROR(EIO);
+        }
+        auto input = rstd::move(resolved).unwrap();
+        auto name  = rstd::ffi::CString::make(rstd::move(input.uri));
+        if (name.is_err()) {
+            self.options.media_io->release(input.lease);
+            return AVERROR(EIO);
+        }
+        // A bounded HTTP view must reopen for another range; its end_offset cannot be reused.
+        if (request.end_offset.is_some()) av_dict_set(opts, "seekable", "0", 0);
+        av_dict_set_int(
+            opts, "rw_timeout", self.options.timeout_ms.to_primitive() * rstd::int64_t(1000), 0);
+        int rc =
+            avio_open2(output, name.unwrap().as_ptr(), flags, &format->interrupt_callback, opts);
+        if (rc < 0) {
+            self.options.media_io->release(input.lease);
+            return rc;
+        }
+        self.timeline_seekable = self.timeline_seekable || input.time_seekable;
+        for (auto& reader : self.readers) {
+            if (! reader.avio) {
+                reader = { *output, input.lease };
+                return rc;
+            }
+        }
+        if (self.readers.len() >= usize(64)) {
+            avio_closep(output);
+            self.options.media_io->release(input.lease);
+            return AVERROR(EIO);
+        }
+        self.readers.push(IoReader { *output, input.lease });
+        return rc;
+    }
+    static int io_close(AVFormatContext* format, AVIOContext* input) {
+        auto& self = *static_cast<Impl*>(format->opaque);
+        for (auto& reader : self.readers) {
+            if (reader.avio == input) {
+                int rc = avio_closep(&reader.avio);
+                self.options.media_io->release(reader.lease);
+                return rc;
+            }
+        }
+        return AVERROR(EIO);
+    }
     auto open(const char* url) -> MediaError {
         format = avformat_alloc_context();
         if (! format) return { MediaErrorKind::Open, i32(-12) };
         format->interrupt_callback = { &interrupt, this };
+        if (options.media_io) {
+            if (source.is_some()) return { MediaErrorKind::InvalidInput };
+            format->opaque    = this;
+            format->io_open   = &io_open;
+            format->io_close2 = &io_close;
+        }
         if (source.is_some()) {
             auto* buffer = static_cast<rstd::uint8_t*>(av_malloc(32768));
             if (! buffer) return { MediaErrorKind::Open, i32(-12) };
@@ -105,7 +193,11 @@ public:
             &opts, "rw_timeout", options.timeout_ms.to_primitive() * rstd::int64_t(1000), 0);
         av_dict_set_int(
             &opts, "timeout", options.timeout_ms.to_primitive() * rstd::int64_t(1000), 0);
-        if (options.reconnect) av_dict_set(&opts, "reconnect", "1", 0);
+        if (options.reconnect && ! options.media_io) av_dict_set(&opts, "reconnect", "1", 0);
+        if (options.media_io) {
+            av_dict_set(&opts, "http_persistent", "0", 0);
+            av_dict_set(&opts, "http_multiple", "0", 0);
+        }
         int rc = avformat_open_input(&format, url, nullptr, &opts);
         av_dict_free(&opts);
         if (rc < 0)
@@ -116,7 +208,12 @@ public:
         if (cancelled()) return { MediaErrorKind::Cancelled };
         if (format->duration != AV_NOPTS_VALUE && format->duration >= 0)
             info.duration_seconds = Some(f64(double(format->duration) / AV_TIME_BASE));
-        info.seekable                = format->pb && (format->pb->seekable & AVIO_SEEKABLE_NORMAL);
+        info.byte_seekable = format->pb && (format->pb->seekable & AVIO_SEEKABLE_NORMAL);
+        const bool hls = text(format->iformat->name).as_str() == "hls"_str;
+        info.seekable = hls ? ((! options.media_io || timeline_seekable) &&
+                               info.duration_seconds.is_some() &&
+                               !(format->ctx_flags & AVFMTCTX_UNSEEKABLE))
+                            : info.byte_seekable;
         const AVDictionaryEntry* tag = nullptr;
         while ((tag = av_dict_get(format->metadata, "", tag, AV_DICT_IGNORE_SUFFIX)))
             info.tags.push(MediaTag { text(tag->key), text(tag->value) });
@@ -127,6 +224,13 @@ public:
         }
         return {};
     }
+    struct IoReader {
+        AVIOContext* avio {};
+        u64          lease {};
+    };
+    Vec<IoReader>      readers;
+    bool               timeline_seekable {};
+    MediaError         io_error;
     MediaOpenOptions   options;
     Option<ByteStream> source;
     AVFormatContext*   format {};
@@ -170,10 +274,18 @@ public:
         media_   = rstd::move(media);
         fmt_ctx_ = media_.impl_->format;
         if (! fmt_ctx_) return fail(MediaErrorKind::InvalidInput);
-        target_              = target;
+        target_ = target;
+
         const AVCodec* codec = nullptr;
         stream_idx_          = av_find_best_stream(fmt_ctx_, AVMEDIA_TYPE_AUDIO, -1, -1, &codec, 0);
         if (stream_idx_ < 0 || ! codec) return fail(MediaErrorKind::NoAudio, stream_idx_);
+        const auto* stream = fmt_ctx_->streams[stream_idx_];
+        origin_seconds_ =
+            stream->start_time != AV_NOPTS_VALUE
+                ? f64(double(stream->start_time) * ffi::ffmpeg::av_q2d(stream->time_base))
+            : fmt_ctx_->start_time != AV_NOPTS_VALUE
+                ? f64(double(fmt_ctx_->start_time) / AV_TIME_BASE)
+                : f64();
         cctx_ = avcodec_alloc_context3(codec);
         if (! cctx_) return fail(MediaErrorKind::Decode, -12);
         int rc = avcodec_parameters_to_context(cctx_, fmt_ctx_->streams[stream_idx_]->codecpar);
@@ -282,7 +394,8 @@ public:
                 if (pts != AV_NOPTS_VALUE)
                     last_pts_seconds_ =
                         f64(double(pts) *
-                            ffi::ffmpeg::av_q2d(fmt_ctx_->streams[stream_idx_]->time_base));
+                            ffi::ffmpeg::av_q2d(fmt_ctx_->streams[stream_idx_]->time_base)) -
+                        origin_seconds_;
                 return true;
             }
             if (rc == AVERROR_EOF) {
@@ -314,7 +427,7 @@ public:
     bool seek_to(f64 seconds) {
         if (! fmt_ctx_ || stream_idx_ < 0 || ! seconds.is_finite() || seconds < f64()) return false;
         auto timestamp = static_cast<rstd::int64_t>(
-            seconds.to_primitive() /
+            (seconds + origin_seconds_).to_primitive() /
             ffi::ffmpeg::av_q2d(fmt_ctx_->streams[stream_idx_]->time_base));
         int rc = avformat_seek_file(fmt_ctx_, stream_idx_, timestamp, timestamp, timestamp, 0);
         if (rc < 0) return fail(MediaErrorKind::Seek, rc);
@@ -393,6 +506,7 @@ public:
         last_pts_seconds_ = pcm_position_ = batch_position_ = f64();
         clock_anchored_                                     = false;
         playback_rate_                                      = f64(1.0);
+        origin_seconds_                                     = f64();
     }
     OpenedMedia        media_;
     DeviceDesc         target_ {};
@@ -409,6 +523,7 @@ public:
     f64                last_pts_seconds_, pcm_position_, batch_position_;
     bool               clock_anchored_ {};
     f64                playback_rate_ { 1.0 };
+    f64                origin_seconds_;
 };
 StreamDecoder::StreamDecoder(): impl_(Box<Impl>::make()) {}
 StreamDecoder::~StreamDecoder()                                   = default;

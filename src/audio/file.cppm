@@ -38,16 +38,39 @@ struct MediaStreamInfo {
 struct MediaInfo {
     Option<f64>          duration_seconds;
     bool                 seekable {};
+    bool                 byte_seekable {};
     Vec<MediaTag>        tags;
     Vec<MediaStreamInfo> streams;
 };
 
-// The cancellation context must outlive the opened media and its decoder.
+struct MediaIoRequest {
+    ref<str>    uri;
+    Option<u64> offset;
+    Option<u64> end_offset;
+    void*       context {};
+    bool (*cancelled)(void*) noexcept {};
+};
+struct MediaInput {
+    String uri;
+    u64    lease {};
+    bool   time_seekable {};
+};
+class MediaIo {
+public:
+    virtual ~MediaIo()                                                            = default;
+    virtual auto resolve(const MediaIoRequest&) -> Result<MediaInput, MediaError> = 0;
+    virtual void release(u64) noexcept {}
+    virtual void keep_alive() {}
+    virtual void close() noexcept {}
+};
+
+// Both contexts and media_io must outlive the opened media and its decoder.
 struct MediaOpenOptions {
     void* context {};
     bool (*cancelled)(void*) noexcept {};
-    u32  timeout_ms { 5000 };
-    bool reconnect { true };
+    u32      timeout_ms { 5000 };
+    bool     reconnect { true };
+    MediaIo* media_io {};
 };
 
 class OpenedMedia {
@@ -107,8 +130,8 @@ public:
     // av_seek_frame fails.
     auto seek_to(f64 seconds) -> bool;
 
-    // PTS in seconds of the most recently decoded frame, derived from
-    // best_effort_timestamp * av_q2d(stream.time_base). Returns 0.0 before
+    // PTS in seconds of the most recently decoded frame, relative to the
+    // stream start timestamp. Returns 0.0 before
     // the first frame is decoded.
     auto current_pts_seconds() const -> f64;
     auto pcm_position_seconds() const -> f64;
