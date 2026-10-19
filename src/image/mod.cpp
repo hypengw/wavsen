@@ -98,13 +98,15 @@ struct MemoryReader {
 namespace rstd
 {
 template<>
-struct Impl<io::ReadAt, wavsen::image::MemoryReader> : ImplBase<wavsen::image::MemoryReader> {
-    auto read_at(mut_ref<u8[]> target, u64 offset) const -> io::Result<usize> {
+struct Impl<io::ReadAt, wavsen::image::MemoryReader>
+    : DefaultInImpl<io::ReadAt, wavsen::image::MemoryReader> {
+    auto read_buf_at(io::BorrowedCursor target, u64 offset) const -> io::Result<empty> {
         const auto& pixels = this->self().pixels;
-        if (offset >= u64(pixels.size().to_primitive())) return Ok(usize());
-        auto count = target.len().min(pixels.size() - usize(offset.to_primitive()));
-        rstd::mem::memcpy(target.as_raw_ptr(), pixels.data() + offset.to_primitive(), count);
-        return Ok(count);
+        if (offset >= u64(pixels.size().to_primitive())) return Ok(empty {});
+        auto count = target.capacity().min(pixels.size() - usize(offset.to_primitive()));
+        target.append(slice<u8>::from_raw_parts(
+            reinterpret_cast<const byte*>(pixels.data()) + offset.to_primitive(), count));
+        return Ok(empty {});
     }
 };
 } // namespace rstd
