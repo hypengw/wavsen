@@ -176,6 +176,8 @@ public:
             format->opaque    = this;
             format->io_open   = &io_open;
             format->io_close2 = &io_close;
+            // FFmpeg 7 closes the primary input without io_close2; readers must own it instead.
+            format->flags |= AVFMT_FLAG_CUSTOM_IO;
         }
         if (source.is_some()) {
             auto* buffer = static_cast<rstd::uint8_t*>(av_malloc(32768));
