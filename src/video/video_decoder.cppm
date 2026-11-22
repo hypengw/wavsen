@@ -173,10 +173,19 @@ struct DrmLayer {
     DrmPlane       planes[4];
 };
 
+// Kernel object identity; FD numbers and decoder surface IDs can be reused.
+struct DrmObjectIdentity {
+    u64 device;
+    u64 inode;
+
+    friend bool operator==(const DrmObjectIdentity&, const DrmObjectIdentity&) = default;
+};
+
 struct DrmObject {
-    int            fd;
-    u64            size;
-    rstd::uint64_t format_modifier;
+    int               fd;
+    u64               size;
+    rstd::uint64_t    format_modifier;
+    DrmObjectIdentity identity {};
 };
 
 struct DrmFrameView {

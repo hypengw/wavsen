@@ -498,9 +498,21 @@ auto VaapiFrameLease::into_drm() && -> Result<DrmFrameLease, Error> {
     const int    layer_count  = descriptor->nb_layers < 4 ? descriptor->nb_layers : 4;
     drm_view.object_count     = u32(static_cast<rstd::uint32_t>(object_count));
     for (int object = 0; object < object_count; ++object) {
-        drm_view.objects[object].fd              = descriptor->objects[object].fd;
-        drm_view.objects[object].size            = u64(descriptor->objects[object].size);
-        drm_view.objects[object].format_modifier = descriptor->objects[object].format_modifier;
+        const auto& exported = descriptor->objects[object];
+        if (exported.fd < 0) return Err(Error("av_hwframe_map: invalid DMA-BUF fd"_str));
+        auto info = rstd::fs::metadata(rstd::os::fd::BorrowedFd::borrow_raw(exported.fd));
+        if (info.is_err()) {
+            return Err(Error(rstd::format("av_hwframe_map: cannot identify DMA-BUF object {}: {}",
+                                          object,
+                                          rstd::move(info).unwrap_err())));
+        }
+        const auto metadata      = rstd::move(info).unwrap();
+        drm_view.objects[object] = {
+            .fd              = exported.fd,
+            .size            = u64(exported.size),
+            .format_modifier = exported.format_modifier,
+            .identity        = { metadata.dev(), metadata.ino() },
+        };
     }
     drm_view.layer_count = u32(static_cast<rstd::uint32_t>(layer_count));
     for (int layer = 0; layer < layer_count; ++layer) {

@@ -381,7 +381,8 @@ bool same_drm_signature(const DrmFrameView& lhs, const DrmFrameView& rhs) {
     }
     for (u32 i = u32(); i < lhs.object_count; ++i) {
         const auto index = i.to_primitive();
-        if (lhs.objects[index].size != rhs.objects[index].size ||
+        if (lhs.objects[index].identity != rhs.objects[index].identity ||
+            lhs.objects[index].size != rhs.objects[index].size ||
             lhs.objects[index].format_modifier != rhs.objects[index].format_modifier) {
             return false;
         }
@@ -725,7 +726,7 @@ auto create_drm_import(const vvk::Device& device, const vvk::PhysicalDevice& phy
 
     VkImageDrmFormatModifierExplicitCreateInfoEXT modifier_info {};
     modifier_info.sType = VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_EXPLICIT_CREATE_INFO_EXT;
-    modifier_info.drmFormatModifier           = drm.objects[0].format_modifier;
+    modifier_info.drmFormatModifier           = drm.objects[planes[0].object_index].format_modifier;
     modifier_info.drmFormatModifierPlaneCount = 2;
     modifier_info.pPlaneLayouts               = plane_layouts;
 
@@ -2061,24 +2062,15 @@ auto YuvToRgba::submit_drm_prime(ConversionReservation&& reservation, DrmFrameLe
     auto* context      = reservation.state_->context;
     auto* target_entry = reservation.state_->target;
 
-    DrmImportEntry* source      = nullptr;
-    Option<usize>   stale_index = None();
-    const auto      key         = frame.resource_key();
-    const auto&     view        = frame.view();
+    DrmImportEntry* source = nullptr;
+    const auto      key    = frame.resource_key();
+    const auto&     view   = frame.view();
     for (usize index {}; index < pipeline_state_->imports.len(); ++index) {
         auto* candidate = pipeline_state_->imports[index].get();
-        if (candidate->key != key) continue;
-        if (same_drm_signature(candidate->signature, view)) {
-            if (candidate->in_flight != u32()) return Ok(None());
-            source = candidate;
-        } else {
-            if (candidate->in_flight != u32()) return Ok(None());
-            stale_index = Some(index);
-        }
+        if (candidate->key != key || ! same_drm_signature(candidate->signature, view)) continue;
+        if (candidate->in_flight != u32()) return Ok(None());
+        source = candidate;
         break;
-    }
-    if (stale_index.is_some()) {
-        (void)pipeline_state_->imports.remove(*stale_index);
     }
     if (! source) {
         if (pipeline_state_->imports.len() >= usize(pipeline_state_->max_imports.to_primitive())) {
